@@ -265,7 +265,8 @@ def extract_vitals(sig1d, fs=SAMPLING_RATE):
     br = 60. * fs / (bpks[0] + bl) if len(bpks) else 16.
 
     pk_idx, _ = sig.find_peaks(pulse_sig, distance=int(0.4 * fs))
-    hrv = float(np.sqrt(np.mean(np.diff(np.diff(pk_idx) / fs * 1000) ** 2))) if len(pk_idx) > 2 else 0.
+    rr_ms = np.diff(pk_idx) / fs * 1000  # successive RR intervals in ms
+    hrv = float(np.sqrt(np.mean(np.diff(rr_ms) ** 2))) if len(pk_idx) > 2 else 0.
 
     return {"heart_rate_bpm": float(np.clip(hr, 30, 200)),
             "tremor_power": float(np.var(tremor_sig)),
@@ -835,7 +836,7 @@ def room_geometry_fingerprint(static_csi_history):
     # Peaks in the static profile ≈ dominant reflectors (walls/furniture)
     peaks, props = sig.find_peaks(static, height=np.mean(static))
     reflectors = [(int(p), float(static[p])) for p in peaks[:6]]
-    return {"reflectors": reflectors, "room_scale": float(np.ptp(static))}
+    return {"reflectors": reflectors, "room_scale": float(np.max(static) - np.min(static))}
 
 
 class TTSReadout:
@@ -1009,7 +1010,7 @@ def fractal_dimension(x):
     x = np.asarray(np.abs(x), dtype=np.float64)
     if len(x) < 8:
         return {"fractal_dim": 1.0, "lacunarity": 0.0}
-    x = (x - x.min()) / (np.ptp(x) + 1e-9)
+    x = (x - x.min()) / ((np.max(x) - np.min(x)) + 1e-9)
     scales = [2, 4, 8]
     counts = []
     for s in scales:
@@ -1017,7 +1018,7 @@ def fractal_dimension(x):
         if nb < 1:
             break
         boxes = x[:nb * s].reshape(nb, s)
-        counts.append(np.sum(np.ptp(boxes, axis=1) > 0.1) + 1)
+        counts.append(np.sum((np.max(boxes, axis=1) - np.min(boxes, axis=1)) > 0.1) + 1)
     if len(counts) < 2:
         return {"fractal_dim": 1.0, "lacunarity": float(np.var(x))}
     coeffs = np.polyfit(np.log(scales[:len(counts)]), np.log(counts), 1)
@@ -3631,8 +3632,12 @@ def event_horizon_phase_lock(csi_history, lock_threshold=0.8):
     if len(post_horizon) == 0:
         return {"locked_signal": horizon_frame, "lock_quality": 0.0}
     # Phase-lock: align all post-horizon frames to horizon phase
-    lock_quality = float(np.mean([np.corrcoef(horizon_frame, f)[0, 1]
-                                   for f in post_horizon if len(f) == len(horizon_frame)]))
+    def _safe_corr(a, b):
+        if np.std(a) < 1e-12 or np.std(b) < 1e-12:
+            return 0.0
+        return float(np.nan_to_num(np.corrcoef(a, b)[0, 1]))
+    corrs = [_safe_corr(horizon_frame, f) for f in post_horizon if len(f) == len(horizon_frame)]
+    lock_quality = float(np.mean(corrs)) if corrs else 0.0
     locked_signal = np.mean(post_horizon, axis=0) * lock_quality
     return {"locked_signal": locked_signal,
             "lock_quality": float(np.clip(lock_quality, 0, 1))}
@@ -4152,7 +4157,10 @@ def susy_partner_correlator(csi_vec):
     analytic = sig.hilbert(x)
     bosonic = np.real(analytic)
     fermionic = np.imag(analytic)
-    susy_corr = float(np.corrcoef(bosonic, fermionic)[0, 1]) if n > 1 else 0.0
+    if n > 1 and np.std(bosonic) > 1e-12 and np.std(fermionic) > 1e-12:
+        susy_corr = float(np.nan_to_num(np.corrcoef(bosonic, fermionic)[0, 1]))
+    else:
+        susy_corr = 0.0
     partner = np.sqrt(bosonic ** 2 + fermionic ** 2)
     return {"susy_corr": float(np.clip(susy_corr, -1, 1)), "partner_signal": partner}
 
@@ -4164,11 +4172,13 @@ def symplectic_form_inverter(phase_matrix):
     if phase_matrix.shape[0] < 4:
         return {"hamiltonian_energy": 0.0, "symplectic_area": 0.0}
     phase = np.unwrap(np.angle(np.exp(1j * phase_matrix)), axis=0)
-    dp = np.gradient(phase, axis=0)  # dq
-    dq = np.gradient(phase, axis=1) if phase.ndim > 1 else np.gradient(phase)  # dp
-    omega = float(np.mean(dp * np.roll(dq if phase.ndim > 1 else dp, 1, axis=0 if phase.ndim > 1 else 0) -
-                          dq if phase.ndim > 1 else dp * np.roll(dp, 1, axis=0)))
-    H_energy = float(0.5 * np.mean(dp ** 2 + (dq if phase.ndim > 1 else dp) ** 2))
+    dp = np.gradient(phase, axis=0)  # momentum gradient
+    dq = np.gradient(phase, axis=1) if phase.ndim > 1 else np.gradient(phase)  # position gradient
+    # Symplectic 2-form ω = dp∧dq: finite-difference cross terms
+    dp_shift = np.roll(dp, 1, axis=0)
+    dq_shift = np.roll(dq, 1, axis=0)
+    omega = float(np.mean(dp * dq_shift - dq * dp_shift))
+    H_energy = float(0.5 * np.mean(dp ** 2 + dq ** 2))
     return {"hamiltonian_energy": float(np.clip(H_energy, 0, 1e6)), "symplectic_area": float(np.abs(omega))}
 
 
@@ -6211,7 +6221,8 @@ def multifractal_singularity_decoder(csi_vec):
                 if q == 0:
                     fluct.append(np.exp(0.5 * np.mean(np.log(np.array(F2) + 1e-9))))
                 else:
-                    fluct.append(np.mean(np.array(F2) ** (q / 2)) ** (1 / q))
+                    F2_safe = np.array(F2) + 1e-12  # guard against zero variance (q<0 would give inf)
+                    fluct.append(float(np.mean(F2_safe ** (q / 2)) ** (1 / q)))
         if len(fluct) > 1:
             try:
                 h = float(np.polyfit(np.log(scales[:len(fluct)]), np.log(np.array(fluct) + 1e-9), 1)[0])
@@ -7553,7 +7564,8 @@ def ultimate_cobordism_mapper(csi_history):
 
 def infinity_infinity_category_sheaf_inverter(csi_vec):
     """List 46.1-3: (∞,∞)-category & chromatic homotopy."""
-    return {"cat_dimension": int(len(csi_vec) % 16), "spectrum_rank": len(np.where(csi_vec > 0)[0])}
+    x = np.abs(np.asarray(csi_vec))
+    return {"cat_dimension": int(len(csi_vec) % 16), "spectrum_rank": len(np.where(x > 0)[0])}
 
 def elliptic_tmf_cohomology_inverter(csi_vec):
     """List 46.4: Elliptic cohomology & TMF."""
@@ -7562,7 +7574,8 @@ def elliptic_tmf_cohomology_inverter(csi_vec):
 
 def higher_k_theory_spectrum_inverter(csi_vec):
     """List 46.5-6: Higher K-theory & motivic homotopy."""
-    return {"k_theory_rank": int(np.linalg.matrix_rank(np.atleast_2d(csi_vec))), "motivic_sphere_dim": int(np.std(csi_vec))}
+    x = np.abs(np.asarray(csi_vec))
+    return {"k_theory_rank": int(np.linalg.matrix_rank(np.atleast_2d(x))), "motivic_sphere_dim": int(np.std(x))}
 
 def a1_homotopy_reconstructor(csi_history):
     """List 46.7-9: A^1-homotopy & higher stacks."""
@@ -7576,7 +7589,8 @@ def ultimate_grothendieck_inverter(csi_history):
 
 def infinity_n_category_sheaf(csi_vec):
     """List 47.1-3: (∞,n)-category cohomology."""
-    return {"infinity_n_rank": len(csi_vec) % 32, "cohomology_rank": int(np.sum(csi_vec > 0))}
+    x = np.abs(np.asarray(csi_vec))
+    return {"infinity_n_rank": len(csi_vec) % 32, "cohomology_rank": int(np.sum(x > 0))}
 
 def motivic_stable_homotopy_decoder(csi_history):
     """List 47.4-6: Motivic stable homotopy & Galois & p-adic."""
@@ -7595,7 +7609,8 @@ def arakelov_grothendieck_ultimate(csi_history):
 
 def infinity_n_colimit_engine(csi_vec):
     """List 48.1-3: (∞,n)-category & derived spectra."""
-    return {"infinity_n_colimit_dim": len(csi_vec), "stable_type_rank": int(np.sum(csi_vec > np.mean(csi_vec)))}
+    x = np.abs(np.asarray(csi_vec))
+    return {"infinity_n_colimit_dim": len(csi_vec), "stable_type_rank": int(np.sum(x > np.mean(x)))}
 
 def ultimate_motivic_cohomology_solver(csi_history):
     """List 48.4-6: Motivic Galois & Teichmüller & p-adic."""
@@ -7622,7 +7637,8 @@ def arakelov_universe_ultimate_inverter(csi_history):
 
 def dendroidal_operad_inverter(csi_vec):
     """List 49.1-3: Dendroidal sets & infinity operads."""
-    return {"dendroidal_rank": len(csi_vec) // 4, "operad_dim": int(np.std(csi_vec))}
+    x = np.abs(np.asarray(csi_vec))
+    return {"dendroidal_rank": len(csi_vec) // 4, "operad_dim": int(np.std(x))}
 
 def planar_algebra_decoder(csi_history):
     """List 49.4-6: Planar algebra & subfactor & modular tensor."""
@@ -7647,7 +7663,8 @@ def higher_ribbon_category_ultimate(csi_history):
 
 def univalent_homotopy_inverter(csi_vec):
     """List 50.1-2: Univalent foundations & condensed math."""
-    return {"homotopy_type_dim": len(csi_vec), "ultrafilter_rank": int(np.sum(csi_vec > np.median(csi_vec)))}
+    x = np.abs(np.asarray(csi_vec))
+    return {"homotopy_type_dim": len(csi_vec), "ultrafilter_rank": int(np.sum(x > np.median(x)))}
 
 
 
@@ -7725,10 +7742,13 @@ def lossless_4d_archive_engine(csi_history):
     H = np.atleast_2d(np.abs(csi_history))
     if H.shape[0] < 4:
         return {"compression_ratio": 0.0, "index_entries": 0, "archive_mb": 0.0}
-    # Compression ratio: entropy of quantized CSI
-    quantized = np.round(H * 255).astype(int)
-    entropy = float(-np.sum(np.bincount(quantized.flatten()) * np.log2(np.bincount(quantized.flatten()) + 1e-9)))
-    ratio = float(8.0 / (entropy + 1e-9))  # bits per sample vs 8 bits raw
+    # Compression ratio: Shannon entropy of 8-bit quantized CSI (correct formula)
+    clip_max = float(np.percentile(H, 99)) + 1e-9
+    quantized = np.clip(np.round(H / clip_max * 255), 0, 255).astype(np.uint8)
+    counts = np.bincount(quantized.flatten(), minlength=256).astype(np.float64)
+    p = counts / (counts.sum() + 1e-9)
+    entropy = float(-np.sum(p * np.log2(p + 1e-9)))  # bits per symbol, max=8
+    ratio = float(np.clip(entropy / 8.0, 0.01, 1.0))  # fraction of raw 8-bit entropy used
     # Index: one entry per frame
     index_entries = H.shape[0]
     archive_mb = float(H.size * entropy / 8 / 1024 / 1024)
@@ -8729,17 +8749,67 @@ class MultiAgentWirelessBCIFuser:
             "representability_score": 0.0, # 45.2 Yoneda embedding representability
             "ultimate_cobordism_genus": 0, # 45.7-9 cobordism genus
             "spectral_gap": 0.0,        # 45.8 spectral gap (eigenvalue)
+            # List 46-50: ultimate abstract category fields
+            "cat_46_dimension": 0,      # 46.1 (∞,∞)-category dimension
+            "tmf_rank": 0,              # 46.4 TMF rank
+            "a1_homotopy_dim": 0,       # 46.7 A^1-homotopy dimension
+            "infinity_n_rank": 0,       # 47.1 (∞,n)-category rank
+            "motivic_galois_rank": 0,   # 47.4 motivic stable homotopy rank
+            "ribbon_fusion_rank": 0,    # 49.7 Drinfeld center rank
+            "dendroidal_rank": 0,       # 49.1 dendroidal operad rank
+            "planar_index": 0.0,        # 49.4 planar algebra index
+            "univalent_homotopy_dim": 0,# 50.1 univalent homotopy type
+            # List 51-56: 4D replay fields
+            "voxel_cube_size": 0,       # 55.1 4D voxel recorder cube size
+            "camera_fov_deg": 90.0,     # 55.2 virtual camera FoV
+            "event_snapshot_count": 0,  # 55.3 event snapshot count
+            "effective_hz_replay": 0.0, # 55.4 super-resolution replay Hz
+            "sync_error_ns": 0.0,       # 55.10 multi-node sync error
+            "compression_ratio": 0.0,  # 55.6 archive compression ratio
+            "semantic_tags_count": 0,   # 55.7 AI bookmark tag count
+            "replay_frames": 0,         # 55.8 replay frames
+            "mesh_vertices": 0,         # 55.9 VR mesh vertex count
+            "loop_cycles_detected": 0,  # 55.10 temporal loop cycles
+            # List 57-60: medical/rescue fields
+            "prediction_horizon_s": 0.0,# 57 trajectory prediction horizon
+            "branch_points": 0,         # 58 replay branch points
+            "organ_motion_m": 0.0,      # 60.1 organ motion amplitude
+            "perfusion_percent": 0.0,   # 60.1 cardiac perfusion
+            "rescue_victim_detected": 0,# 60.2 trapped victim detection
+            "fall_detected": 0,         # 60.3 fall event detection
+            "glucose_trend": "stable",  # 60.4 blood glucose trend
+            "toxin_detected": 0,        # 60.5 airborne toxin detection
+            "sleep_stage": "awake",     # 60.9 sleep stage classification
+            "anxiety_episode_detected": 0, # 60.11 anxiety/stress episode
+            # List 29 (additional fields not previously defaulted)
+            "universality_class": "mean_field",  # 29.4 critical universality class
+            "landau_a2": 0.0,           # 29.7 Landau free-energy a2 coefficient
+            # List 38 (Pi2 pulsation)
+            "pi2_frequency": 0.0,       # 38.9 geomagnetic Pi2 frequency MHz
+            # List 40 (gravity wave / satellite multipath)
+            "satellite_multipath_db": 0.0, # 40.x satellite multipath gain
+            "ocean_bragg_doppler": 0.0, # 40.x ocean Bragg Doppler Hz
+            "gravity_wave_period": 0.0, # 40.x atmospheric gravity wave period s
+            # List 38 Pc1 micropulsation (set by geomagnetic_pc1_micropulsation_decoder)
+            "pc1_frequency_hz": 0.0,    # 38.9 Pc1 micropulsation frequency Hz
+            # List 39 (cellular uplink opportunistic)
+            "cellular_towers": 0,       # 39.x cellular tower count
+            "uplink_power_db": 0.0,     # 39.x cellular uplink power dB
+            "haarp_heating_db": 0.0,    # 39.x HAARP HF heating gain dB
+            "hf_skip_strength": 0.0,    # 39.x HF skip-zone signal strength
 
         }
 
         self.fig = plt.figure(figsize=(26, 16))
-        self.ax2d = self.fig.add_subplot(3, 4, 1)
-        self.ax_doppler = self.fig.add_subplot(3, 4, 2)
-        self.ax3d = self.fig.add_subplot(3, 4, (3, 4, 7, 8), projection='3d')
-        self.ax_heatmap = self.fig.add_subplot(3, 4, 5)   # List 1.10 subcarrier heatmap
-        self.ax_vitals = self.fig.add_subplot(3, 4, 6)    # List 1.10 vitals trend
-        self.ax_bci = self.fig.add_subplot(3, 4, 9)       # List 1.10 BCI dashboard
-        self.ax_diag = self.fig.add_subplot(3, 4, (10, 11, 12))
+        # Use GridSpec for multi-cell subplots (matplotlib 3.x compatible)
+        gs = self.fig.add_gridspec(3, 4, hspace=0.45, wspace=0.35)
+        self.ax2d        = self.fig.add_subplot(gs[0, 0])
+        self.ax_doppler  = self.fig.add_subplot(gs[0, 1])
+        self.ax3d        = self.fig.add_subplot(gs[0:2, 2:4], projection='3d')  # 2×2 right block
+        self.ax_heatmap  = self.fig.add_subplot(gs[1, 0])   # List 1.10 subcarrier heatmap
+        self.ax_vitals   = self.fig.add_subplot(gs[1, 1])   # List 1.10 vitals trend
+        self.ax_bci      = self.fig.add_subplot(gs[2, 0])   # List 1.10 BCI dashboard
+        self.ax_diag     = self.fig.add_subplot(gs[2, 1:4]) # diagnostic overlay spans 3 cols
         self.ax_diag.axis('off')
 
         self._print_banner()
@@ -8788,7 +8858,14 @@ class MultiAgentWirelessBCIFuser:
             pass
         try:
             line = data.decode('utf-8').strip()
-            vals = [float(x) for x in line.split(',') if x.replace('.', '', 1).replace('-', '', 1).isdigit()]
+            vals = []
+            for x in line.split(','):
+                try:
+                    v = float(x)
+                    if np.isfinite(v):
+                        vals.append(v)
+                except ValueError:
+                    pass
             if len(vals) >= 64:
                 return np.array(vals[:DEFAULT_SUBCARRIERS]).reshape(1, -1)
         except Exception:
@@ -8908,12 +8985,17 @@ class MultiAgentWirelessBCIFuser:
         mimo_amp = np.average([r['csi'] for r in results], axis=0, weights=weights)
         mimo_amp = np.atleast_1d(mimo_amp)
         # Fuse real CSI phase too, so complex/phase handlers get genuine phase (not zeros).
+        # Use only the per-agent weights that correspond to agents that produced a phase.
         try:
-            phases = [np.atleast_1d(r['phase']) for r in results if 'phase' in r]
-            if phases:
-                L = min(len(mimo_amp), min(len(p) for p in phases))
-                mimo_phase = np.average([p[:L] for p in phases], axis=0,
-                                        weights=weights[:len(phases)])
+            phase_pairs = [(np.atleast_1d(r['phase']), sig_quals[i])
+                           for i, r in enumerate(results) if 'phase' in r]
+            if phase_pairs:
+                phases_list, phase_wts = zip(*phase_pairs)
+                phase_wts = np.array(phase_wts, dtype=np.float64)
+                phase_wts /= phase_wts.sum() + 1e-9
+                L = min(len(mimo_amp), min(len(p) for p in phases_list))
+                mimo_phase = np.average([p[:L] for p in phases_list], axis=0,
+                                        weights=phase_wts)
                 mimo_phase = np.resize(mimo_phase, mimo_amp.shape)
             else:
                 mimo_phase = np.zeros_like(mimo_amp)
@@ -10922,7 +11004,7 @@ class MultiAgentWirelessBCIFuser:
         if hist_arr is not None:
             try:
                 r = stress_anxiety_episode_replayer(hist_arr)
-                pp["fall_detected"] = r["episode_detected"]
+                pp["anxiety_episode_detected"] = r["episode_detected"]
             except Exception: pass
 
     def _process_frame(self, csi_raw):
@@ -11198,7 +11280,8 @@ Real-time threat recognition for saving lives. Purely non-weaponized; confidence
             return
 
         thread.start()
-        ani = FuncAnimation(self.fig, self._update_plot, interval=80, blit=False)
+        # Keep ani referenced on self so GC cannot collect it before plt.show() returns
+        self._ani = FuncAnimation(self.fig, self._update_plot, interval=80, blit=False)
         try:
             plt.show()
         finally:
@@ -11249,7 +11332,5 @@ if __name__ == "__main__":
     try:
         fuser.start()
     except KeyboardInterrupt:
-        fuser.running = False
-        if fuser.recorder:
-            fuser.recorder.save()
+        # start()'s finally block already sets running=False and saves recorder/profiles
         log.info("N.E.P.A. v23 shutdown complete. Humanitarian life-saving system delivered.")
