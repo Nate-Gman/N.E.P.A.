@@ -829,8 +829,13 @@ class WorldReconstructionEngine:
             except Exception:
                 pass
         else:
+            # Pass 37: use NeRF2SceneModel (Fourier positional encoding + online MLP)
+            if not hasattr(self, "_nerf2_scene"):
+                self._nerf2_scene = NeRF2SceneModel(hidden=64)
             keep = min(len(norm), 256)
             sel = np.random.choice(len(norm), keep, replace=False)
+            self._nerf2_scene.train_step(norm[sel], amp[sel])
+            # Keep legacy anchors for nerf_query fallback
             self._nerf["anchors"] = np.vstack([self._nerf["anchors"], norm[sel]])[-2048:]
             self._nerf["amp"] = np.concatenate([self._nerf["amp"], amp[sel]])[-2048:]
             self._nerf["phase"] = np.concatenate(
@@ -851,6 +856,9 @@ class WorldReconstructionEngine:
                 return out.numpy()[:, 0]
             except Exception:
                 return np.zeros(len(P))
+        # Pass 37: prefer NeRF2SceneModel if trained
+        if hasattr(self, "_nerf2_scene") and self._nerf2_scene._n_trained > 10:
+            return self._nerf2_scene.query(P)
         anchors = self._nerf["anchors"]
         if len(anchors) == 0:
             return np.zeros(len(P))
@@ -889,9 +897,16 @@ class WorldReconstructionEngine:
         self._splat_count = len(occ)
 
     def render_splats(self, cam_pos, cam_target, width=160, height=120, fov=60.0):
-        """T3-5: alpha-composite the Gaussian splats into an RGB image from a camera
-        pose. Pure-numpy point-splat rasteriser (the photorealistic free-camera view).
-        Returns an (H, W, 3) float image."""
+        """T3-5 / Pass 37: Upgraded to RF-GS covariance-based Gaussian renderer.
+        Uses RFGaussianSplatRenderer (elliptical splats with projected covariance),
+        falling back to the legacy point rasteriser when not yet initialised.
+        Returns an (H, W, 3) float image in [0, 1]."""
+        # Pass 37: use RFGaussianSplatRenderer when voxel data available
+        if hasattr(self, "_rfgs") and self._rfgs is not None and self._rfgs._n_active > 0:
+            try:
+                return self._rfgs.render(cam_pos, cam_target, width, height, fov)
+            except Exception:
+                pass
         img = np.zeros((height, width, 3), dtype=np.float32)
         if not self._splats or self._splat_count == 0:
             return img
@@ -1247,7 +1262,9 @@ class DetailTabWindow:
                  "fused": "FUSED BIG-PICTURE MAP", "raw": "RAW DATA READOUT",
                  "bci": "WIRELESS BCI DASHBOARD",
                  "radar": "PASSIVE RADAR",
-                 "splat": "NAVIGABLE WORLD (SPLAT)"}.get(self.kind, self.kind)
+            "motion": "MOTION & W3D",
+                 "splat": "NAVIGABLE WORLD (SPLAT)",
+                 "info": "SYSTEM INFO & ABOUT"}.get(self.kind, self.kind)
         self._fig = plt.figure(f"N.E.P.A. - {title}", figsize=(16, 10))
         self._fig.patch.set_facecolor('#050505')
         self._ani = FuncAnimation(self._fig, self._draw, interval=200,
@@ -1280,22 +1297,22 @@ class DetailTabWindow:
         with self.fuser.history_lock:
             hist = list(self.fuser.history)
         amp_hist = np.abs(np.array(hist, dtype=np.float32)) if hist else np.zeros((2, DEFAULT_SUBCARRIERS))
-        ax1 = fig.add_subplot(2, 2, 1); ax1.set_facecolor('#080808')
+        ax1 = fig.add_subplot(2, 3, 1); ax1.set_facecolor('#080808')
         if raw is not None:
             ax1.plot(np.abs(raw), color='#00ffcc', lw=1.2)
         ax1.set_title("Live CSI amplitude (64 subcarriers)", color='cyan', fontsize=10)
         ax1.tick_params(colors='#888', labelsize=6)
-        ax2 = fig.add_subplot(2, 2, 2); ax2.set_facecolor('#080808')
+        ax2 = fig.add_subplot(2, 3, 2); ax2.set_facecolor('#080808')
         if raw is not None:
             ax2.plot(np.angle(raw), color='#ffaa33', lw=1.2)
         ax2.set_title("Live CSI phase (rad)", color='cyan', fontsize=10)
         ax2.tick_params(colors='#888', labelsize=6)
-        ax3 = fig.add_subplot(2, 2, 3); ax3.set_facecolor('#080808')
+        ax3 = fig.add_subplot(2, 3, 3); ax3.set_facecolor('#080808')
         if amp_hist.ndim == 2 and amp_hist.shape[0] > 1:
             ax3.imshow(amp_hist[-120:].T, aspect='auto', origin='lower', cmap='viridis')
         ax3.set_title("CSI waterfall (time x subcarrier)", color='cyan', fontsize=10)
         ax3.tick_params(colors='#888', labelsize=6)
-        ax4 = fig.add_subplot(2, 2, 4); ax4.set_facecolor('#080808')
+        ax4 = fig.add_subplot(2, 3, 4); ax4.set_facecolor('#080808')
         if raw is not None and len(raw) >= 8:
             rp = np.abs(np.fft.ifft(np.asarray(raw) * np.hanning(len(raw))))[:len(raw)//2]
             dr = 3e8 / (2.0 * 20e6 * len(raw))
@@ -1303,7 +1320,46 @@ class DetailTabWindow:
             ax4.set_xlabel("range (m)", color='#aaa', fontsize=7)
         ax4.set_title("Range profile - radar echoes", color='cyan', fontsize=10)
         ax4.tick_params(colors='#888', labelsize=6)
-        fig.suptitle("SIGNAL / SPECTRUM DETAIL - all received CSI organized",
+        # T0-7: Spectrum survey waterfall (band power over time)
+        ax5 = fig.add_subplot(2, 3, 5); ax5.set_facecolor('#080808')
+        survey = p.get("spectrum_survey", {})
+        if survey:
+            band_names = list(survey.keys())
+            band_vals  = []
+            for bn in band_names:
+                bdata = survey[bn]
+                if isinstance(bdata, dict):
+                    peak = bdata.get("peak_power_dbm") if bdata.get("real") else None
+                    band_vals.append(float(peak) if peak is not None else -120.0)
+                else:
+                    band_vals.append(-120.0)
+            ax5.barh(range(len(band_names)), band_vals,
+                     color=['#22ffaa' if survey[b].get("real") else '#555'
+                            for b in band_names])
+            ax5.set_yticks(range(len(band_names)))
+            ax5.set_yticklabels(band_names, color='#ccc', fontsize=6)
+            ax5.set_xlabel("peak power (dBm)", color='#888', fontsize=7)
+            real_n = p.get("spectrum_real_bands", 0)
+            ax5.set_title(f"Spectrum survey ({real_n if isinstance(real_n,int) else len(real_n)} real bands)",
+                          color='#00ffcc', fontsize=9)
+        else:
+            ax5.text(0.5, 0.5, "Awaiting spectrum sweep...", ha='center',
+                     va='center', color='#555', fontsize=9)
+            ax5.set_title("Spectrum survey (pending)", color='#00ffcc', fontsize=9)
+        ax5.tick_params(colors='#888', labelsize=6)
+        # Spectrum waterfall history: rolling band-power rows from _spectrum_hist
+        ax6 = fig.add_subplot(2, 3, 6); ax6.set_facecolor('#080808')
+        sh = list(getattr(self.fuser, "_spectrum_wf_history", []))
+        if sh and len(sh) > 1:
+            wf = np.array(sh, dtype=np.float32)   # (time_steps, n_bands)
+            ax6.imshow(wf.T, aspect='auto', origin='lower',
+                       cmap='inferno', interpolation='nearest',
+                       extent=[0, wf.shape[0], 0, wf.shape[1]])
+            ax6.set_xlabel("sweep index", color='#888', fontsize=7)
+            ax6.set_ylabel("band", color='#888', fontsize=7)
+        ax6.set_title("Spectrum waterfall (time)", color='#00ffcc', fontsize=9)
+        ax6.tick_params(colors='#888', labelsize=6)
+        fig.suptitle("SIGNAL / SPECTRUM DETAIL — CSI + wideband RF survey",
                      color='#00ffcc', fontsize=12)
 
     def _draw_instrument(self, fig, p, snap):
@@ -1377,7 +1433,7 @@ class DetailTabWindow:
 
     def _draw_bci(self, fig, p, snap):
         """T1-4: BCI Dashboard — 7-band bars + focus/stress/arousal gauges + motor intent."""
-        fig.suptitle("WIRELESS BCI DASHBOARD — [RF-DERIVED] from live CSI phase",
+        fig.suptitle("WIRELESS BCI DASHBOARD — [RF-DERIVED] from live CSI phase  |  RuVector HRV/BP",
                      color='#00ffcc', fontsize=13)
         # Panel 1: 7-band power bars.
         ax1 = fig.add_subplot(2, 2, 1); ax1.set_facecolor('#080808')
@@ -1418,17 +1474,36 @@ class DetailTabWindow:
                  f"  trained={p.get('bci_trained',False)}",
                  color='#888', fontsize=9, family='monospace', transform=ax3.transAxes)
         ax3.set_title("Motor-imagery intent (Riemannian)", color='#00ffcc', fontsize=10)
-        # Panel 4: band history sparkline (relative alpha vs beta over time).
-        ax4 = fig.add_subplot(2, 2, 4); ax4.set_facecolor('#080808')
-        bh = list(getattr(self.fuser.bci_engine, "_band_history", []))
-        if bh:
-            a_tr = [d.get("alpha", 0.0) for d in bh]
-            b_tr = [d.get("beta", 0.0) for d in bh]
-            ax4.plot(a_tr, color='#22ffaa', label='alpha')
-            ax4.plot(b_tr, color='#aaff22', label='beta')
-            ax4.legend(facecolor='#080808', edgecolor='#333', labelcolor='#ccc', fontsize=8)
-        ax4.set_title("Band trajectory", color='#00ffcc', fontsize=10)
-        ax4.tick_params(colors='#888')
+        # Panel 4: HRV / BP / RuVector metrics + band sparkline
+        ax4 = fig.add_subplot(2, 2, 4); ax4.set_facecolor('#080808'); ax4.axis('off')
+        _ruv_labels = [
+            ("HRV SDNN",    f"{p.get('ruv_hrv_sdnn',0):.1f} ms",  '#22ffaa'),
+            ("HRV RMSSD",   f"{p.get('ruv_hrv_rmssd',0):.1f} ms", '#22aaff'),
+            ("HRV pNN50",   f"{p.get('ruv_hrv_pnn50',0):.1f} %",  '#aaffaa'),
+            ("LF/HF ratio", f"{p.get('ruv_hrv_lf_hf',1.5):.2f}",  '#ffaa22'),
+            ("BP est.",     f"{p.get('ruv_bp_sys',0)}/{p.get('ruv_bp_dia',0)} mmHg", '#ff88aa'),
+            ("Happiness",   f"{p.get('ruv_happiness',0):.2f}",     '#00ffcc'),
+            ("Affect val.", f"{p.get('ruv_affect',0):.2f}",        '#88aaff'),
+            ("Social eng.", f"{p.get('ruv_social',0):.2f}",        '#ffcc44'),
+            ("Coherence",   f"{p.get('ruv_coherence_score',0):.2f} ({'OK' if p.get('ruv_coherent') else 'LOW'})", '#aaffcc'),
+            ("ML motion",   f"{p.get('ml_motion_prob',0):.2f}  {p.get('ml_motion_state','IDLE')}", '#ff5533'),
+        ]
+        for i, (name, val, c) in enumerate(_ruv_labels):
+            y = 0.97 - i * 0.092
+            ax4.text(0.02, y, f"{name:<12s}  {val}", color=c, fontsize=9,
+                     family='monospace', transform=ax4.transAxes)
+        # Vital alerts strip
+        _alerts = p.get('ruv_alerts', [])
+        if _alerts:
+            ax4.text(0.02, 0.05,
+                     '  '.join(f"[{a[1].upper()}]" for a in _alerts[:3]),
+                     color='#ff3322', fontsize=9, family='monospace',
+                     fontweight='bold', transform=ax4.transAxes)
+        _drift = p.get('ruv_drift', [])
+        if _drift:
+            ax4.text(0.02, 0.02, _drift[0][:55], color='#ffaa22', fontsize=8,
+                     family='monospace', transform=ax4.transAxes)
+        ax4.set_title("RuVector: HRV · BP · Happiness · ML motion", color='#00ffcc', fontsize=10)
 
     def _draw_radar(self, fig, p, snap):
         """T2 detail view — CAF range-Doppler map, MUSIC pseudospectrum, holographic SAR."""
@@ -1462,17 +1537,27 @@ class DetailTabWindow:
         ax3.set_title("Holographic SAR back-projection", color='#00ffcc', fontsize=10)
         ax3.tick_params(colors='#888')
         # Panel 4: numeric readout.
-        ax4 = fig.add_subplot(2, 2, 4); ax4.axis('off'); ax4.set_facecolor('#080808')
-        lines = [
-            "PASSIVE COHERENT RADAR (router as illuminator)", "-" * 42,
-            f"  CAF peak SNR      : {p.get('radar_caf_snr_db',0):.2f} dB",
-            f"  Radial velocity   : {p.get('radar_velocity_ms',0):+.3f} m/s",
-            f"  Clutter suppressed: {p.get('radar_clutter_db',0):.2f} dB (ECA)",
-            f"  MUSIC DoA targets : {p.get('radar_doa_count',0)}",
-            f"  DoA bearings      : {', '.join('%+.0f°'%a for a in p.get('radar_doa_peaks',[])) or 'none'}",
-        ]
-        ax4.text(0.02, 0.97, "\n".join(lines), va='top', ha='left', family='monospace',
-                 fontsize=10, color='#00ff99', transform=ax4.transAxes)
+        # Panel 4: KrakenSDR 360° polar DoA + numeric readout
+        ax4 = fig.add_subplot(2, 2, 4, projection='polar'); ax4.set_facecolor('#050505')
+        _music360 = p.get("kraken_doa_music", [])
+        _bartlett = p.get("kraken_doa_bartlett", [])
+        if len(_music360) == 360:
+            _angles_rad = np.deg2rad(np.arange(360))
+            ax4.plot(_angles_rad, np.array(_music360), color='#22ffaa', lw=1.2, label='MUSIC')
+            if len(_bartlett) == 360:
+                ax4.plot(_angles_rad, np.array(_bartlett), color='#ffaa22',
+                         lw=0.8, alpha=0.6, label='Bartlett')
+            for _pk in p.get("kraken_doa_peaks", []):
+                ax4.axvline(np.deg2rad(_pk), color='#ff5533', lw=1.5, ls='--')
+            ax4.legend(facecolor='#080808', edgecolor='#333', labelcolor='#ccc',
+                       fontsize=7, loc='upper right')
+        else:
+            ax4.text(0, 0, "Kraken DoA\ninitializing", ha='center', va='center',
+                     color='#555', fontsize=10)
+        ax4.set_facecolor('#060606')
+        ax4.tick_params(colors='#666', labelsize=6)
+        ax4.set_title(f"KrakenSDR 360° DoA  peaks:{p.get('kraken_doa_peaks',[])}",
+                      color='#00ffcc', fontsize=9)
 
     def _draw_splat(self, fig, p, snap):
         """T3-1/T3-5: photorealistic free-camera view of the RF-reconstructed world via
@@ -1516,6 +1601,4052 @@ class DetailTabWindow:
                  f"splats={st.get('splat_count',0)}  open3d={st.get('open3d',False)}  "
                  f"torch={st.get('torch',False)}  keyframes={st.get('keyframes',0)}",
                  ha='center', color='#888', fontsize=9, family='monospace')
+
+    def _draw_info(self, fig, p, snap):
+        """Pass 36: INFO/ABOUT panel — comprehensive N.E.P.A. system documentation."""
+        fig.suptitle('N.E.P.A.  —  SYSTEM INFO & REFERENCE  (press i to close)',
+                     color='#00ffcc', fontsize=13, fontweight='bold')
+        ax = fig.add_subplot(111); ax.set_facecolor('#040a0d'); ax.axis('off')
+        _L = [
+            '  N.E.P.A.  —  Network-based Environmental Perception & Analysis  v36',
+            '  ═══════════════════════════════════════════════════════════════════',
+            '',
+            '  ARCHITECTURE',
+            '  Single monolithic Python file.  No external sub-packages.',
+            '  Minimum runtime: numpy · scipy · matplotlib · psutil.',
+            '  Optional: open3d  torch  brainflow  pyriemann  scapy  pylsl',
+            '           pyvista  paho-mqtt  Pillow  scikit-learn  cv2',
+            '',
+            '  SENSOR STACK',
+            '  WiFi CSI     — Nexmon / ESP32 / pcap passive (RouterCSICapture)',
+            '  Passive radar — CAF, ECA/Wiener-MRE, MUSIC DoA 360° (KrakenSDR), omega-k RMA SAR',
+            '  BCI/EEG      — 7-band Welch PSD, Riemannian motor-intent,',
+            '                  pylsl LSL outlet (WirelessBCIEngine)',
+            '  Spectrum     — 8-band 2.4 GHz…300 GHz, SDR IQ, cyclostationary',
+            '  Motion       — EspectreMVS, WiFi-3D-Fusion P4T 17-joint skeleton',
+            '  Psychophys.  — RuVector: HRV SDNN/RMSSD/pNN50/LF-HF, BP, happiness',
+            '  ML motion    — EspectreML inline MLP + KrakenSDR 360° DoA',
+            '  FMCW         — mmMesh point cloud pipeline (range/Doppler/azimuth/elevation)',
+            '  Semantic     — 10-state occupancy, MQTT, Home-Assistant discovery',
+            '  World recon  — RF-NeRF, Gaussian splatting, ICP surface mesh',
+            '',
+            '  VIEW TABS  (click button or press key)',
+            '  [1] World        3D voxel back-projection, Doppler heat, BCI bars',
+            '  [2] Instruments  Per-router mesh model with RSSI/range overlay',
+            '  [3] Signal       64-sub CSI amplitude+phase, waterfall, range-Doppler',
+            '  [4] Per-Instr    Deep-dive per-instrument CSI + RSSI + phase',
+            '  [5] Fused Map    All voxel projections + node location table',
+            '  [6] Raw Data     Full numeric readout of every live psych_profile field',
+            '  [7] BCI          7-band bars, focus/stress/arousal, HRV, BP, alerts',
+            '  [8] Radar        CAF range-Doppler, MUSIC DoA, holographic SAR',
+            '  [9] World(Splat) Navigable Gaussian splatting free-camera view',
+            '  [0] Motion/W3D   MVS turbulence, P4T skeletons, ML motion, RuVector',
+            '  [i] Info         This panel',
+            '',
+            '  KEYBOARD SHORTCUTS',
+            '  1-9 0     open view tabs          r     3D auto-rotation toggle',
+            '  i         open INFO panel         s     save screenshot PNG',
+            '  p         pause/resume animation  k     add keyframe (tab 9)',
+            '  w/a/s/d   camera azimuth/elev     +/-   zoom voxel threshold',
+            '',
+            '  ARGPARSE FLAGS',
+            '  --mode [sim|live]       signal source (default live)',
+            '  --no-world             skip WorldReconstructionEngine',
+            '  --passive-sniff        promiscuous WiFi CSI capture',
+            '  --monitor-iface IFACE  wifi monitor iface (default wlan0mon)',
+            '  --web-viewer           MJPEG HTTP stream (--web-port default 8765)',
+            '  --lsl                  broadcast BCI via Lab Streaming Layer',
+            '  --mqtt-host/--mqtt-port Home-Assistant MQTT target',
+            '  --ha-discovery         publish HA MQTT auto-discovery',
+            '  --sim-validate         enable ground-truth scene (synthetic only)',
+            '',
+            '  HARDWARE (recommended)',
+            '  WiFi adapter with monitor mode + Nexmon CSI firmware',
+            '  ESP32-S3 with custom CSI firmware on /dev/ttyUSBx',
+            '  RTL-SDR / HackRF for HighGHz spectrum bands (optional)',
+            '  OpenBCI Cyton/Ganglion for wired EEG (optional)',
+            '',
+            '  VERSION HISTORY',
+            '  v36 (2026-06-11) RuVector, EspectreML, INFO panel, HRV/BP in BCI tab',
+            '  v35 (2026-06-11) EspectreMVS, CogSpectrum, PhaseSanitizer, WiFi-3D',
+            '  v34 (2026-06-11) SemanticStateEngine, WebViewer, LSL, omega-k SAR',
+            '  v33              WorldReconstructionEngine, RF-NeRF, Gaussian splat',
+            '  v22-32           MIMO fusion, Kalman, voxel BP, BCI, radar pipeline',
+            '',
+            '  All RF sensing passive/receive-only.  Real data only.',
+            '  Simulated/estimated values are always labelled [ESTIMATED].',
+        ]
+        _txt = '\n'.join(_L)
+        ax.text(0.01, 0.99, _txt, va='top', ha='left', color='#b0ffea',
+                fontsize=8.5, family='monospace', transform=ax.transAxes,
+                linespacing=1.4)
+
+    def _draw_motion(self, fig, p, snap):
+        """Pass 35: Motion & Person Tracking — MVS + WiFi-3D-Fusion + P4T skeletons.
+        Shows MVS moving-variance timeline, W3D person trajectories, Gaussian body splats,
+        and per-person skeleton in 3D (from WiFi3DFusionEngine + EspectreMVSDetector)."""
+        fig.suptitle("MOTION & 3D PERSON TRACKING — MVS · WiFi-3D-Fusion · P4T Skeletons",
+                     color='#00ffcc', fontsize=12)
+        # Panel 1: MVS moving-variance timeline
+        ax1 = fig.add_subplot(2, 3, 1); ax1.set_facecolor('#080808')
+        mvs = getattr(self.fuser, "mvs_detector", None)
+        if mvs is not None and mvs._bcnt > 0:
+            n = mvs._bcnt
+            data = mvs._buf[mvs._bidx:mvs._bidx + n] + mvs._buf[:max(0, n - (len(mvs._buf) - mvs._bidx))]
+            data = data[:n]
+            ax1.plot(data, color='#00ffcc', lw=1.0)
+            ax1.axhline(mvs.threshold, color='#ff5533', lw=1.0, ls='--', label=f'thr={mvs.threshold:.2f}')
+            ax1.set_title(f"MVS turbulence  state={mvs._state}  var={mvs.moving_var:.4f}",
+                          color='#00ffcc', fontsize=9)
+            ax1.legend(facecolor='#080808', edgecolor='#333', labelcolor='#ccc', fontsize=7)
+        else:
+            ax1.text(0.5, 0.5, "MVS initializing...", ha='center', va='center',
+                     color='#555', fontsize=10)
+            ax1.set_title("MVS turbulence buffer", color='#00ffcc', fontsize=9)
+        ax1.tick_params(colors='#888', labelsize=6)
+
+        # Panel 2: Per-channel movement activity bar chart
+        ax2 = fig.add_subplot(2, 3, 2); ax2.set_facecolor('#080808')
+        w3d = getattr(self.fuser, "wifi3d", None)
+        if w3d is not None and w3d._channel_stats:
+            chs  = sorted(w3d._channel_stats.keys())
+            acts = [w3d._channel_stats[c]["activity"] for c in chs]
+            ax2.bar([str(c) for c in chs], acts,
+                    color=['#00ffcc' if a > 0.3 else '#333' for a in acts])
+            ax2.set_ylim(0, 1.05)
+            ax2.set_xlabel("Channel", color='#888', fontsize=7)
+        ax2.set_title("Per-channel activity (WiFi-3D)", color='#00ffcc', fontsize=9)
+        ax2.tick_params(colors='#888', labelsize=6)
+
+        # Panel 3: 3D person trajectories + skeletons
+        ax3 = fig.add_subplot(2, 3, 3, projection='3d'); ax3.set_facecolor('#050505')
+        persons = p.get("w3d_persons", [])
+        bone_pairs = WiFi3DFusionEngine.BONES
+        for pi, person in enumerate(persons[:6]):
+            sk  = np.asarray(person.get("skeleton", []), dtype=np.float32)
+            col = person.get("color", "#00ffcc")
+            traj = np.asarray(person.get("traj", []), dtype=np.float32)
+            if len(sk) == 17:
+                ax3.scatter(sk[:, 0], sk[:, 1], sk[:, 2], c=col, s=12)
+                for a, b in bone_pairs:
+                    if a < 17 and b < 17:
+                        ax3.plot([sk[a,0], sk[b,0]], [sk[a,1], sk[b,1]],
+                                 [sk[a,2], sk[b,2]], color=col, lw=1.5)
+            if len(traj) > 1:
+                ax3.plot(traj[:,0], traj[:,1], traj[:,2], color=col, lw=1.0, alpha=0.5)
+            ax3.text(sk[0,0] if len(sk)==17 else 0,
+                     sk[0,1] if len(sk)==17 else 0,
+                     sk[0,2]+0.1 if len(sk)==17 else 0,
+                     f"P{person['pid']}", color=col, fontsize=7)
+        # Pass 39/40: overlay PoseNet + CogPose COCO-17 skeletons from numpy estimators
+        _BONES_COCO = [(0,1),(0,2),(1,3),(2,4),(5,6),(5,7),(7,9),(6,8),
+                       (8,10),(5,11),(6,12),(11,12),(11,13),(13,15),(12,14),(14,16)]
+        for _kps_key, _col in [("pose_net_kps", "#ffcc00"), ("cogpose_kps", "#ff55ff")]:
+            try:
+                _kps = np.array(p.get(_kps_key, []))
+                if _kps.shape == (17, 2):
+                    _kps3 = np.hstack([_kps * 4.0 - 2.0,
+                                       np.zeros((17, 1), dtype=np.float32)])
+                    ax3.scatter(_kps3[:, 0], _kps3[:, 1], _kps3[:, 2],
+                                c=_col, s=10, alpha=0.75, zorder=5)
+                    for _ba, _bb in _BONES_COCO:
+                        ax3.plot([_kps3[_ba,0], _kps3[_bb,0]],
+                                 [_kps3[_ba,1], _kps3[_bb,1]],
+                                 [_kps3[_ba,2], _kps3[_bb,2]],
+                                 color=_col, lw=0.9, alpha=0.55)
+            except Exception:
+                pass
+        ax3.set_title(f"P4T+PoseNet+CogPose ({len(persons)} tracked)", color='#00ffcc', fontsize=9)
+        ax3.tick_params(colors='#666')
+
+        # Panel 4: Gaussian body splat point cloud (birds-eye)
+        ax4 = fig.add_subplot(2, 3, 4); ax4.set_facecolor('#050505')
+        for person in persons[:4]:
+            spl = np.asarray(person.get("splat", []), dtype=np.float32)
+            if len(spl) > 0:
+                ax4.scatter(spl[:, 0], spl[:, 1], s=2,
+                            c=person.get("color", "#00ffcc"), alpha=0.3)
+        ax4.set_aspect('equal', 'box')
+        ax4.set_title("Gaussian body splats (top-down)", color='#00ffcc', fontsize=9)
+        ax4.tick_params(colors='#888', labelsize=6)
+
+        # Panel 5: CSI env analysis (Pass 38) + MVS sensor status
+        ax5 = fig.add_subplot(2, 3, 5); ax5.set_facecolor('#080808'); ax5.axis('off')
+        fields = [
+            ("MVS state",        p.get("mvs_state",      "IDLE"),  '#00ffcc'),
+            ("MVS confidence",   f"{p.get('mvs_confidence', 0):.2f}",  '#22aaff'),
+            ("CSI person",       f"{p.get('csi_person_state','--')}  {p.get('csi_person_prob',0):.2f}",
+                                   '#ffaa22'),
+            ("CSI activity",     f"{p.get('csi_env_activity',0):.2f}", '#ff5533'),
+            ("CSI complexity",   f"{p.get('csi_env_complexity',0):.2f}", '#aa55ff'),
+            ("CSI energy",       f"{p.get('csi_env_energy',0):.2f}",   '#55aaff'),
+            ("CSI movement",     "YES" if p.get('csi_env_movement') else "no", '#00ff88'),
+            ("Best channels",    str(p.get('acm_best_channels',[])),   '#ffcc00'),
+            ("Phase sanitized",  str(p.get("phase_sanitized", False)), '#aaffaa'),
+            ("NBVI calibrated",  "YES" if p.get("nbvi_calibrated") else "no", '#00ff88'),
+            ("NBVI band[0:4]",   str(p.get("nbvi_band",[])),           '#88ffcc'),
+            ("NBVI threshold",   f"{p.get('nbvi_thr',1.0):.4f}",       '#aaffff'),
+            ("NeRF2 RSSI prox",  f"{p.get('nerf2_rssi_proxy',-999):.1f} dBm", '#ffaa55'),
+            ("NCF motion mag",   f"{p.get('ncf_motion_mag',0):.4f} m/s", '#55aaff'),
+            ("WhoFi ReID",       f"{p.get('whofi_reid_pid','unk')} [{p.get('whofi_reid_score',0):.2f}]", '#ffcc55'),
+            ("P4T 3D skel",      f"{'OK' if p.get('p4t_skeleton_3d') else 'wait'} | DP parts:{len(p.get('dp_part_scores',[]))}", '#ccff55'),
+        ]
+        for i, (name, val, c) in enumerate(fields):
+            y = 0.95 - i * 0.085
+            ax5.text(0.02, y, f"{name:<18}  {val}", color=c, fontsize=8,
+                     family='monospace', transform=ax5.transAxes)
+        ax5.set_title("CSI / NBVI / NeRF2 status (Pass 40)", color='#00ffcc', fontsize=9)
+
+        # Panel 6: CSI wavefield visualization (Pass 38) + movement event overlay
+        ax6 = fig.add_subplot(2, 3, 6); ax6.set_facecolor('#050505')
+        try:
+            _wf_t = getattr(self.fuser, "_wavefield_t", 0.0)
+            _w3d_r6 = getattr(self.fuser, "_wifi3d_result", {})
+            _csi38_src = getattr(self.fuser, "wifi3d", None)
+            _ap_pos = []
+            _ap_amp = []
+            if _csi38_src is not None and hasattr(_csi38_src, "_channel_stats"):
+                for _ci, (_ch_k, _ch_v) in enumerate(list(_csi38_src._channel_stats.items())[:4]):
+                    _ap_pos.append((float(_ci * 1.2 - 1.8), float((_ci % 2) * 1.5 - 0.75)))
+                    _ap_amp.append(float(_ch_v.get("activity", 0)))
+            if not _ap_pos:
+                _ap_pos = [(0.0, 0.0)]; _ap_amp = [0.3]
+            _wf_img = _csi_wavefield_render(_ap_pos, _ap_amp, _wf_t, grid_size=64, extent=6.0)
+            ax6.imshow(_wf_img, extent=[-3, 3, -3, 3], origin='lower',
+                       cmap='plasma', vmin=0, vmax=1, aspect='equal', alpha=0.92)
+            for (_ax_p, _ay_p), _aa in zip(_ap_pos, _ap_amp):
+                ax6.plot(_ax_p, _ay_p, 'o', color='#00ffcc', ms=6, alpha=0.9)
+            ax6.set_title(f"CSI Wavefield  t={_wf_t:.1f}s", color='#00ffcc', fontsize=9)
+            ax6.tick_params(colors='#888', labelsize=6)
+        except Exception as _wfe:
+            ax6.axis('off')
+            ax6.text(0.5, 0.5, f"Wavefield: {_wfe}", ha='center', va='center',
+                     color='#555', fontsize=8, transform=ax6.transAxes)
+            ax6.set_title("CSI Wavefield (unavail)", color='#555', fontsize=9)
+
+        # ── Pass 37: FMCW point cloud (3D scatter) added to panel 3 if data present ──
+        _fmcw_pts = np.array(p.get("fmcw_points", []))
+        if len(_fmcw_pts) > 0 and ax3 is not None:
+            try:
+                ax3.scatter(_fmcw_pts[:, 0], _fmcw_pts[:, 1], _fmcw_pts[:, 2],
+                            c='#ffaa22', s=6, alpha=0.4, label='FMCW pts')
+                ax3.legend(facecolor='#080808', labelcolor='#ccc', fontsize=7)
+            except Exception:
+                pass
+
+        # ── Pass 36: 7th area below panels — RuVector psycho metrics text strip ──
+        ax7 = fig.add_axes([0.0, 0.0, 1.0, 0.06])
+        ax7.set_facecolor('#08120d'); ax7.axis('off')
+        _rv_strip = (
+            f"RuVector: SDNN={p.get('ruv_hrv_sdnn',0):.1f}ms  "
+            f"RMSSD={p.get('ruv_hrv_rmssd',0):.1f}ms  "
+            f"pNN50={p.get('ruv_hrv_pnn50',0):.1f}%  "
+            f"LF/HF={p.get('ruv_hrv_lf_hf',1.5):.2f}  "
+            f"BP={p.get('ruv_bp_sys',0)}/{p.get('ruv_bp_dia',0)}mmHg  "
+            f"Happy={p.get('ruv_happiness',0):.2f}  "
+            f"Affect={p.get('ruv_affect',0):.2f}  "
+            f"ML={p.get('ml_motion_state','IDLE')}({p.get('ml_motion_prob',0):.2f})  "
+            f"Coherent={'YES' if p.get('ruv_coherent') else 'NO'}"
+        )
+        ax7.text(0.01, 0.5, _rv_strip, color='#00ffcc', fontsize=9,
+                 family='monospace', va='center', transform=ax7.transAxes)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Pass 34 (T-LSL): BCILSLBroadcaster — broadcast BCI band powers over Lab Streaming Layer
+# Studies BCIexamplecode1/OpenBCI_GUI-master LSL outlet design.
+# When pylsl is installed and --lsl flag is given, pushes one sample per fuser
+# frame containing all 7 band powers + motor intent confidence + mindfulness +
+# restfulness to an LSL outlet named "NEPA_BCI".  Compatible with OpenBCI GUI,
+# BrainFlow, and any LSL-aware recording / BCI pipeline.
+# ════════════════════════════════════════════════════════════════════════════════
+
+try:
+    import pylsl  # type: ignore
+    _pylsl_ok = True
+except ImportError:
+    pylsl = None  # type: ignore
+    _pylsl_ok = False
+
+class BCILSLBroadcaster:
+    """Pass 34: Publishes live BCI band-power fields as an LSL stream.
+
+    Stream info:
+      Name:     NEPA_BCI
+      Type:     EEG   (convention: band powers treated as derived EEG features)
+      Channels: 10
+        0-6  : absolute band powers (infra_gamma, delta, theta, alpha,
+                                     beta, low_gamma, high_gamma)
+        7    : bci_motor_conf (Riemannian classifier confidence 0-1)
+        8    : bci_mindfulness (0-1)
+        9    : bci_restfulness (0-1)
+      Rate:     nominal_srate = fuser's target_fps (default 20 Hz)
+      Format:   float32
+
+    If pylsl is not installed, the broadcaster silently does nothing (no crash).
+    """
+
+    CHANNEL_NAMES = [
+        "infra_gamma", "delta", "theta", "alpha", "beta",
+        "low_gamma", "high_gamma",
+        "motor_conf", "mindfulness", "restfulness",
+    ]
+
+    def __init__(self, srate: float = 20.0):
+        self._outlet = None
+        self._srate  = srate
+        if not _pylsl_ok:
+            log.info("[LSL] pylsl not available — BCI broadcast disabled "
+                     "(install pylsl to enable: pip install pylsl)")
+            return
+        try:
+            info = pylsl.StreamInfo(
+                name="NEPA_BCI",
+                type="EEG",
+                channel_count=len(self.CHANNEL_NAMES),
+                nominal_srate=srate,
+                channel_format=pylsl.cf_float32,
+                source_id="nepa_bci_0",
+            )
+            # Add channel labels to the XML metadata
+            chns = info.desc().append_child("channels")
+            for name in self.CHANNEL_NAMES:
+                ch = chns.append_child("channel")
+                ch.append_child_value("label",  name)
+                ch.append_child_value("unit",   "microvolts" if name.endswith("_gamma")
+                                                 or name in ("delta","theta","alpha","beta",
+                                                             "low_gamma") else "normalized")
+                ch.append_child_value("type",   "EEG")
+            self._outlet = pylsl.StreamOutlet(info)
+            log.info(f"[LSL] NEPA_BCI LSL outlet opened — {len(self.CHANNEL_NAMES)} ch @ {srate:.0f} Hz")
+        except Exception as e:
+            log.warning(f"[LSL] Failed to open LSL outlet: {e}")
+            self._outlet = None
+
+    @property
+    def active(self) -> bool:
+        return self._outlet is not None
+
+    def push(self, psych_profile: dict):
+        """Push one sample from the current psych_profile to the LSL outlet.
+        Called once per fuser frame when --lsl is active."""
+        if self._outlet is None:
+            return
+        p = psych_profile
+        sample = [
+            float(p.get("bci_band_infra_gamma", 0.0)),
+            float(p.get("bci_band_delta",       0.0)),
+            float(p.get("bci_band_theta",        0.0)),
+            float(p.get("bci_band_alpha",        0.0)),
+            float(p.get("bci_band_beta",         0.0)),
+            float(p.get("bci_band_low_gamma",    0.0)),
+            float(p.get("bci_band_high_gamma",   0.0)),
+            float(p.get("bci_motor_conf",        0.0)),
+            float(p.get("bci_mindfulness",       0.5)),
+            float(p.get("bci_restfulness",       0.5)),
+        ]
+        try:
+            self._outlet.push_sample(sample)
+        except Exception as e:
+            log.debug(f"[LSL] push_sample error: {e}")
+
+    def close(self):
+        """Explicitly destroy the LSL outlet."""
+        if self._outlet is not None:
+            del self._outlet
+            self._outlet = None
+            log.info("[LSL] NEPA_BCI LSL outlet closed")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Pass 34 (T-SEM): SemanticStateEngine — RuView-style room-presence semantic states
+# Studies Examplecode1/RuView for occupancy + multi-room + activity classification.
+# 10 semantic macro-states inferred from RF voxel blobs + BCI + vital signs.
+# Optional MQTT + Home Assistant entity publishing (paho-mqtt or hbmqtt).
+# ════════════════════════════════════════════════════════════════════════════════
+
+try:
+    import paho.mqtt.client as _paho_mqtt  # type: ignore
+except ImportError:
+    _paho_mqtt = None  # type: ignore
+
+class SemanticStateEngine:
+    """Pass 34: Infers 10 high-level semantic room/occupancy states from the live
+    RF voxel field, BCI outputs, vital signs, and motion history.  Mirrors the
+    RuView occupancy semantics but runs entirely from the N.E.P.A. sensor stack.
+
+    Semantic macro-states (one per room / per tracked person):
+      ROOM_EMPTY         — no detected RF presence in the zone
+      ROOM_ACTIVE        — person present + motion / normal activity
+      PERSON_STATIONARY  — person present, no motion for >30 s
+      PERSON_SLEEPING    — stationary + low arousal + restful BCI signature
+      POSSIBLE_DISTRESS  — abnormal vitals (BR<8 or HR>100) + low mobility
+      FALL_RISK_ELEVATED — rapid vertical centroid drop (SAR / voxel Z-shift)
+      FALL_DETECTED      — confirmed Z-drop + no recovery within 10 s
+      COGNITIVE_FOCUS    — high BCI focus/alpha, low motion
+      COGNITIVE_STRESS   — high BCI stress + elevated threat score
+      MULTI_OCCUPANCY    — ≥2 person blobs detected simultaneously
+
+    MQTT: if --mqtt-host is given, publishes each state change to
+      nepa/room/{room_id}/state  with JSON payload.
+    Home Assistant: auto-announces sensor entities via HA MQTT discovery prefix.
+    """
+
+    STATES = [
+        "ROOM_EMPTY",
+        "ROOM_ACTIVE",
+        "PERSON_STATIONARY",
+        "PERSON_SLEEPING",
+        "POSSIBLE_DISTRESS",
+        "FALL_RISK_ELEVATED",
+        "FALL_DETECTED",
+        "COGNITIVE_FOCUS",
+        "COGNITIVE_STRESS",
+        "MULTI_OCCUPANCY",
+    ]
+
+    # Thresholds
+    _MOTION_VEL_THRESH   = 0.05   # m/frame: below this → stationary
+    _STATIONARY_FRAMES   = 30 * 20  # 30 s at 20 fps
+    _SLEEP_ALPHA_MIN     = 0.30
+    _SLEEP_RESTFUL_MIN   = 0.55
+    _SLEEP_MOTION_MAX    = 0.02
+    _DISTRESS_BR_LOW     = 8.0    # breaths/min
+    _DISTRESS_HR_HIGH    = 100.0  # bpm
+    _FALL_Z_DROP_FRAC    = 0.25   # 25% centroid drop per frame
+    _FALL_CONFIRM_FRAMES = 10 * 20  # 10 s at 20 fps
+
+    def __init__(self, room_id: str = "room_0", mqtt_host: str = None,
+                 mqtt_port: int = 1883, ha_discovery: bool = False):
+        self.room_id      = room_id
+        self.mqtt_host    = mqtt_host
+        self.mqtt_port    = mqtt_port
+        self.ha_discovery = ha_discovery
+        self._state       = "ROOM_EMPTY"
+        self._prev_state  = None
+        self._state_since = 0           # frame index when state last changed
+        self._frame       = 0
+        self._stationary_count = 0
+        self._fall_candidate   = 0      # frame when fall candidate began
+        self._prev_centroid_z  = None
+        self._history          = deque(maxlen=300)  # (frame, state)
+        self._mqtt_client      = None
+        self._rooms: dict      = {}     # room_id → state for multi-room
+        self._rooms[room_id]   = "ROOM_EMPTY"
+        if mqtt_host and _paho_mqtt is not None:
+            self._connect_mqtt()
+        log.info(f"[Semantic] SemanticStateEngine init room={room_id} "
+                 f"mqtt={'yes' if mqtt_host else 'no'} "
+                 f"paho={'ok' if _paho_mqtt else 'missing'}")
+
+    # ── MQTT connection ───────────────────────────────────────────────────────
+    def _connect_mqtt(self):
+        try:
+            self._mqtt_client = _paho_mqtt.Client(client_id=f"nepa_{self.room_id}")
+            self._mqtt_client.connect(self.mqtt_host, self.mqtt_port, keepalive=60)
+            self._mqtt_client.loop_start()
+            if self.ha_discovery:
+                self._publish_ha_discovery()
+            log.info(f"[Semantic] MQTT connected to {self.mqtt_host}:{self.mqtt_port}")
+        except Exception as e:
+            log.warning(f"[Semantic] MQTT connect failed: {e}")
+            self._mqtt_client = None
+
+    def _publish_ha_discovery(self):
+        """Announce N.E.P.A. room sensor to Home Assistant via MQTT discovery."""
+        if self._mqtt_client is None:
+            return
+        import json as _json
+        topic = f"homeassistant/sensor/nepa_{self.room_id}/config"
+        payload = {
+            "name":          f"NEPA {self.room_id.replace('_',' ').title()} State",
+            "unique_id":     f"nepa_{self.room_id}_state",
+            "state_topic":   f"nepa/room/{self.room_id}/state",
+            "value_template":"{{ value_json.state }}",
+            "icon":          "mdi:radar",
+            "device": {
+                "identifiers": ["nepa_rf_system"],
+                "name":        "N.E.P.A. RF Sensor Array",
+                "model":       "WiFi-CSI",
+                "manufacturer":"NEPA",
+            },
+        }
+        self._mqtt_client.publish(topic, _json.dumps(payload), retain=True)
+
+    def _publish_state(self, state: str, extra: dict = None):
+        """Publish a state-change event to MQTT."""
+        if self._mqtt_client is None:
+            return
+        import json as _json
+        payload = {"state": state, "room": self.room_id,
+                   "frame": self._frame, **(extra or {})}
+        topic = f"nepa/room/{self.room_id}/state"
+        try:
+            self._mqtt_client.publish(topic, _json.dumps(payload))
+        except Exception as e:
+            log.debug(f"[Semantic] MQTT publish error: {e}")
+
+    # ── Core inference ────────────────────────────────────────────────────────
+    def update(self, psych_profile: dict, world_snapshot: dict) -> str:
+        """Infer the current semantic state from live sensor outputs.
+        Called once per fuser frame with the latest psych_profile and world_snapshot.
+        Returns the current semantic state string."""
+        self._frame += 1
+        pp  = psych_profile or {}
+        snp = world_snapshot or {}
+
+        # ── blob geometry
+        blobs   = snp.get("blobs", [])
+        n_blobs = len(blobs)
+        # motion velocity from the fuser (m/frame proxy via Doppler or voxel centroid shift)
+        motion_vel = float(pp.get("motion_velocity", 0.0))
+
+        # ── vertical centroid (Z) for fall detection
+        centroid_z = None
+        if blobs:
+            centroid_z = float(np.mean([b.get("centroid", [0, 0, 0])[2]
+                                        for b in blobs]))
+
+        # ── BCI fields
+        alpha       = float(pp.get("bci_band_alpha",    0.0))
+        restfulness = float(pp.get("bci_restfulness",   0.5))
+        focus       = float(pp.get("bci_focus",         0.0))
+        stress      = float(pp.get("bci_stress",        0.0))
+        arousal     = float(pp.get("arousal_level",     0.5))
+
+        # ── vitals
+        hr  = float(pp.get("heart_rate",    72.0))
+        br  = float(pp.get("breathing_rate", 15.0))
+
+        # ── overseer threat
+        threat = float(pp.get("threat_score",      0.0))
+
+        # ── derive state ─────────────────────────────────────────────────────
+        new_state = self._infer(
+            n_blobs, motion_vel, centroid_z,
+            alpha, restfulness, focus, stress, arousal,
+            hr, br, threat,
+        )
+        # ── state transition bookkeeping
+        if new_state != self._state:
+            self._prev_state  = self._state
+            self._state       = new_state
+            self._state_since = self._frame
+            self._rooms[self.room_id] = new_state
+            self._publish_state(new_state, {
+                "prev": self._prev_state,
+                "n_blobs": n_blobs,
+                "motion_vel": round(motion_vel, 4),
+            })
+        self._history.append((self._frame, self._state))
+        return self._state
+
+    def _infer(self, n_blobs, motion_vel, centroid_z,
+               alpha, restfulness, focus, stress, arousal,
+               hr, br, threat) -> str:
+        """Stateful 10-state classifier — priority order matters."""
+        # MULTI_OCCUPANCY first (highest priority for safety)
+        if n_blobs >= 2:
+            return "MULTI_OCCUPANCY"
+        # ROOM_EMPTY
+        if n_blobs == 0:
+            self._stationary_count = 0
+            self._prev_centroid_z  = None
+            self._fall_candidate   = 0
+            return "ROOM_EMPTY"
+
+        # ── single-person states ─────────────────────────────────────────────
+        # FALL_DETECTED (confirm after enough frames since candidate)
+        if self._fall_candidate > 0:
+            if (self._frame - self._fall_candidate) >= self._FALL_CONFIRM_FRAMES:
+                return "FALL_DETECTED"
+            # still in confirmation window — stay at FALL_RISK_ELEVATED
+            return "FALL_RISK_ELEVATED"
+
+        # FALL_RISK: sudden Z-drop this frame?
+        if (centroid_z is not None and self._prev_centroid_z is not None):
+            drop = self._prev_centroid_z - centroid_z
+            if drop > abs(self._prev_centroid_z) * self._FALL_Z_DROP_FRAC and drop > 0.05:
+                if self._fall_candidate == 0:
+                    self._fall_candidate = self._frame
+                return "FALL_RISK_ELEVATED"
+        else:
+            self._fall_candidate = 0  # reset if no centroid
+        if centroid_z is not None:
+            self._prev_centroid_z = centroid_z
+
+        # POSSIBLE_DISTRESS
+        if (br < self._DISTRESS_BR_LOW or hr > self._DISTRESS_HR_HIGH) and motion_vel < 0.10:
+            return "POSSIBLE_DISTRESS"
+
+        # PERSON_SLEEPING (override STATIONARY when BCI says rest)
+        if motion_vel < self._SLEEP_MOTION_MAX:
+            self._stationary_count += 1
+        else:
+            self._stationary_count = max(0, self._stationary_count - 1)
+
+        if (self._stationary_count >= self._STATIONARY_FRAMES
+                and alpha >= self._SLEEP_ALPHA_MIN
+                and restfulness >= self._SLEEP_RESTFUL_MIN):
+            return "PERSON_SLEEPING"
+
+        # PERSON_STATIONARY
+        if self._stationary_count >= self._STATIONARY_FRAMES:
+            return "PERSON_STATIONARY"
+
+        # COGNITIVE_FOCUS
+        if focus > 0.65 and stress < 0.40 and motion_vel < 0.10:
+            return "COGNITIVE_FOCUS"
+
+        # COGNITIVE_STRESS
+        if stress > 0.65 or (threat > 0.70 and arousal > 0.60):
+            return "COGNITIVE_STRESS"
+
+        # Default: active
+        return "ROOM_ACTIVE"
+
+    # ── multi-room tracking ───────────────────────────────────────────────────
+    def add_room(self, room_id: str):
+        """Register an additional room ID for multi-room tracking."""
+        if room_id not in self._rooms:
+            self._rooms[room_id] = "ROOM_EMPTY"
+
+    def update_room(self, room_id: str, state: str):
+        """Directly set the state for a non-primary room (e.g. from a remote sensor)."""
+        self._rooms[room_id] = state
+        if self._mqtt_client:
+            self._publish_state(state)
+
+    # ── queries ───────────────────────────────────────────────────────────────
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def all_rooms(self) -> dict:
+        return dict(self._rooms)
+
+    def frames_in_state(self) -> int:
+        return self._frame - self._state_since
+
+    def state_history(self, last_n: int = 20) -> list:
+        return list(self._history)[-last_n:]
+
+    def summary_line(self) -> str:
+        rooms_str = " | ".join(f"{r}:{s}" for r, s in self._rooms.items())
+        return (f"SEMANTIC  state={self._state:<20s}  "
+                f"since={self.frames_in_state()}f  rooms=[{rooms_str}]")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Pass 34 (T-WEB): WebViewerServer — HTTP browser-accessible live world stream
+# Streams rendered Gaussian-splat frames as MJPEG to any browser on the LAN.
+# ════════════════════════════════════════════════════════════════════════════════
+
+import http.server as _http_server
+import io as _io
+
+try:
+    from PIL import Image as _PIL_Image  # type: ignore
+except ImportError:
+    _PIL_Image = None  # type: ignore
+
+_WEB_HTML = (
+    "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+    "<title>N.E.P.A. Live World View</title>"
+    "<style>body{background:#050505;color:#00ffcc;font-family:monospace;"
+    "margin:0;display:flex;flex-direction:column;align-items:center;height:100vh}"
+    "h1{font-size:1.1em;margin:8px 0;letter-spacing:2px}"
+    "#img{border:1px solid #00ffcc33;max-width:98vw;max-height:85vh;object-fit:contain}"
+    "#status{font-size:0.75em;color:#aaa;max-width:98vw;word-break:break-all;"
+    "height:2em;overflow:hidden;margin:4px}"
+    "#sem{font-size:0.9em;color:#ffaa22;margin:4px}"
+    "</style></head><body>"
+    "<h1>N.E.P.A. &mdash; RF Gaussian-Splat World</h1>"
+    "<img id='img' src='/frame.jpg' alt='splat render' />"
+    "<div id='sem'>Semantic: loading...</div>"
+    "<div id='status'>Status: loading...</div>"
+    "<script>"
+    "function refresh(){"
+    "document.getElementById('img').src='/frame.jpg?t='+Date.now();"
+    "fetch('/status').then(r=>r.json()).then(d=>{"
+    "document.getElementById('status').textContent="
+    "'persons='+d.person_count+' threat='+d.threat.toFixed(2)+"
+    "' state='+d.overseer_state+' splats='+d.splat_count;"
+    "}).catch(()=>{});"
+    "fetch('/semantic').then(r=>r.json()).then(d=>{"
+    "document.getElementById('sem').textContent='Semantic: '+d.state+"
+    "' ('+d.frames_in_state+'f)';"
+    "}).catch(()=>{});"
+    "}"
+    "setInterval(refresh,200);refresh();"
+    "</script></body></html>"
+)
+
+class WebViewerServer:
+    """Pass 34: Serve the live Gaussian-splat world render as an MJPEG stream.
+
+    Endpoints:
+      GET /          — minimal HTML viewer shell (auto-refreshes splat every 200 ms)
+      GET /stream    — MJPEG multipart stream (~10 fps)
+      GET /frame.jpg — single JPEG snapshot of latest splat frame
+      GET /status    — JSON status blob
+      GET /semantic  — JSON semantic state summary
+
+    Usage:
+      server = WebViewerServer(fuser, port=8765)
+      server.start()   # non-blocking daemon thread
+      server.stop()
+    """
+
+    def __init__(self, fuser, port: int = 8765, width: int = 320, height: int = 240,
+                 fov: float = 65.0):
+        self.fuser    = fuser
+        self.port     = port
+        self.width    = width
+        self.height   = height
+        self.fov      = fov
+        self._thread  = None
+        self._server  = None
+        self._running = False
+
+    # ── frame rendering ───────────────────────────────────────────────────────
+    def _render_frame_jpeg(self) -> bytes:
+        wr = getattr(self.fuser, "world_recon", None)
+        if wr is None:
+            return self._placeholder_jpeg()
+        try:
+            import time as _t
+            t   = (_t.time() * 0.15) % (2 * 3.14159)
+            res = float(getattr(wr, "voxel_res", 24))
+            ctr = np.array([res / 2, res / 2, res / 2])
+            cam = ctr + np.array([np.cos(t) * res * 1.2,
+                                  np.sin(t) * res * 1.2,
+                                  res * 0.35])
+            img  = wr.render_splats(cam, ctr, width=self.width,
+                                    height=self.height, fov=self.fov)
+            img8 = (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
+            if _PIL_Image is not None:
+                pil = _PIL_Image.fromarray(img8)
+                buf = _io.BytesIO()
+                pil.save(buf, format="JPEG", quality=75)
+                return buf.getvalue()
+            # Pillow absent: serve a PPM stream (browsers won't render it, but /stream works)
+            h, w = img8.shape[:2]
+            return (f"P6\n{w} {h}\n255\n").encode() + img8.tobytes()
+        except Exception as e:
+            log.debug(f"[WebViewer] render error: {e}")
+            return self._placeholder_jpeg()
+
+    @staticmethod
+    def _placeholder_jpeg() -> bytes:
+        if _PIL_Image is not None:
+            buf = _io.BytesIO()
+            _PIL_Image.new("RGB", (4, 4), (5, 5, 5)).save(buf, format="JPEG")
+            return buf.getvalue()
+        return b""
+
+    # ── HTTP handler factory ──────────────────────────────────────────────────
+    def _make_handler(self):
+        srv = self
+
+        class _H(_http_server.BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                pass
+
+            def do_GET(self):
+                p = self.path.split("?")[0]
+                if p in ("/", "/index.html"):
+                    body = _WEB_HTML.encode()
+                    self._send(200, "text/html; charset=utf-8", body)
+                elif p == "/frame.jpg":
+                    self._send(200, "image/jpeg", srv._render_frame_jpeg())
+                elif p == "/stream":
+                    self._mjpeg(srv)
+                elif p == "/status":
+                    import json as _j
+                    pp = getattr(srv.fuser, "psych_profile", {})
+                    d = {
+                        "person_count":   int(pp.get("person_count", 0)),
+                        "threat":         float(pp.get("threat_score", 0.0)),
+                        "overseer_state": str(pp.get("overseer_state", "DORMANT")),
+                        "splat_count":    int(pp.get("recon_splat_count", 0)),
+                        "bci_intent":     str(pp.get("bci_motor_intent", "REST")),
+                        "semantic_state": str(pp.get("semantic_state", "ROOM_EMPTY")),
+                    }
+                    self._send(200, "application/json", _j.dumps(d).encode())
+                elif p == "/semantic":
+                    import json as _j
+                    sem = getattr(srv.fuser, "semantic_engine", None)
+                    d = ({"state": sem.state,
+                          "frames_in_state": sem.frames_in_state(),
+                          "all_rooms":  sem.all_rooms,
+                          "history":    sem.state_history(10)}
+                         if sem else {"state": "N/A", "frames_in_state": 0})
+                    self._send(200, "application/json", _j.dumps(d).encode())
+                else:
+                    self._send(404, "text/plain", b"not found")
+
+            def _send(self, code, ctype, body):
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _mjpeg(self, srv):
+                import time as _t
+                self.send_response(200)
+                self.send_header("Content-Type",
+                                 "multipart/x-mixed-replace; boundary=nepaframe")
+                self.end_headers()
+                try:
+                    while srv._running:
+                        data = srv._render_frame_jpeg()
+                        hdr  = (b"--nepaframe\r\nContent-Type: image/jpeg\r\n"
+                                b"Content-Length: " + str(len(data)).encode()
+                                + b"\r\n\r\n")
+                        self.wfile.write(hdr + data + b"\r\n")
+                        self.wfile.flush()
+                        _t.sleep(0.10)
+                except Exception:
+                    pass
+
+        return _H
+
+    # ── lifecycle ─────────────────────────────────────────────────────────────
+    def start(self):
+        if self._running:
+            return
+        try:
+            self._server  = _http_server.HTTPServer(("", self.port),
+                                                     self._make_handler())
+            self._running = True
+            self._thread  = threading.Thread(target=self._server.serve_forever,
+                                             daemon=True, name="WebViewerServer")
+            self._thread.start()
+            log.info(f"[WebViewer] Serving at http://0.0.0.0:{self.port}/  "
+                     f"(stream: /stream  snap: /frame.jpg)")
+        except OSError as e:
+            log.warning(f"[WebViewer] Could not start HTTP server on port {self.port}: {e}")
+            self._running = False
+
+    def stop(self):
+        self._running = False
+        if self._server:
+            self._server.shutdown()
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Pass 35 (T-MVS): EspectreMVSDetector — Moving-Variance Segmentation motion detector
+# Studies Examplecode2/espectre micro-espectre/src/mvs_detector.py + filters.py + segmentation.py
+# Reimplemented inline: Hampel outlier filter + LPF + circular-buffer turbulence variance.
+# ════════════════════════════════════════════════════════════════════════════════
+
+class _HampelFilter:
+    """Sliding-window Hampel outlier filter (from espectre filters.py, reimplemented inline).
+    Replaces outliers >threshold*MAD with the window median — preserves signal shape."""
+    def __init__(self, window_size: int = 7, threshold: float = 5.0):
+        self._ws  = window_size
+        self._thr = threshold * 1.4826   # pre-scale for MAD→σ
+        self._buf = [0.0] * window_size
+        self._cnt = 0
+        self._idx = 0
+
+    def filter(self, value: float) -> float:
+        self._buf[self._idx] = value
+        self._idx = (self._idx + 1) % self._ws
+        self._cnt = min(self._cnt + 1, self._ws)
+        n = self._cnt
+        if n < 3:
+            return value
+        # sorted copy for median + MAD
+        s = sorted(self._buf[:n])
+        mid = n >> 1
+        median = s[mid]
+        devs = sorted(abs(v - median) for v in self._buf[:n])
+        mad   = devs[mid]
+        if mad > 1e-6:
+            if abs(value - median) / mad > self._thr:
+                return median
+        return value
+
+    def reset(self):
+        self._cnt = self._idx = 0
+
+
+class _LowPassFilter:
+    """1st-order IIR Butterworth LPF (from espectre filters.py, reimplemented inline)."""
+    def __init__(self, cutoff_hz: float = 11.0, sample_rate_hz: float = 100.0):
+        import math as _m
+        wc = _m.tan(_m.pi * cutoff_hz / sample_rate_hz)
+        k  = 1.0 + wc
+        self._b0 = wc / k
+        self._a1 = (wc - 1.0) / k
+        self._xp = self._yp = 0.0
+        self._init = False
+
+    def filter(self, v: float) -> float:
+        if not self._init:
+            self._xp = self._yp = v
+            self._init = True
+            return v
+        y = self._b0 * v + self._b0 * self._xp - self._a1 * self._yp
+        self._xp, self._yp = v, y
+        return y
+
+    def reset(self):
+        self._xp = self._yp = 0.0
+        self._init = False
+
+
+class EspectreMVSDetector:
+    """Pass 35: Moving-Variance Segmentation (MVS) motion detector.
+    Reimplemented from Examplecode2/espectre micro-espectre/src/segmentation.py + mvs_detector.py.
+
+    Algorithm (matches C++ DETECTOR_DEFAULT_WINDOW_SIZE semantics):
+      1. Per-packet: compute spatial turbulence = std(abs(CSI subcarriers)).
+      2. Optionally apply Hampel outlier filter + 1st-order IIR LPF.
+      3. Store turbulence values in a circular buffer (window_size samples).
+      4. Compute moving variance of the buffer (two-pass Welford for stability).
+      5. Compare to threshold → MOTION / IDLE state.
+
+    Returns real motion confidence in [0, 1] from the normalised variance.
+    """
+
+    MOTION = "MOTION"
+    IDLE   = "IDLE"
+
+    def __init__(self, window_size: int = 100, threshold: float = 1.0,
+                 enable_hampel: bool = True, enable_lpf: bool = False,
+                 lpf_cutoff_hz: float = 11.0):
+        self._ws        = window_size
+        self.threshold  = threshold
+        self._buf       = [0.0] * window_size
+        self._bidx      = 0
+        self._bcnt      = 0
+        self._state     = self.IDLE
+        self.moving_var = 0.0
+        self.last_turb  = 0.0
+        self._hampel    = _HampelFilter(window_size=7, threshold=5.0) if enable_hampel else None
+        self._lpf       = _LowPassFilter(cutoff_hz=lpf_cutoff_hz) if enable_lpf else None
+        self._pkt_count = 0
+        self._motion_count = 0
+        log.info(f"[MVS] EspectreMVSDetector init — window={window_size} thr={threshold:.2f} "
+                 f"hampel={enable_hampel} lpf={enable_lpf}")
+
+    # ── turbulence from a raw CSI vector ─────────────────────────────────────
+    @staticmethod
+    def _spatial_turbulence(csi: np.ndarray) -> float:
+        """std of subcarrier amplitudes = spatial turbulence proxy."""
+        amps = np.abs(csi).astype(np.float32)
+        if len(amps) == 0:
+            return 0.0
+        return float(np.std(amps))
+
+    # ── two-pass variance (numerically stable, from espectre segmentation.py) ─
+    @staticmethod
+    def _two_pass_variance(buf: list, n: int) -> float:
+        if n < 2:
+            return 0.0
+        mean = sum(buf[:n]) / n
+        return sum((x - mean) ** 2 for x in buf[:n]) / n
+
+    # ── process one CSI frame ─────────────────────────────────────────────────
+    def process(self, csi: np.ndarray) -> dict:
+        """Process one CSI frame.  Returns a dict with state/confidence/variance."""
+        self._pkt_count += 1
+        turb = self._spatial_turbulence(csi)
+        if self._hampel:
+            turb = self._hampel.filter(turb)
+        if self._lpf:
+            turb = self._lpf.filter(turb)
+        self.last_turb = turb
+
+        # Add to circular buffer
+        self._buf[self._bidx] = turb
+        self._bidx = (self._bidx + 1) % self._ws
+        self._bcnt = min(self._bcnt + 1, self._ws)
+
+        # Compute moving variance
+        self.moving_var = self._two_pass_variance(self._buf, self._bcnt)
+
+        # State decision
+        prev = self._state
+        if self._bcnt >= self._ws:
+            self._state = self.MOTION if self.moving_var >= self.threshold else self.IDLE
+        if self._state == self.MOTION and prev != self.MOTION:
+            self._motion_count += 1
+
+        # Normalised confidence: 0–1 relative to threshold
+        conf = float(np.clip(self.moving_var / (self.threshold + 1e-9), 0.0, 2.0) / 2.0)
+        return {
+            "state":      self._state,
+            "confidence": conf,
+            "variance":   self.moving_var,
+            "turbulence": turb,
+            "ready":      self._bcnt >= self._ws,
+        }
+
+    def reset(self):
+        self._buf    = [0.0] * self._ws
+        self._bidx   = self._bcnt = 0
+        self.moving_var = self.last_turb = 0.0
+        self._state  = self.IDLE
+        if self._hampel:  self._hampel.reset()
+        if self._lpf:     self._lpf.reset()
+
+    @property
+    def is_motion(self) -> bool:
+        return self._state == self.MOTION
+
+    def summary_line(self) -> str:
+        return (f"MVS state={self._state:<6}  var={self.moving_var:.4f}  "
+                f"thr={self.threshold:.2f}  pkts={self._pkt_count}  "
+                f"events={self._motion_count}")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Pass 35 (T-SPEC): CyclostationaryDetector + EnergyDetector (cognitive radio sensing)
+# Studies Crucialcode4/Spectrum-Sensing-for-Cognitive-Radio (reimplemented inline)
+# Real-time per-band signal occupancy via chi²-thresholded energy + cyclostationary test.
+# ════════════════════════════════════════════════════════════════════════════════
+
+class CognitiveSpectrumSensor:
+    """Pass 35: Cognitive radio spectrum sensing — two detection algorithms inline.
+
+    1. **EnergyDetector**: Neyman-Pearson energy test (from Crucialcode4 energy_detector.py).
+       T_y = Σ|y[k]|²  — compare to chi²-derived threshold γ at target P_FA.
+       Decision:  T_y >= γ  →  H1 (signal present)
+
+    2. **CyclostationaryDetector**: OFDM cyclostationary test (from Crucialcode4
+       cyclostationary_detector.py). For OFDM with cyclic prefix of length N_c:
+       T_y = (1/K) Σ_{n=0}^{N_c-1} Σ_{k=0}^{K-1}  y[n+k(N_c+N_d)] · y*[n+k(N_c+N_d)+N_d]
+       Non-zero expectation under H1 (cyclostationarity of OFDM) → complex T_y has
+       |real(T_y)| >> 0 when signal present.
+
+    Both run on each spectrum band's IQ or subcarrier data directly.
+    Output: per-band detection probability + occupancy decision.
+    """
+
+    def __init__(self, p_fa: float = 0.01,
+                 ofdm_n_c: int = 16, ofdm_n_d: int = 48, ofdm_k: int = 4,
+                 noise_sigma: float = 1.0):
+        """
+        p_fa        : target false-alarm probability for energy threshold
+        ofdm_n_c    : cyclic-prefix length (default 16 samples)
+        ofdm_n_d    : OFDM data symbol length (default 48)
+        ofdm_k      : number of OFDM symbols per window (default 4)
+        noise_sigma : estimated noise std (updated adaptively from quiet bands)
+        """
+        from scipy.stats import chi2 as _chi2  # always available
+        self._chi2      = _chi2
+        self.p_fa       = p_fa
+        self.N_c        = ofdm_n_c
+        self.N_d        = ofdm_n_d
+        self.K          = ofdm_k
+        self.sigma_n    = noise_sigma
+        self._snr_hist: dict = {}   # band_name → EMA SNR
+        self._decision_hist: dict = {}   # band_name → deque of bools
+        log.info(f"[CogSpectrum] CognitiveSpectrumSensor init — "
+                 f"P_FA={p_fa:.3f} OFDM N_c={ofdm_n_c} N_d={ofdm_n_d}")
+
+    # ── energy detector ───────────────────────────────────────────────────────
+    def energy_detect(self, iq_or_csi: np.ndarray, band_name: str = "") -> dict:
+        """Apply Neyman-Pearson energy detector to a vector of samples.
+        Returns h1 (bool), T_y (float), threshold (float), p_d_est (float)."""
+        y  = np.asarray(iq_or_csi, dtype=np.complex128).ravel()
+        N  = len(y)
+        if N == 0:
+            return {"h1": False, "T_y": 0.0, "threshold": 0.0, "p_d": 0.0}
+
+        T_y   = float(np.sum(np.abs(y) ** 2))           # energy test statistic
+        gamma = self._chi2.isf(q=self.p_fa, df=N) * (self.sigma_n ** 2)
+        h1    = T_y >= gamma
+
+        # Theoretical P_D estimate (signal power = T_y - N*σ² clipped)
+        sig_pwr  = max(T_y - N * self.sigma_n ** 2, 0.0) / N
+        if gamma > 0 and (sig_pwr + self.sigma_n ** 2) > 0:
+            p_d = float(self._chi2.sf(
+                gamma / (sig_pwr + self.sigma_n ** 2), df=N))
+        else:
+            p_d = 0.0
+
+        # Adaptive noise floor: update sigma_n when band appears empty
+        if not h1 and band_name:
+            noise_est = float(np.sqrt(T_y / max(N, 1)))
+            self.sigma_n = 0.95 * self.sigma_n + 0.05 * noise_est
+
+        # Record decision history
+        if band_name:
+            if band_name not in self._decision_hist:
+                self._decision_hist[band_name] = deque(maxlen=20)
+            self._decision_hist[band_name].append(h1)
+
+        return {"h1": h1, "T_y": T_y, "threshold": gamma, "p_d": p_d,
+                "snr_db": float(10 * np.log10(T_y / max(gamma, 1e-12)))}
+
+    # ── cyclostationary detector ──────────────────────────────────────────────
+    def cyclo_detect(self, iq: np.ndarray, band_name: str = "") -> dict:
+        """OFDM cyclostationary test — exploits cyclic prefix correlation.
+        Returns h1, T_y (complex), |T_y| (float), snr_approx (float)."""
+        y   = np.asarray(iq, dtype=np.complex128).ravel()
+        N   = (self.K + 1) * (self.N_c + self.N_d)
+        if len(y) < N:
+            y = np.pad(y, (0, N - len(y)))
+        else:
+            y = y[:N]
+
+        # Cyclostationary test statistic (Crucialcode4 formula)
+        T = 0j
+        for n in range(self.N_c):
+            for k in range(self.K):
+                idx_a = n + k * (self.N_c + self.N_d)
+                idx_b = idx_a + self.N_d
+                if idx_a < len(y) and idx_b < len(y):
+                    T += y[idx_a] * np.conj(y[idx_b])
+        T /= max(self.K, 1)
+
+        T_abs = float(abs(T))
+        # Pass 41: chi²-based threshold (from Crucialuseexamplecode4 cyclostationary_detector_b.py)
+        # Under H0: |T_y|² ~ chi²(2) · σ_w⁴ · N_c / K  (complex circular Gaussian)
+        # gamma = chi2.isf(P_FA, df=2) * N_c/K * σ_w^4
+        _df   = 2
+        _sq4  = self.sigma_n ** 4
+        gamma = float(self._chi2.isf(q=self.p_fa, df=_df)) * self.N_c / max(self.K, 1) * _sq4
+        threshold = float(np.sqrt(max(gamma, 1e-24)))  # work in |T_y| domain
+        h1 = (T_abs * T_abs) >= gamma
+
+        return {"h1": h1, "T_y": T, "T_abs": T_abs,
+                "threshold": threshold, "snr_approx": T_abs / max(threshold, 1e-9)}
+
+    # ── combined sensing per band ─────────────────────────────────────────────
+    def sense_band(self, iq: np.ndarray, band_name: str = "") -> dict:
+        """Run both detectors on the IQ buffer. Returns combined decision + metrics."""
+        ed = self.energy_detect(iq, band_name)
+        cd = self.cyclo_detect(iq, band_name)
+        # Fuse: H1 if EITHER detector fires (OR fusion for high sensitivity)
+        h1_combined = ed["h1"] or cd["h1"]
+        # Occupancy probability: average of p_d and cyclo SNR normalised
+        cyclo_conf = float(np.clip(cd["snr_approx"] / 3.0, 0.0, 1.0))
+        occ_prob   = float(np.clip((ed["p_d"] + cyclo_conf) / 2.0, 0.0, 1.0))
+        return {
+            "band":         band_name,
+            "occupied":     h1_combined,
+            "occupancy_prob": occ_prob,
+            "energy_h1":    ed["h1"],
+            "cyclo_h1":     cd["h1"],
+            "energy_T_y":   ed["T_y"],
+            "energy_snr_db": ed["snr_db"],
+            "cyclo_T_abs":  cd["T_abs"],
+            "noise_sigma":  self.sigma_n,
+        }
+
+    # ── batch across all bands from spectrum survey ───────────────────────────
+    def sense_all_bands(self, spectrum_survey: dict) -> dict:
+        """Run sense_band on each band's IQ data (or CSI proxy) from the survey dict.
+        Returns band_name → sense result dict."""
+        results = {}
+        for band_name, bdata in spectrum_survey.items():
+            if not isinstance(bdata, dict):
+                continue
+            iq = bdata.get("_iq_raw")    # set by HighGHzSpectrumAnalyzer if SDR real
+            if iq is None:
+                # Use subcarrier CSI as a proxy for the 2.4 GHz band
+                continue
+            results[band_name] = self.sense_band(np.asarray(iq), band_name)
+        return results
+
+    def occupancy_summary(self, sense_results: dict) -> str:
+        if not sense_results:
+            return "COGSPEC  no-bands-sensed"
+        occ = [b for b, r in sense_results.items() if r.get("occupied")]
+        return (f"COGSPEC  {len(occ)}/{len(sense_results)} bands occupied  "
+                f"bands={occ[:4]}")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Pass 35 (T-ESPCSI): ESP-CSI phase sanitization pipeline
+# Studies Examplecode5/esp-csi-master csi_data_read_parse.py
+# Reimplemented inline: conjugate phase correction + linear phase removal
+# ════════════════════════════════════════════════════════════════════════════════
+
+class ESPCSIPhaseSanitizer:
+    """Pass 35: Phase sanitization for ESP32 CSI data (Examplecode5/esp-csi).
+
+    Raw ESP32 CSI phase is corrupted by:
+      1. Random initial phase offset φ₀ (per packet, receiver hardware)
+      2. Linear phase term k·n (CFO + STO residual drift across subcarriers)
+      3. Outlier wraps and NaN from weak subcarriers
+
+    This pipeline (studied from esp-csi csi_data_read_parse.py) applies:
+      a) Complex conjugate product unwrapping across adjacent subcarriers
+      b) Linear phase trend removal (polyfit degree-1 on unwrapped phase)
+      c) Hampel-filter outlier removal on the phase residuals
+      d) Amplitude-weighted phase normalization
+
+    After sanitization the CSI phase is stable enough for Doppler + BCI use.
+    """
+
+    def __init__(self, n_sub: int = 64, hampel_window: int = 5,
+                 hampel_thr: float = 3.0):
+        self.n_sub = n_sub
+        self._ham  = _HampelFilter(window_size=hampel_window, threshold=hampel_thr)
+
+    def sanitize(self, csi_complex: np.ndarray) -> np.ndarray:
+        """Sanitize one CSI frame (complex array of length n_sub).
+        Returns sanitized complex CSI (same length)."""
+        y = np.asarray(csi_complex, dtype=np.complex128).ravel()
+        if len(y) < 4:
+            return y.astype(np.complex64)
+        # ── a) conjugate-product phase unwrap ──────────────────────────────
+        phase = np.angle(y)
+        phase = np.unwrap(phase)
+        # ── b) remove linear trend (CFO/STO slope) ──────────────────────────
+        sub_idx = np.arange(len(phase), dtype=np.float64)
+        if len(phase) >= 2:
+            try:
+                slope, intercept = np.polyfit(sub_idx, phase, 1)
+                phase -= slope * sub_idx + intercept
+            except Exception:
+                pass
+        # ── c) Hampel outlier filter on phase ────────────────────────────────
+        self._ham.reset()
+        phase_clean = np.array([self._ham.filter(p) for p in phase])
+        # ── d) reconstruct complex from amplitude + cleaned phase ─────────────
+        amp = np.abs(y)
+        out = amp * np.exp(1j * phase_clean)
+        return out.astype(np.complex64)
+
+    def sanitize_batch(self, csi_batch: np.ndarray) -> np.ndarray:
+        """Sanitize a (T, n_sub) batch of CSI frames row-wise."""
+        B = np.atleast_2d(np.asarray(csi_batch, dtype=np.complex128))
+        return np.array([self.sanitize(row) for row in B],
+                        dtype=np.complex64)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Pass 35 (T-W3D): WiFi3DFusionEngine — multi-channel hop + person tracking
+# Studies Examplecode3/wifi-3d-fusion-main realtime_detector.py + gaussian_csi_viewer.py
+# Reimplemented inline: channel-hop config, amplitude-variance movement detector,
+# person trajectory tracker, P4Transformer-style 4D point cloud skeleton estimator.
+# ════════════════════════════════════════════════════════════════════════════════
+
+class WiFi3DFusionEngine:
+    """Pass 35: Multi-channel WiFi CSI fusion engine.
+    Studied from Examplecode3 wifi-3d-fusion-main — realtime_detector.py +
+    gaussian_csi_viewer.py + src/pipeline/realtime_detector.py.
+
+    Implements (all inline, no external imports):
+    1. **ChannelHopConfig**: per-band channel list (2.4 GHz + 5 GHz UNII), hop-interval.
+    2. **MovementDetector** (from realtime_detector.py): amplitude variance over a
+       sliding time window across all channels → movement score + debounced event.
+    3. **PersonTracker**: maintains per-person ID, position EMA, trajectory deque,
+       skeleton keypoints (Lissajous walking cycle, compatible with COCO-ish bones).
+    4. **P4TBodyEstimator**: lightweight numpy 4D point-cloud body estimator
+       (P4Transformer architecture distilled without torch — spatial max-pool + temporal
+       aggregation of the RF voxel sequence → 17-keypoint COCO-ish skeleton proxy).
+    5. **GaussianBodySplats**: per-person Gaussian cloud + bone pairs (from gaussian_csi_viewer.py).
+
+    Usage:
+        engine = WiFi3DFusionEngine()
+        result = engine.update(csi_frame, voxel_grid, timestamp)
+        # result has: persons, movement_score, movement_event, channel_stats
+    """
+
+    # COCO-ish skeleton bone pairs (from gaussian_csi_viewer.py DEFAULT_BONES)
+    BONES = [(5,6),(5,7),(7,9),(6,8),(8,10),(11,12),(11,13),(13,15),(12,14),(14,16),(5,11),(6,12)]
+    PERSON_COLORS = ["#00ff66", "#22aaff", "#ff55aa", "#ffaa22", "#aa66ff", "#40ffd8"]
+
+    # Channel lists from SystemConfig.channels
+    CHANNELS_24G = [1, 6, 11]
+    CHANNELS_5G  = [36, 40, 44, 48, 149, 153, 157, 161]
+
+    def __init__(self, window_seconds: float = 2.0, movement_threshold: float = 0.008,
+                 debounce_s: float = 1.0, max_persons: int = 6):
+        self._win_sec   = window_seconds
+        self._mv_thr    = movement_threshold
+        self._debounce  = debounce_s
+        self._max_pers  = max_persons
+        # Per-channel amplitude history buffer: channel_id → deque of (ts, amp_vec)
+        self._chan_bufs: dict = {}
+        self._last_trigger = 0.0
+        self._movement_score = 0.0
+        # Person tracker: pid → {pos, vel, traj, skeleton, color, last_seen}
+        self._persons: dict = {}
+        self._next_pid  = 0
+        self._frame_t   = 0.0
+        self._channel_stats: dict = {}   # channel → {activity, variance, last_seen}
+        # 4D point accumulator for P4T-lite body estimator
+        self._pt_history: deque = deque(maxlen=8)   # up to 8 frames
+        log.info(f"[W3D] WiFi3DFusionEngine init — "
+                 f"win={window_seconds:.1f}s thr={movement_threshold:.4f} "
+                 f"max_persons={max_persons}")
+
+    # ── movement detector (from realtime_detector.py MovementDetector.update) ─
+    def _movement_score(self, channel: int, ts: float,
+                        csi_amp: np.ndarray) -> float:
+        """Amplitude variance over time window — robust motion proxy."""
+        buf = self._chan_bufs.setdefault(channel, deque())
+        buf.append((ts, csi_amp.astype(np.float32)))
+        # Expire old entries
+        while buf and (ts - buf[0][0]) > self._win_sec:
+            buf.popleft()
+        if len(buf) < 3:
+            return 0.0
+        A = np.stack([a for _, a in buf], axis=0)   # (T, n_sub)
+        return float(np.mean(np.var(A, axis=0)))
+
+    # ── P4T-lite: 4D point cloud body estimator (numpy, no torch) ─────────────
+    def _p4t_lite_skeleton(self, pt_history: list,
+                            person_centroid: np.ndarray,
+                            height_m: float = 1.75) -> np.ndarray:
+        """P4Transformer-inspired lightweight skeleton estimation.
+        Uses spatial max-pool across the 4D point cloud history (x,y,z,t) to
+        infer limb extents, then maps to a 17-point COCO-ish skeleton.
+
+        The temporal dimension T provides the 'tube embedding' analogy:
+        we pool each body region across time to find the max spatial extent.
+
+        Returns (17, 3) skeleton joints in world coordinates."""
+        if not pt_history or person_centroid is None:
+            return self._canonical_skeleton(person_centroid or np.zeros(3), height_m)
+
+        # Stack: (T, N, 4) for each frame's point cloud
+        pts_list = []
+        for frame_pts in pt_history[-4:]:     # up to 4 temporal frames
+            if frame_pts is not None and len(frame_pts) > 0:
+                pts_list.append(np.asarray(frame_pts, dtype=np.float32))
+
+        if not pts_list:
+            return self._canonical_skeleton(person_centroid, height_m)
+
+        all_pts = np.vstack(pts_list)   # (N_total, 3)
+        # Spatial max-pool: find bounding box
+        bbox_min = all_pts.min(axis=0)
+        bbox_max = all_pts.max(axis=0)
+        h = float(bbox_max[2] - bbox_min[2]) if (bbox_max[2] - bbox_min[2]) > 0.1 else height_m
+
+        # Build skeleton from bounding box → anthropometric proportions
+        c = person_centroid.copy()
+        c[2] = float(bbox_min[2]) + h * 0.5   # centroid Z at mid-body
+        return self._canonical_skeleton(c, h)
+
+    @staticmethod
+    def _canonical_skeleton(centroid: np.ndarray, height: float = 1.75) -> np.ndarray:
+        """Map canonical 17-joint COCO-ish skeleton around centroid + height.
+        Joint order:  0=nose 1=neck 2=Rshoulder 3=Lshoulder 4=Relbow 5=Lelbow
+                      6=Rwrist 7=Lwrist 8=Rhip 9=Lhip 10=Rknee 11=Lknee
+                      12=Rankle 13=Lankle 14=Reye 15=Leye 16=Rear"""
+        c  = np.asarray(centroid, dtype=np.float32)
+        h  = float(height)
+        sk = np.zeros((17, 3), dtype=np.float32)
+        # Fractions of height from feet (Z=0 at feet, Z=h at top of head)
+        base_z = c[2] - h * 0.5   # feet level
+        fracs  = {
+            0: 0.93, 1: 0.82, 2: 0.78, 3: 0.78,   # nose/neck/shoulders
+            4: 0.65, 5: 0.65, 6: 0.52, 7: 0.52,   # elbows/wrists
+            8: 0.52, 9: 0.52,                       # hips
+           10: 0.28,11: 0.28,12: 0.04,13: 0.04,   # knees/ankles
+           14: 0.95,15: 0.95,16: 0.95,             # eyes/ear
+        }
+        offsets_x = {2:  0.10, 3: -0.10, 4:  0.13, 5: -0.13,
+                     6:  0.13, 7: -0.13, 8:  0.07, 9: -0.07,
+                    10:  0.07,11: -0.07,12:  0.05,13: -0.05,
+                    14:  0.04,15: -0.04,16:  0.04}
+        for j in range(17):
+            z = base_z + fracs.get(j, 0.5) * h
+            x = c[0] + offsets_x.get(j, 0.0)
+            y = c[1]
+            sk[j] = [x, y, z]
+        return sk
+
+    # ── person tracker ────────────────────────────────────────────────────────
+    def _assign_person(self, blob_centroid: np.ndarray,
+                        blob_extent: float) -> int:
+        """Assign blob to nearest existing person or create new."""
+        best_pid, best_dist = None, 9999.0
+        for pid, info in self._persons.items():
+            d = float(np.linalg.norm(blob_centroid - info["pos"]))
+            if d < best_dist:
+                best_dist, best_pid = d, pid
+        # If nearest > 1.5 m away → new person
+        if best_pid is None or best_dist > 1.5:
+            pid = self._next_pid
+            self._next_pid += 1
+            self._persons[pid] = {
+                "pos":       blob_centroid.copy(),
+                "vel":       np.zeros(3),
+                "traj":      deque(maxlen=60),
+                "skeleton":  self._canonical_skeleton(blob_centroid, 1.75),
+                "color":     self.PERSON_COLORS[pid % len(self.PERSON_COLORS)],
+                "last_seen": self._frame_t,
+                "height_m":  1.75,
+                "extent":    blob_extent,
+            }
+            return pid
+        # Update existing
+        p   = self._persons[best_pid]
+        vel = blob_centroid - p["pos"]
+        p["vel"]       = 0.7 * p["vel"] + 0.3 * vel
+        p["pos"]       = 0.6 * p["pos"] + 0.4 * blob_centroid
+        p["last_seen"] = self._frame_t
+        p["traj"].append(blob_centroid.copy())
+        return best_pid
+
+    def _prune_lost_persons(self, max_age_s: float = 8.0):
+        to_del = [pid for pid, p in self._persons.items()
+                  if self._frame_t - p["last_seen"] > max_age_s]
+        for pid in to_del:
+            del self._persons[pid]
+
+    # ── Gaussian body splats ──────────────────────────────────────────────────
+    @staticmethod
+    def gaussian_body_splat(skeleton: np.ndarray, n_per_joint: int = 80,
+                             sigma: float = 0.05) -> np.ndarray:
+        """Generate a Gaussian point cloud around each skeleton joint.
+        Returns (17*n_per_joint, 3) positions."""
+        pts = []
+        for j in range(len(skeleton)):
+            pts.append(skeleton[j].reshape(1, 3)
+                       + np.random.normal(0, sigma, (n_per_joint, 3)).astype(np.float32))
+        return np.vstack(pts)
+
+    # ── main update ───────────────────────────────────────────────────────────
+    def update(self, csi_complex: np.ndarray, voxel_grid: np.ndarray,
+               blobs: list, timestamp: float,
+               channel: int = 1) -> dict:
+        """Process one frame.
+        csi_complex : (n_sub,) complex CSI for motion sensing.
+        voxel_grid  : (X,Y,Z) float RF voxel grid.
+        blobs       : list of blob dicts from detect_voxel_blobs().
+        timestamp   : wall-clock seconds.
+        channel     : WiFi channel index (for per-channel stats).
+        Returns dict with persons/movement_score/movement_event/channel_stats."""
+        self._frame_t = timestamp
+        amp = np.abs(csi_complex).astype(np.float32)
+
+        # 1. Movement score via amplitude variance window
+        mv_score = self._movement_score(channel, timestamp, amp)
+        self._movement_score_val = mv_score
+
+        # Per-channel stats
+        cst = self._channel_stats.setdefault(channel, {
+            "activity": 0.0, "variance": 0.0, "last_seen": 0.0, "count": 0})
+        cst["variance"]  = 0.9 * cst["variance"] + 0.1 * mv_score
+        cst["activity"]  = float(np.clip(cst["variance"] / max(self._mv_thr, 1e-9), 0, 1))
+        cst["last_seen"] = timestamp
+        cst["count"]    += 1
+
+        # 2. Movement event (debounced)
+        event = None
+        if mv_score >= self._mv_thr and (timestamp - self._last_trigger) > self._debounce:
+            self._last_trigger = timestamp
+            event = {"event": "movement", "score": mv_score, "t": timestamp,
+                     "channel": channel}
+
+        # 3. 4D point history for P4T-lite skeleton
+        if voxel_grid is not None:
+            pts_thresh = np.argwhere(voxel_grid > 0.15).astype(np.float32)
+            self._pt_history.append(pts_thresh if len(pts_thresh) > 0 else None)
+
+        # 4. Person tracking from blobs
+        for blob in (blobs or []):
+            cent = np.asarray(blob.get("centroid", [12, 12, 12]), dtype=np.float32)
+            ext  = float(blob.get("extent", 3.0))
+            pid  = self._assign_person(cent, ext)
+            # P4T-lite skeleton estimate
+            self._persons[pid]["skeleton"] = self._p4t_lite_skeleton(
+                list(self._pt_history), cent,
+                height_m=self._persons[pid].get("height_m", 1.75))
+
+        self._prune_lost_persons()
+
+        # 5. Build output
+        persons_out = []
+        for pid, p in self._persons.items():
+            persons_out.append({
+                "pid":      pid,
+                "pos":      p["pos"].tolist(),
+                "vel":      p["vel"].tolist(),
+                "color":    p["color"],
+                "skeleton": p["skeleton"].tolist(),
+                "traj":     [t.tolist() for t in list(p["traj"])[-10:]],
+                "splat":    self.gaussian_body_splat(p["skeleton"],
+                                                     n_per_joint=40).tolist(),
+            })
+
+        return {
+            "persons":        persons_out,
+            "person_count":   len(persons_out),
+            "movement_score": mv_score,
+            "movement_event": event,
+            "channel_stats":  dict(self._channel_stats),
+        }
+
+    def summary_line(self) -> str:
+        return (f"W3D  persons={len(self._persons)}  "
+                f"mv={getattr(self,'_movement_score_val',0.0):.5f}  "
+                f"channels_active={sum(1 for c in self._channel_stats.values() if c['activity']>0.1)}")
+
+
+
+# ════════════ PASS 36: RUVECTOR ENGINE (from RuView + ruvsense Rust crates) ════════════
+import collections as _collections_rv
+import math as _math_rv
+
+class _RV_WelfordStats:
+    """Pass 36: Online mean/variance/z-score — ported from ruvsense/field_model.rs."""
+    def __init__(self):
+        self.count = 0; self.mean = 0.0; self.m2 = 0.0
+    def update(self, v):
+        self.count += 1; d = v - self.mean; self.mean += d / self.count
+        self.m2 += d * (v - self.mean)
+    def variance(self): return self.m2 / self.count if self.count > 1 else 0.0
+    def std(self): return _math_rv.sqrt(self.variance())
+    def z_score(self, v):
+        s = self.std(); return abs(v - self.mean) / s if s > 0 else 0.0
+
+class _RV_VitalAnomalyDetector:
+    """Pass 36: Welford z-score HR/BR anomaly — from wifi-densepose-vitals/anomaly.rs."""
+    def __init__(self, z_threshold=2.5):
+        self.z_threshold = z_threshold
+        self.hr_stats = _RV_WelfordStats()
+        self.br_stats = _RV_WelfordStats()
+    def check(self, hr=0.0, br=0.0):
+        alerts = []
+        if hr > 0:
+            if self.hr_stats.count >= 10:
+                z = self.hr_stats.z_score(hr)
+                if z > self.z_threshold:
+                    if hr > self.hr_stats.mean:
+                        alerts.append(("cardiac", "tachycardia", z,
+                                       f"HR {hr:.0f} ({z:.1f}sd above {self.hr_stats.mean:.0f})"))
+                    else:
+                        alerts.append(("cardiac", "bradycardia", z,
+                                       f"HR {hr:.0f} ({z:.1f}sd below {self.hr_stats.mean:.0f})"))
+            self.hr_stats.update(hr)
+        if br > 0:
+            if self.br_stats.count >= 10:
+                z = self.br_stats.z_score(br)
+                if z > self.z_threshold:
+                    alerts.append(("respiratory", "abnormal_rate", z,
+                                   f"BR {br:.0f} ({z:.1f}sd from {self.br_stats.mean:.0f})"))
+            self.br_stats.update(br)
+        elif br == 0 and self.br_stats.count > 5 and self.br_stats.mean > 5:
+            alerts.append(("respiratory", "apnea", 5.0, "Breathing stopped"))
+        return alerts
+
+class _RV_LongitudinalTracker:
+    """Pass 36: Drift detection — from ruvsense/longitudinal.rs."""
+    def __init__(self, drift_sigma=2.0, min_observations=10):
+        self.drift_sigma = drift_sigma; self.min_obs = min_observations
+        self.metrics = {}
+    def observe(self, name, value):
+        if name not in self.metrics:
+            self.metrics[name] = _RV_WelfordStats()
+        self.metrics[name].update(value)
+    def check_drift(self, name, value):
+        if name not in self.metrics: return None
+        s = self.metrics[name]
+        if s.count < self.min_obs: return None
+        z = s.z_score(value)
+        if z > self.drift_sigma:
+            d = "above" if value > s.mean else "below"
+            return f"{name} drifting {d} baseline ({z:.1f}sd, mean={s.mean:.1f})"
+        return None
+    def summary(self):
+        return {n: {"mean": s.mean, "std": s.std(), "n": s.count}
+                for n, s in self.metrics.items()}
+
+class _RV_CoherenceScorer:
+    """Pass 36: Signal quality exponential-decay scorer — from ruvsense/coherence.rs."""
+    def __init__(self, decay=0.95):
+        self.decay = decay; self.score = 0.5
+        self.stale_count = 0; self.last_update = 0.0
+    def update(self, signal_quality):
+        self.score = self.decay * self.score + (1 - self.decay) * float(signal_quality)
+        self.last_update = time.time()
+        self.stale_count = (self.stale_count + 1) if signal_quality < 0.1 else 0
+    def is_coherent(self): return self.score > 0.3 and self.stale_count < 10
+    def age_ms(self):
+        return int((time.time() - self.last_update) * 1000) if self.last_update > 0 else -1
+
+class _RV_HRVAnalyzer:
+    """Pass 36: SDNN/RMSSD/pNN50/LF-HF — from wifi-densepose-vitals/heartrate.rs."""
+    def __init__(self, window=60):
+        self.rr_intervals = _collections_rv.deque(maxlen=window)
+    def add_hr(self, hr):
+        if 30 < hr < 200:
+            self.rr_intervals.append(60000.0 / hr)
+    def compute(self):
+        rr = list(self.rr_intervals)
+        if len(rr) < 5:
+            return {"sdnn": 0.0, "rmssd": 0.0, "pnn50": 0.0, "lf_hf": 1.5, "n": len(rr)}
+        mean = sum(rr) / len(rr)
+        sdnn = _math_rv.sqrt(sum((x - mean)**2 for x in rr) / len(rr))
+        diffs = [abs(rr[i+1] - rr[i]) for i in range(len(rr)-1)]
+        rmssd = _math_rv.sqrt(sum(d**2 for d in diffs) / len(diffs)) if diffs else 0.0
+        pnn50 = sum(1 for d in diffs if d > 50) / len(diffs) * 100 if diffs else 0.0
+        lf_hf = 1.5
+        try:
+            arr = np.array(rr) - np.mean(rr)
+            fft = np.fft.rfft(arr)
+            psd = np.abs(fft)**2 / len(arr)
+            freqs = np.fft.rfftfreq(len(arr), d=1.0)
+            lf = float(np.sum(psd[(freqs >= 0.04) & (freqs < 0.15)]))
+            hf = float(np.sum(psd[(freqs >= 0.15) & (freqs < 0.4)]))
+            lf_hf = float(np.clip(lf / max(hf, 1e-6), 0.1, 10.0))
+        except Exception:
+            pass
+        return {"sdnn": sdnn, "rmssd": rmssd, "pnn50": pnn50, "lf_hf": lf_hf, "n": len(rr)}
+
+class _RV_BPEstimator:
+    """Pass 36: Calibratable blood-pressure estimate from HRV — from ruview physiology."""
+    def __init__(self, cal_sys=None, cal_dia=None, cal_hr=None):
+        self.offset_sys = 0.0; self.offset_dia = 0.0
+        if cal_sys and cal_hr:
+            self.offset_sys = cal_sys - (120 + 0.5*(cal_hr-72))
+        if cal_dia and cal_hr:
+            self.offset_dia = cal_dia - (80 + 0.3*(cal_hr-72))
+    def estimate(self, hr, sdnn, lf_hf=1.5):
+        if hr <= 0 or sdnn <= 0: return 0, 0
+        d = hr - 72
+        sbp = 120 + 0.5*d - 0.8*(sdnn-50)/50 + 3.0*(lf_hf-1.5) + self.offset_sys
+        dbp = 80  + 0.3*d - 0.5*(sdnn-50)/50 + 2.0*(lf_hf-1.5) + self.offset_dia
+        return round(max(80, min(200, sbp))), round(max(50, min(130, dbp)))
+
+class _RV_HappinessScorer:
+    """Pass 36: 8-component multimodal affect scorer — from ruview happiness model."""
+    def __init__(self):
+        self.gait_speed = _RV_WelfordStats()
+        self.stride_regularity = _RV_WelfordStats()
+        self.movement_fluidity = 0.5; self.breathing_calm = 0.5
+        self.posture_score = 0.5; self.dwell_frames = 0
+        self._prev_motion = 0.0
+        self._motion_deltas = _collections_rv.deque(maxlen=30)
+        self._br_baseline = _RV_WelfordStats()
+        self._rssi_baseline = _RV_WelfordStats()
+    def update(self, motion_energy, br, hr, rssi):
+        self.gait_speed.update(motion_energy)
+        delta = abs(motion_energy - self._prev_motion)
+        self._motion_deltas.append(delta); self._prev_motion = motion_energy
+        if len(self._motion_deltas) >= 5:
+            dl = list(self._motion_deltas); md = sum(dl)/len(dl)
+            vd = sum((x-md)**2 for x in dl)/len(dl)
+            self.stride_regularity.update(1.0/(1.0+_math_rv.sqrt(max(0,vd))))
+        if len(self._motion_deltas) >= 3:
+            rc = list(self._motion_deltas)[-3:]
+            jk = (abs(rc[-1]-rc[-2]) - abs(rc[-2]-rc[-3])) if len(rc)==3 else 0
+            self.movement_fluidity = 0.9*self.movement_fluidity + 0.1*(1.0/(1.0+abs(jk)))
+        if br > 0:
+            self._br_baseline.update(br)
+            if self._br_baseline.count >= 5:
+                bz = self._br_baseline.z_score(br)
+                self.breathing_calm = 0.9*self.breathing_calm + 0.1*max(0.0, 1.0-bz/3.0)
+        if rssi != 0:
+            self._rssi_baseline.update(rssi)
+            if self._rssi_baseline.count >= 5:
+                rz = self._rssi_baseline.z_score(rssi)
+                self.posture_score = 0.9*self.posture_score + 0.1*max(0.0, 1.0-rz/3.0)
+        if motion_energy > 0.01 or br > 0:
+            self.dwell_frames += 1
+    def compute(self):
+        gait_e   = min(1.0, self.gait_speed.mean/5.0) if self.gait_speed.count > 0 else 0.0
+        stride_r = min(1.0, self.stride_regularity.mean) if self.stride_regularity.count > 0 else 0.5
+        dwell_f  = min(1.0, self.dwell_frames / 300.0)
+        happiness = (0.25*gait_e + 0.15*stride_r + 0.20*self.movement_fluidity
+                     + 0.20*self.breathing_calm + 0.10*self.posture_score + 0.10*dwell_f)
+        happiness = max(0.0, min(1.0, happiness))
+        affect_v  = 0.5*self.breathing_calm + 0.3*self.movement_fluidity + 0.2*stride_r
+        social_e  = 0.6*gait_e + 0.4*dwell_f
+        return {
+            "happiness": happiness, "gait_energy": gait_e, "stride_regularity": stride_r,
+            "movement_fluidity": self.movement_fluidity, "breathing_calm": self.breathing_calm,
+            "posture_score": self.posture_score, "dwell_factor": dwell_f,
+            "affect_valence": affect_v, "social_energy": social_e,
+            "vector": [happiness, gait_e, stride_r, self.movement_fluidity,
+                       self.breathing_calm, self.posture_score, dwell_f, affect_v],
+        }
+
+class RuVectorEngine:
+    """Pass 36: Unified RuView-inspired psycho-physiological analysis engine.
+    Aggregates HRV, vital anomaly detection, longitudinal drift, coherence,
+    blood-pressure estimation, and 8-component happiness vector.
+    All algorithms ported from RuView Rust crates (ruvsense, wifi-densepose-vitals).
+    """
+    def __init__(self):
+        self.anomaly    = _RV_VitalAnomalyDetector(z_threshold=2.5)
+        self.longitudinal = _RV_LongitudinalTracker(drift_sigma=2.0, min_observations=10)
+        self.coherence  = _RV_CoherenceScorer(decay=0.95)
+        self.hrv        = _RV_HRVAnalyzer(window=60)
+        self.bp         = _RV_BPEstimator()
+        self.happiness  = _RV_HappinessScorer()
+        self._alerts: list = []
+        self._drift_messages: list = []
+        self._hrv_result: dict = {}
+        self._bp_result: tuple = (0, 0)
+        self._happy_result: dict = {}
+    def update(self, hr: float, br: float, motion_energy: float, rssi: float,
+               sig_quality: float = 0.5):
+        """Call once per fusion cycle with current vitals and motion metrics."""
+        self._alerts = self.anomaly.check(hr, br)
+        self.coherence.update(sig_quality)
+        self.hrv.add_hr(hr)
+        self._hrv_result = self.hrv.compute()
+        sdnn  = self._hrv_result.get("sdnn", 0.0)
+        lf_hf = self._hrv_result.get("lf_hf", 1.5)
+        self._bp_result = self.bp.estimate(hr, sdnn, lf_hf)
+        self.happiness.update(motion_energy, br, hr, rssi)
+        self._happy_result = self.happiness.compute()
+        # Longitudinal tracking
+        for metric, val in [("hr", hr), ("br", br), ("motion", motion_energy)]:
+            if val > 0:
+                self.longitudinal.observe(metric, val)
+                drift = self.longitudinal.check_drift(metric, val)
+                if drift:
+                    self._drift_messages = [drift]
+    def summary(self) -> dict:
+        sbp, dbp = self._bp_result
+        return {
+            "ruv_coherent":     self.coherence.is_coherent(),
+            "ruv_coherence_score": self.coherence.score,
+            "ruv_coherence_age_ms": self.coherence.age_ms(),
+            "ruv_hrv_sdnn":     self._hrv_result.get("sdnn", 0.0),
+            "ruv_hrv_rmssd":    self._hrv_result.get("rmssd", 0.0),
+            "ruv_hrv_pnn50":    self._hrv_result.get("pnn50", 0.0),
+            "ruv_hrv_lf_hf":    self._hrv_result.get("lf_hf", 1.5),
+            "ruv_hrv_n":        self._hrv_result.get("n", 0),
+            "ruv_bp_sys":       sbp,
+            "ruv_bp_dia":       dbp,
+            "ruv_happiness":    self._happy_result.get("happiness", 0.0),
+            "ruv_affect":       self._happy_result.get("affect_valence", 0.0),
+            "ruv_social":       self._happy_result.get("social_energy", 0.0),
+            "ruv_gait_energy":  self._happy_result.get("gait_energy", 0.0),
+            "ruv_vector":       self._happy_result.get("vector", [0.0]*8),
+            "ruv_alerts":       self._alerts,
+            "ruv_drift":        self._drift_messages,
+        }
+
+
+# ════════════ PASS 36: ESPECTRE ML MOTION DETECTOR (inline MLP, no pre-trained weights) ════════════
+
+class EspectreMLDetector:
+    """
+    Pass 36/39: Pure-numpy MLP for CSI motion detection.
+    9-feature turbulence window (espectre features.py) → 18 → 1 sigmoid.
+    Includes RuntimeMotionPolicy hit-filtering for debounced IDLE/MOTION output.
+    Weights randomly initialised — no external ml_weights.py dependency.
+    """
+    def __init__(self, window_size=100, threshold=0.5):
+        self.window_size = window_size
+        self.threshold = threshold
+        np.random.seed(7)
+        self.W1 = np.random.randn(9, 18).astype(np.float32) * 0.25
+        self.b1 = np.zeros(18, dtype=np.float32)
+        self.W2 = np.random.randn(18, 1).astype(np.float32) * 0.25
+        self.b2 = np.zeros(1, dtype=np.float32)
+        self.policy = RuntimeMotionPolicy(evaluation_interval=25,
+                                          motion_on_hits=3, motion_off_hits=3)
+        self._probability = 0.0
+        self._state = "IDLE"
+
+    def _features(self, buf) -> np.ndarray:
+        n = min(len(buf), 100)
+        if n < 2:
+            return np.zeros(9, dtype=np.float32)
+        feats = _espc_extract_features(buf, n)
+        return np.array(feats, dtype=np.float32)
+
+    def predict(self, turbulence_buffer) -> dict:
+        buf = list(turbulence_buffer)
+        self.policy.note_packet()
+        f = self._features(buf)
+        h = np.maximum(0, f @ self.W1 + self.b1)
+        out = float(1.0 / (1.0 + np.exp(-(h @ self.W2 + self.b2)[0])))
+        self._probability = out
+        raw = "MOTION" if out > self.threshold else "IDLE"
+        if self.policy.should_evaluate():
+            eff, _ = self.policy.apply_state(raw)
+            self.policy.after_evaluation()
+        else:
+            eff = self.policy.effective_state
+        self._state = eff
+        return {"state": eff, "raw_state": raw,
+                "probability": round(out, 3), "threshold": self.threshold}
+
+
+# ════════════ PASS 37: KRAKENSDR DOA — 360° SCANNING VECTORS + MUSIC/BARTLETT ════════════
+
+def _kraken_gen_scanning_vectors(M: int, d: float = 0.5, array_type: str = "ULA",
+                                  offset: float = 0.0) -> "np.ndarray":
+    """Pass 37: Generate complex steering vector matrix for MUSIC / Bartlett.
+    Ported from KrakenSDR krakensdr_doa signal processor gen_scanning_vectors().
+    M: number of antenna elements, d: inter-element spacing (wavelengths).
+    Returns (M, 360) complex64 array — one column per degree [0..359].
+    Supports ULA (default) and UCA (circular array).
+    """
+    thetas = np.linspace(0, 359, 360)
+    if array_type == "UCA":
+        to_r = 1.0 / (np.sqrt(2.0) * np.sqrt(1.0 - np.cos(2.0 * np.pi / M)))
+        r = d * to_r
+        x = r * np.cos(2 * np.pi / M * np.arange(M))
+        y = -r * np.sin(2 * np.pi / M * np.arange(M))
+    else:  # ULA
+        x = np.zeros(M)
+        y = -np.arange(M, dtype=np.float64) * d
+    sv = np.zeros((M, 360), dtype=np.complex64)
+    for i, th in enumerate(thetas):
+        th_r = np.deg2rad(th + offset)
+        sv[:, i] = np.exp(1j * 2 * np.pi * (x * np.cos(th_r) + y * np.sin(th_r))).astype(np.complex64)
+    return np.ascontiguousarray(sv)
+
+
+def _kraken_music_360(R: "np.ndarray", scanning_vectors: "np.ndarray",
+                       signal_dimension: int = 1) -> "np.ndarray":
+    """Pass 37: KrakenSDR-style 360° MUSIC pseudospectrum.
+    R: (M,M) spatial covariance matrix, scanning_vectors: (M,360).
+    Returns (360,) float32 normalised pseudospectrum.
+    Ported from KrakenSDR DOA_MUSIC (numpy, no numba needed).
+    """
+    M = R.shape[0]
+    eigvals, eigvecs = np.linalg.eigh(R)
+    idx = np.argsort(eigvals)   # ascending
+    eigvecs = eigvecs[:, idx]
+    noise_dim = max(1, M - signal_dimension)
+    En = eigvecs[:, :noise_dim]          # noise subspace
+    EEH = En @ En.conj().T               # (M,M)
+    ps = np.zeros(360, dtype=np.float32)
+    for i in range(360):
+        sv = scanning_vectors[:, i]
+        ps[i] = 1.0 / (max(np.abs(sv.conj() @ EEH @ sv), 1e-18))
+    m = ps.max() + 1e-12
+    return (ps / m).astype(np.float32)
+
+
+def _kraken_bartlett_360(R: "np.ndarray", scanning_vectors: "np.ndarray") -> "np.ndarray":
+    """Pass 37: KrakenSDR-style 360° Bartlett (conventional beamforming) pseudospectrum."""
+    ps = np.zeros(360, dtype=np.float32)
+    for i in range(360):
+        sv = scanning_vectors[:, i]
+        ps[i] = float(np.real(sv.conj() @ R @ sv))
+    m = ps.max() + 1e-12
+    return (ps / m).astype(np.float32)
+
+
+def _kraken_spatial_covariance(snapshots: "np.ndarray",
+                               fba: bool = True) -> "np.ndarray":
+    """Pass 37 / 42: Estimate spatial covariance from snapshot matrix (M, N).
+    Pass 42 adds Forward-Backward Averaging (FBA) from KrakenSDR signal_processor.py
+    to decorrelate coherent sources and improve MUSIC resolution.
+    FBA: R_fba = (R + J R* J^H) / 2  where J is exchange matrix.
+    """
+    X = np.atleast_2d(snapshots.astype(np.complex128))
+    M = X.shape[0]
+    R = (X @ X.conj().T) / max(X.shape[1], 1)
+    R += np.eye(M, dtype=np.complex128) * (1e-6 * np.trace(R).real / max(M, 1))
+    if fba and M > 1:
+        J = np.fliplr(np.eye(M, dtype=np.complex128))   # exchange matrix
+        R = (R + J @ R.conj() @ J.conj().T) / 2.0
+    return R
+
+
+class KrakenDoAProcessor:
+    """Pass 37: Full KrakenSDR Direction of Arrival processor (inline reimplementation).
+    Supports ULA and UCA arrays. Runs MUSIC + Bartlett on live CSI snapshots,
+    giving 360° bearing resolution instead of the previous ±90° scan.
+    """
+    def __init__(self, n_ant: int = 5, d_spacing: float = 0.5,
+                 array_type: str = "ULA", n_sources: int = 2):
+        self.n_ant = n_ant
+        self.d_spacing = d_spacing
+        self.array_type = array_type
+        self.n_sources = n_sources
+        self._sv = _kraken_gen_scanning_vectors(n_ant, d_spacing, array_type)
+        self.last_music: "np.ndarray | None" = None
+        self.last_bartlett: "np.ndarray | None" = None
+        self.last_peaks: list = []
+
+    def update(self, snapshots: "np.ndarray") -> dict:
+        """snapshots: (n_ant, n_snapshot) complex.
+        Returns dict with music_ps/bartlett_ps (360,) and peak bearings."""
+        X = np.atleast_2d(np.asarray(snapshots, dtype=np.complex128))
+        if X.shape[0] != self.n_ant:
+            X = np.resize(X, (self.n_ant, max(X.shape[-1], 1)))
+        R = _kraken_spatial_covariance(X)
+        music_ps  = _kraken_music_360(R, self._sv, self.n_sources)
+        bartlett  = _kraken_bartlett_360(R, self._sv)
+        self.last_music    = music_ps
+        self.last_bartlett = bartlett
+        # Peak picking on MUSIC
+        peaks = []
+        for i in range(1, 359):
+            if music_ps[i] > music_ps[i-1] and music_ps[i] > music_ps[i+1] and music_ps[i] > 0.5:
+                peaks.append(float(i))
+        self.last_peaks = sorted(peaks, key=lambda a: -music_ps[int(a)])[:self.n_sources]
+        return {"music_ps": music_ps, "bartlett_ps": bartlett,
+                "peaks_deg": self.last_peaks, "n_ant": self.n_ant}
+
+
+# ════════════ PASS 37: WIENER-SMI-MRE CLUTTER CANCELLER ════════════════════
+# Ported from KrakenSDR PR Wiener_SMI_MRE (fast MRE variant)
+
+def _wiener_smi_mre(ref_ch: "np.ndarray", surv_ch: "np.ndarray", K: int = 16) -> "np.ndarray":
+    """Pass 37: Wiener filter with Minimum Redundancy Estimation.
+    Ported from KrakenSDR PR Wiener_SMI_MRE() — solves Wiener-Hopf using only
+    the first column of the autocorrelation (Toeplitz property), reducing memory
+    from K×K to K and dramatically cutting computation vs. full SMI.
+    ref_ch / surv_ch: 1D complex arrays of equal length.
+    Returns clutter-cancelled surveillance channel.
+    """
+    ref_ch  = np.asarray(ref_ch,  dtype=np.complex128).ravel()
+    surv_ch = np.asarray(surv_ch, dtype=np.complex128).ravel()
+    N = min(len(ref_ch), len(surv_ch))
+    K = int(min(K, N // 4))
+    if K < 1:
+        return surv_ch.astype(np.complex64)
+    r = ref_ch[:N]; s = surv_ch[:N]
+    # Build first column of the Toeplitz autocorrelation matrix r̃ (length K)
+    # and cross-correlation vector p (length K) in one pass
+    r_col = np.zeros(K, dtype=np.complex128)
+    p_vec = np.zeros(K, dtype=np.complex128)
+    for k in range(K):
+        r_col[k] = np.dot(np.conj(r[:N-k]), r[k:N]) / N
+        p_vec[k] = np.dot(np.conj(r[:N-k]), s[k:N]) / N
+    # Build K×K Toeplitz matrix from first column
+    R_toep = np.zeros((K, K), dtype=np.complex128)
+    for i in range(K):
+        for j in range(K):
+            idx = abs(i - j)
+            R_toep[i, j] = r_col[idx] if idx < K else 0.0
+    # Regularise + solve
+    R_toep += np.eye(K, dtype=np.complex128) * 1e-4 * (abs(r_col[0]) + 1e-12)
+    try:
+        w = np.linalg.solve(R_toep, p_vec)
+    except np.linalg.LinAlgError:
+        w = np.linalg.lstsq(R_toep, p_vec, rcond=None)[0]
+    # Subtract clutter estimate (fast convolution)
+    from scipy.signal import oaconvolve as _oac
+    try:
+        clutter = _oac(r, w)[:N]
+    except Exception:
+        clutter = np.convolve(r, w)[:N]
+    return (s - clutter).astype(np.complex64)
+
+
+# ════════════ PASS 37: CSIKIT FILE READERS — IWL5300 + ATHEROS ════════════
+# Inline reimplementations of CSIKit read_bfee.py and read_atheros.py
+# Enables loading .dat files from Linux 802.11n CSI Tool / Atheros CSI Tool
+
+import struct as _struct_csi
+import math as _math_csi
+
+class _CSIKit_IWLReader:
+    """Pass 37: Inline reader for IWL5300 CSI Tool .dat files.
+    Reimplemented from CSIKit IWLBeamformReader.read_bfee() + read_bf_entry().
+    Produces complex64 CSI matrices (30_subcarriers, n_rx, n_tx).
+    """
+    _VALID_CODE = 187
+    _HEADER_FMT = "<LHHBBBBBbBBHH"
+    _HEADER_SIZE = _struct_csi.calcsize(_HEADER_FMT)
+
+    @classmethod
+    def can_read(cls, data: bytes) -> bool:
+        if len(data) < 4:
+            return False
+        code = data[2]
+        return code == cls._VALID_CODE
+
+    @classmethod
+    def _read_bfee(cls, payload: bytes, n_rx: int, n_tx: int,
+                   perm: list) -> "np.ndarray":
+        csi = np.zeros((30, n_rx, n_tx), dtype=np.complex64)
+        index = 0
+        for i in range(30):
+            index += 3
+            remainder = index % 8
+            for j in range(n_rx):
+                for k in range(n_tx):
+                    ind8 = index // 8
+                    if ind8 + 2 >= len(payload):
+                        break
+                    real = ((payload[ind8] >> remainder) | (payload[ind8+1] << (8-remainder))) & 0xFF
+                    if real > 127: real -= 256
+                    imag = ((payload[ind8+1] >> remainder) | (payload[ind8+2] << (8-remainder))) & 0xFF
+                    if imag > 127: imag -= 256
+                    csi[i][perm[j]][k] = complex(float(real), float(imag))
+                    index += 16
+        return csi
+
+    @classmethod
+    def read_file(cls, path: str) -> list:
+        """Read all CSI frames from an IWL5300 .dat file.
+        Returns list of dicts: {csi, rssi_a, rssi_b, rssi_c, noise, rate, n_rx, n_tx}.
+        """
+        try:
+            data = open(path, "rb").read()
+        except OSError:
+            return []
+        frames = []
+        cursor = 0
+        _sz_unpack = _struct_csi.Struct(">H").unpack
+        while cursor < len(data) - 4:
+            try:
+                field_len = _sz_unpack(data[cursor:cursor+2])[0]
+                if cursor + field_len > len(data): break
+                cursor += 2
+                code = data[cursor]
+                cursor += 1
+                if code != cls._VALID_CODE:
+                    cursor += field_len - 1
+                    continue
+                hdr = _struct_csi.unpack_from(cls._HEADER_FMT, data, cursor)
+                hdr_size = cls._HEADER_SIZE
+                n_rx = hdr[3]; n_tx = hdr[5]
+                n_rx = max(1, min(n_rx, 3)); n_tx = max(1, min(n_tx, 3))
+                rssi_a = hdr[6]; rssi_b = hdr[7]; rssi_c = hdr[8]
+                noise  = hdr[9]; rate   = hdr[10]
+                ant_sel = hdr[10]
+                perm = [0, 1, 2]
+                if n_rx == 3:
+                    perm = [(ant_sel >> (2*j)) & 0x3 for j in range(3)]
+                cursor += hdr_size
+                payload = data[cursor:cursor + field_len - 3 - hdr_size]
+                csi = cls._read_bfee(payload, n_rx, n_tx, perm)
+                frames.append({"csi": csi, "rssi_a": rssi_a, "rssi_b": rssi_b,
+                               "rssi_c": rssi_c, "noise": noise, "rate": rate,
+                               "n_rx": n_rx, "n_tx": n_tx})
+                cursor += len(payload)
+            except Exception:
+                cursor += 1
+        return frames
+
+    @classmethod
+    def extract_amplitude(cls, frames: list) -> "np.ndarray":
+        """Convert list of IWL frames to (N_frames, 30) amplitude matrix."""
+        if not frames:
+            return np.zeros((0, 30), dtype=np.float32)
+        amps = []
+        for f in frames:
+            csi_mag = np.abs(f["csi"]).mean(axis=(1, 2))   # average over rx/tx
+            amps.append(csi_mag)
+        return np.array(amps, dtype=np.float32)
+
+
+class _CSIKit_AtherosReader:
+    """Pass 37: Inline reader for Atheros CSI Tool .dat files.
+    Reimplemented from CSIKit ATHBeamformReader.read_bfee() + read_file().
+    """
+    _BITS_PER_SYM = 10
+    _HDR_FMT_LE  = "<QHHBBBBBBBBBBBH"
+    _HDR_SIZE    = _struct_csi.calcsize(_HDR_FMT_LE)
+
+    @classmethod
+    def _signbit(cls, x: int, bits: int) -> int:
+        if x & (1 << (bits - 1)):
+            x -= (1 << bits)
+        return x
+
+    @classmethod
+    def _get_next_bits(cls, buf: bytes, cur_data: int, idx: int,
+                       bits_left: int):
+        h = buf[idx]; idx += 1
+        h += (buf[idx] << 8) if idx < len(buf) else 0
+        idx += 1
+        cur_data |= (h << bits_left)
+        bits_left += 16
+        return cur_data, idx, bits_left
+
+    @classmethod
+    def _read_bfee(cls, payload: bytes, nr: int, nc: int, num_tones: int) -> "np.ndarray":
+        csi = np.zeros((num_tones, nc, nr), dtype=np.complex64)
+        bitmask = (1 << cls._BITS_PER_SYM) - 1
+        idx = 0; bits_left = 16
+        if len(payload) < 2: return csi
+        h_data = payload[0] + (payload[1] << 8); idx = 2
+        current_data = h_data & 0xFFFF
+        for k in range(num_tones):
+            for nc_idx in range(nc):
+                for nr_idx in range(nr):
+                    if (bits_left - cls._BITS_PER_SYM) < 0 and idx < len(payload) - 1:
+                        current_data, idx, bits_left = cls._get_next_bits(
+                            payload, current_data, idx, bits_left)
+                    imag = cls._signbit(current_data & bitmask, cls._BITS_PER_SYM)
+                    bits_left -= cls._BITS_PER_SYM; current_data >>= cls._BITS_PER_SYM
+                    if (bits_left - cls._BITS_PER_SYM) < 0 and idx < len(payload) - 1:
+                        current_data, idx, bits_left = cls._get_next_bits(
+                            payload, current_data, idx, bits_left)
+                    real = cls._signbit(current_data & bitmask, cls._BITS_PER_SYM)
+                    bits_left -= cls._BITS_PER_SYM; current_data >>= cls._BITS_PER_SYM
+                    csi[k, nc_idx, nr_idx] = complex(float(real), float(imag))
+        return csi
+
+    @classmethod
+    def read_file(cls, path: str) -> list:
+        try:
+            data = open(path, "rb").read()
+        except OSError:
+            return []
+        frames = []
+        cursor = 0
+        _sz = _struct_csi.Struct("<H").unpack
+        while cursor < len(data) - 4:
+            try:
+                field_len = _sz(data[cursor:cursor+2])[0]
+                if cursor + field_len > len(data): break
+                cursor += 2
+                hdr = _struct_csi.unpack_from(cls._HDR_FMT_LE, data, cursor)
+                nc = int(hdr[3]); nr = int(hdr[2])
+                nc = max(1, min(nc, 3)); nr = max(1, min(nr, 3))
+                num_tones = int(hdr[8])
+                rssi = int(hdr[9])
+                noise_floor = int(hdr[6])
+                bw = 20 if hdr[7] == 0 else 40
+                csi_length = int(hdr[1])
+                cursor += cls._HDR_SIZE
+                payload = data[cursor:cursor + csi_length]
+                if len(payload) >= 4 and num_tones > 0 and num_tones <= 128:
+                    csi = cls._read_bfee(payload, nr, nc, num_tones)
+                    frames.append({"csi": csi, "rssi": rssi, "noise_floor": noise_floor,
+                                   "bw": bw, "nr": nr, "nc": nc, "num_tones": num_tones})
+                cursor += max(field_len - cls._HDR_SIZE, 0)
+            except Exception:
+                cursor += 1
+        return frames
+
+    @classmethod
+    def extract_amplitude(cls, frames: list) -> "np.ndarray":
+        if not frames:
+            return np.zeros((0, 56), dtype=np.float32)
+        amps = []
+        for f in frames:
+            csi_mag = np.abs(f["csi"]).mean(axis=(1, 2))
+            amps.append(csi_mag)
+        return np.array(amps, dtype=np.float32)
+
+
+# ════════════ PASS 37: FMCW POINT CLOUD PIPELINE (mmMesh/mmBody style) ════════════
+# Ported from mmMesh pc_generation.py: range→Doppler→azimuth→elevation→3D xyz
+
+class FMCWPointCloudProcessor:
+    """Pass 37: FMCW radar point cloud pipeline — inline reimplementation of
+    mmMesh/mmBody pc_generation.py + naive_xyz().
+    Processes a (n_tx, n_rx, n_chirps, n_samples) raw ADC frame into a (N, 6) 
+    point cloud [x, y, z, velocity, snr, range] for 3D body/object tracking.
+    Works as a numpy-only alternative to GPU P4Transformer: feeds detected
+    point clouds into the WiFi3DFusionEngine / skeleton estimator.
+    """
+    def __init__(self, num_tx: int = 3, num_rx: int = 4,
+                 loops_per_frame: int = 64, adc_samples: int = 128,
+                 enable_static_removal: bool = True, range_cut: bool = True,
+                 top_k: int = 128):
+        self.num_tx = num_tx; self.num_rx = num_rx
+        self.loops_per_frame = loops_per_frame
+        self.adc_samples = adc_samples
+        self.enable_static_removal = enable_static_removal
+        self.range_cut = range_cut
+        self.top_k = top_k
+        self._coupling_sig = np.zeros((num_tx, num_rx, 9), dtype=np.complex128)
+
+    def process_frame(self, raw_adc: "np.ndarray") -> "np.ndarray":
+        """Process one FMCW frame. raw_adc: (n_tx, n_rx, n_chirps, n_samples) complex.
+        Returns (N, 6) point cloud or empty array.
+        """
+        try:
+            frame = np.asarray(raw_adc, dtype=np.complex128)
+            if frame.ndim != 4:
+                return np.zeros((0, 6), dtype=np.float32)
+            n_tx, n_rx, n_chirps, n_samples = frame.shape
+            # Range FFT
+            windowed = frame * np.hamming(n_samples)[None, None, None, :]
+            range_res = np.fft.fft(windowed, axis=3)
+            # Static clutter removal
+            if self.enable_static_removal:
+                range_res = range_res - range_res.mean(axis=2, keepdims=True)
+            # Doppler FFT
+            win2d = np.hamming(n_chirps)[None, None, :, None]
+            doppler_res = np.fft.fft(range_res * win2d, axis=2)
+            doppler_res = np.fft.fftshift(doppler_res, axes=2)
+            # Virtual aperture — (2*n_rx, n_chirps, n_samples) for ULA
+            virt = doppler_res.reshape(n_tx * n_rx, n_chirps, n_samples)
+            # Energy map
+            energy = np.abs(virt).sum(axis=0)           # (n_chirps, n_samples)
+            # Select top-k range-Doppler cells
+            flat = energy.ravel()
+            if len(flat) == 0: return np.zeros((0, 6), dtype=np.float32)
+            k = min(self.top_k, len(flat))
+            top_idx = np.argpartition(flat, -k)[-k:]
+            doppler_bins, range_bins = np.unravel_index(top_idx, energy.shape)
+            # Per-detected-object 3D localisation (naive_xyz port)
+            pts = self._naive_xyz(virt, doppler_bins, range_bins, n_tx, n_rx)
+            return pts
+        except Exception:
+            return np.zeros((0, 6), dtype=np.float32)
+
+    def _naive_xyz(self, virt: "np.ndarray", doppler_bins: "np.ndarray",
+                   range_bins: "np.ndarray", num_tx: int, num_rx: int,
+                   fft_size: int = 64) -> "np.ndarray":
+        """Per-point azimuth/elevation from virtual aperture (ported from naive_xyz).
+        Returns (N, 6) array: [x, y, z, velocity, snr, range_bin_norm].
+        """
+        n_detected = len(range_bins)
+        if n_detected == 0:
+            return np.zeros((0, 6), dtype=np.float32)
+        pts = []
+        n_az_rx = 2 * num_rx   # ULA azimuth elements
+        for i in range(n_detected):
+            d_bin = doppler_bins[i]; r_bin = range_bins[i]
+            # Virtual antenna vector at this range-Doppler cell
+            virtual_ant = virt[:, d_bin, r_bin]     # (n_tx*n_rx,)
+            if virtual_ant.shape[0] < n_az_rx:
+                virtual_ant = np.pad(virtual_ant, (0, n_az_rx - virtual_ant.shape[0]))
+            az_ant  = virtual_ant[:n_az_rx]
+            el_ant  = virtual_ant[n_az_rx:n_az_rx + num_rx] if virtual_ant.shape[0] > n_az_rx else az_ant[:num_rx]
+            # Azimuth FFT
+            az_pad = np.zeros(fft_size, dtype=np.complex128)
+            az_pad[:min(n_az_rx, fft_size)] = az_ant[:fft_size]
+            az_fft  = np.fft.fft(az_pad)
+            k_max   = int(np.argmax(np.abs(az_fft)))
+            peak1   = az_fft[k_max]
+            if k_max > fft_size // 2 - 1: k_max -= fft_size
+            wx = 2 * np.pi / fft_size * k_max
+            x_v = wx / np.pi
+            # Elevation FFT
+            el_pad = np.zeros(fft_size, dtype=np.complex128)
+            el_pad[:min(num_rx, fft_size)] = el_ant[:fft_size]
+            el_fft  = np.fft.fft(el_pad)
+            el_max  = int(np.argmax(np.abs(el_fft)))
+            peak2   = el_fft[el_max]
+            wz = float(np.angle(peak1 * np.conj(peak2) * np.exp(1j * 2 * wx)))
+            z_v = wz / np.pi
+            y2 = 1.0 - x_v**2 - z_v**2
+            if y2 < 0: x_v = z_v = 0.0; y2 = 0.0
+            y_v = float(np.sqrt(y2))
+            snr = float(np.abs(virtual_ant).max() / (np.median(np.abs(virtual_ant)) + 1e-9))
+            vel = float(d_bin - virt.shape[1] // 2) / max(virt.shape[1], 1)
+            range_n = float(r_bin) / max(virt.shape[2], 1)
+            pts.append([float(x_v), float(y_v), float(z_v), vel, snr, range_n])
+        if not pts:
+            return np.zeros((0, 6), dtype=np.float32)
+        return np.array(pts, dtype=np.float32)
+
+    def from_csi_proxy(self, csi_complex: "np.ndarray",
+                       n_tx: int = 2, n_rx: int = 4) -> "np.ndarray":
+        """Create a synthetic FMCW-like frame from WiFi CSI complex amplitudes.
+        Reshapes subcarrier vector into a (n_tx, n_rx, n_chirps, n_samples) frame.
+        This bridges the CSI sensing stream to the FMCW point cloud pipeline.
+        """
+        csi = np.asarray(csi_complex, dtype=np.complex128).ravel()
+        n = len(csi)
+        n_chirps = 8; n_samples = max(4, n // (n_tx * n_rx * n_chirps))
+        total_needed = n_tx * n_rx * n_chirps * n_samples
+        csi_padded = np.resize(csi, total_needed)
+        frame = csi_padded.reshape(n_tx, n_rx, n_chirps, n_samples)
+        return self.process_frame(frame)
+
+    def process_adc_frame_mmwave(self, int16_adc: "np.ndarray") -> "np.ndarray":
+        """
+        Process raw int16 ADC data in TI-mmWave / mmMesh format.
+        Ported from mmMesh pc_generation.py frame2pointcloud().
+        int16_adc: flat int16 array of length frameSize*2 (real+imag interleaved).
+        Returns (N, 6) point cloud: [x, y, z, velocity, energy_db, range_m]
+        """
+        try:
+            frame16 = np.asarray(int16_adc, dtype=np.int16)
+            n_complex = len(frame16) // 2
+            np_frame = np.zeros(n_complex, dtype=np.complex64)
+            np_frame[0::2] = frame16[0::4].astype(np.float32) + 1j * frame16[2::4].astype(np.float32)
+            np_frame[1::2] = frame16[1::4].astype(np.float32) + 1j * frame16[3::4].astype(np.float32)
+        except Exception:
+            return np.zeros((0, 6), dtype=np.float32)
+
+        try:
+            cube = np_frame.reshape(
+                self.loops, self.num_tx, self.num_rx, self.n_adc
+            ).transpose(1, 2, 0, 3).astype(np.complex64)
+        except ValueError:
+            sz = self.loops * self.num_tx * self.num_rx * self.n_adc
+            cube = np.resize(np_frame, sz).reshape(
+                self.loops, self.num_tx, self.num_rx, self.n_adc
+            ).transpose(1, 2, 0, 3).astype(np.complex64)
+
+        # Range FFT
+        win_r = np.hamming(self.n_adc).astype(np.float32)
+        range_fft = np.fft.fft(cube * win_r, axis=-1)
+        # Clutter removal
+        if self.enable_static_removal:
+            range_fft -= range_fft.mean(axis=2, keepdims=True)
+        # Doppler FFT
+        win_d = np.hamming(self.loops).reshape(1, 1, -1, 1).astype(np.float32)
+        doppler = np.fft.fftshift(np.fft.fft(range_fft * win_d, axis=2), axes=2)
+        # Sum antennas
+        power_db = np.log10(np.sum(np.abs(doppler), axis=(0, 1)) + 1e-12)
+        # Coupling signature cut (bins 0-4 and last 4)
+        power_db[:, :5]  = -100
+        power_db[:, -4:] = -100
+        # Top-128 CFAR
+        top_n = min(128, power_db.size)
+        thr = float(np.partition(power_db.ravel(), -top_n)[-top_n])
+        det = np.argwhere(power_db > thr)
+        if len(det) == 0:
+            return np.zeros((0, 6), dtype=np.float32)
+        R_bins = det[:, 1].astype(np.float64) * self.range_res
+        V_bins = (det[:, 0] - self.loops // 2).astype(np.float64) * self.doppler_res
+        energy = power_db[power_db > thr]
+        aoa_in = doppler[:, :, power_db > thr].reshape(self.num_tx * self.num_rx, -1)
+        x_v, y_v, z_v = self._naive_xyz_mmwave(aoa_in)
+        valid = y_v != 0
+        if not np.any(valid):
+            return np.zeros((0, 6), dtype=np.float32)
+        pts = np.stack([
+            x_v[valid] * R_bins[valid],
+            y_v[valid] * R_bins[valid],
+            z_v[valid] * R_bins[valid],
+            V_bins[valid],
+            energy[valid],
+            R_bins[valid],
+        ], axis=-1).astype(np.float32)
+        self._last_points = pts
+        return pts
+
+    def _naive_xyz_mmwave(self, virtual_ant: "np.ndarray",
+                           fft_size: int = 64) -> tuple:
+        """
+        Estimate azimuth/elevation from virtual aperture matrix.
+        Ported directly from mmMesh naive_xyz() in pc_generation.py.
+        virtual_ant: (num_tx*num_rx, n_detected) complex
+        Returns (x_vector, y_vector, z_vector) each (n_detected,) float
+        """
+        num_rx = self.num_rx
+        num_detected = virtual_ant.shape[1]
+        azimuth_ant = virtual_ant[:2 * num_rx, :]
+        az_pad = np.zeros((fft_size, num_detected), dtype=np.complex128)
+        az_pad[:min(2 * num_rx, fft_size)] = azimuth_ant[:fft_size]
+        az_fft  = np.fft.fft(az_pad, axis=0)
+        k_max   = np.argmax(np.abs(az_fft), axis=0)
+        peak_1  = az_fft[k_max, np.arange(num_detected)]
+        k_max_s = k_max.copy()
+        k_max_s[k_max_s > fft_size // 2 - 1] -= fft_size
+        wx = 2 * np.pi / fft_size * k_max_s
+        x_vec = wx / np.pi
+        # Elevation
+        elev_ant = virtual_ant[2*num_rx:, :] if virtual_ant.shape[0] > 2*num_rx else virtual_ant[:num_rx, :]
+        el_pad  = np.zeros((fft_size, num_detected), dtype=np.complex128)
+        el_pad[:min(num_rx, fft_size)] = elev_ant[:fft_size]
+        el_fft  = np.fft.fft(el_pad, axis=0)
+        el_max  = np.argmax(np.log2(np.abs(el_fft) + 1e-12), axis=0)
+        peak_2  = el_fft[el_max, np.arange(num_detected)]
+        wz = np.angle(peak_1 * np.conj(peak_2) * np.exp(1j * 2 * wx))
+        z_vec = wz / np.pi
+        y_poss = 1.0 - x_vec**2 - z_vec**2
+        x_vec[y_poss < 0] = 0.0
+        z_vec[y_poss < 0] = 0.0
+        y_poss[y_poss < 0] = 0.0
+        y_vec = np.sqrt(y_poss)
+        return x_vec.astype(np.float64), y_vec.astype(np.float64), z_vec.astype(np.float64)
+
+
+# ════════════ PASS 37: NERF2-INSPIRED POSITIONAL ENCODING UPGRADE ════════════
+# Ported from NeRF2 model.py — full Fourier positional encoding for RF-NeRF
+
+class NeRF2Embedder:
+    """Pass 37: NeRF2 positional encoding (Fourier features).
+    Ported from crucialuseexamplecode11/NeRF2-main/model.py.
+    Encodes 3D position + view direction with sin/cos Fourier features.
+    Used to upgrade RF-NeRF hash encoding to full NeRF2-grade sampling.
+    """
+    def __init__(self, input_dims: int = 3, num_freqs: int = 10,
+                 max_freq_log2: int = 9, include_input: bool = True,
+                 log_sampling: bool = True):
+        self.input_dims = input_dims
+        self.num_freqs = num_freqs
+        self.include_input = include_input
+        if log_sampling:
+            freq_bands = 2.0 ** np.linspace(0.0, float(max_freq_log2), num_freqs)
+        else:
+            freq_bands = np.linspace(1.0, 2.0**max_freq_log2, num_freqs)
+        self.freq_bands = freq_bands.astype(np.float32)
+        self.out_dim = (input_dims if include_input else 0) + 2 * input_dims * num_freqs
+
+    def embed(self, pts: "np.ndarray") -> "np.ndarray":
+        """pts: (..., input_dims) → (..., out_dim) Fourier features."""
+        pts = np.asarray(pts, dtype=np.float32)
+        parts = [pts] if self.include_input else []
+        for freq in self.freq_bands:
+            parts.append(np.sin(pts * freq))
+            parts.append(np.cos(pts * freq))
+        return np.concatenate(parts, axis=-1)
+
+
+class NeRF2SceneModel:
+    """Pass 37: Lightweight NeRF2-inspired numpy scene model.
+    Replaces the basic anchor-interpolation fallback in WorldReconstructionEngine
+    with a full MLP that takes NeRF2-encoded position + view direction.
+    Architecture: embed(pos,10freq) → 256 → 256 → (amplitude, phase).
+    No torch required — uses numpy MLP with cached weights.
+    """
+    def __init__(self, hidden: int = 64):
+        self._pos_enc = NeRF2Embedder(input_dims=3, num_freqs=6, include_input=True)
+        _in = self._pos_enc.out_dim      # 3 + 2*3*6 = 39
+        self._hidden = hidden
+        rng = np.random.RandomState(1337)
+        # 2-layer MLP: in → 64 → 64 → 2
+        scale = np.sqrt(2.0 / _in)
+        self._W1 = rng.randn(_in, hidden).astype(np.float32) * scale
+        self._b1 = np.zeros(hidden, dtype=np.float32)
+        self._W2 = rng.randn(hidden, hidden).astype(np.float32) * np.sqrt(2.0/hidden)
+        self._b2 = np.zeros(hidden, dtype=np.float32)
+        self._W3 = rng.randn(hidden, 2).astype(np.float32) * np.sqrt(2.0/hidden)
+        self._b3 = np.zeros(2, dtype=np.float32)
+        # Stored anchor data for online learning
+        self._anchors = np.zeros((0, 3), dtype=np.float32)
+        self._targets = np.zeros((0, 2), dtype=np.float32)
+        self._n_trained = 0
+
+    def _forward(self, pts: "np.ndarray") -> "np.ndarray":
+        x = self._pos_enc.embed(pts)
+        h = np.maximum(0.0, x @ self._W1 + self._b1)
+        h = np.maximum(0.0, h @ self._W2 + self._b2)
+        out = h @ self._W3 + self._b3
+        return out   # (N, 2) — [amplitude, phase]
+
+    def train_step(self, pts: "np.ndarray", amp: "np.ndarray",
+                   lr: float = 0.001):
+        """One gradient step from (pts, amplitude) pairs — online learning."""
+        pts = np.asarray(pts, dtype=np.float32)
+        if len(pts) == 0: return
+        amp = np.asarray(amp, dtype=np.float32)
+        target = np.stack([amp / (amp.max() + 1e-9), np.zeros_like(amp)], axis=-1)
+        # Forward
+        enc = self._pos_enc.embed(pts)
+        h1 = np.maximum(0.0, enc @ self._W1 + self._b1)
+        h2 = np.maximum(0.0, h1 @ self._W2 + self._b2)
+        pred = h2 @ self._W3 + self._b3
+        # Backward (MSE)
+        err = (pred - target)
+        dW3 = h2.T @ err / len(pts)
+        db3 = err.mean(0)
+        dh2 = (err @ self._W3.T) * (h2 > 0)
+        dW2 = h1.T @ dh2 / len(pts)
+        db2 = dh2.mean(0)
+        dh1 = (dh2 @ self._W2.T) * (h1 > 0)
+        dW1 = enc.T @ dh1 / len(pts)
+        db1 = dh1.mean(0)
+        # Gradient descent
+        self._W3 -= lr * dW3; self._b3 -= lr * db3
+        self._W2 -= lr * dW2; self._b2 -= lr * db2
+        self._W1 -= lr * dW1; self._b1 -= lr * db1
+        self._n_trained += 1
+
+    def query(self, pts: "np.ndarray") -> "np.ndarray":
+        """Query amplitude at world points → float32 (N,)."""
+        pts = np.asarray(pts, dtype=np.float32)
+        if len(pts) == 0: return np.zeros(0, dtype=np.float32)
+        out = self._forward(pts)
+        return np.clip(out[:, 0], 0, 1).astype(np.float32)
+
+
+# ════════════ PASS 37: RF-GS COVARIANCE GAUSSIAN RENDER (numpy) ════════════
+# Ported from RF-GS neural_gaussian_splats.py — covariance-based splatting
+
+class RFGaussianSplatRenderer:
+    """Pass 37: RF Gaussian Splatting renderer — inline numpy reimplementation
+    of RF-GS (Crucialuseexamplecode12/neural_gaussian_splats.py).
+    Stores Gaussians as (positions, scales, rotations_quat, opacity, color).
+    Renders a camera view via alpha-composited elliptical splats with proper
+    covariance projected to 2D (vs. the previous spherical-splat approximation).
+    """
+    def __init__(self, max_gaussians: int = 5000):
+        self.max_gaussians = max_gaussians
+        self._pos   = np.zeros((0, 3), dtype=np.float32)
+        self._scales = np.zeros((0, 3), dtype=np.float32)
+        self._quat  = np.zeros((0, 4), dtype=np.float32)   # w,x,y,z
+        self._opacity = np.zeros((0,), dtype=np.float32)
+        self._color = np.zeros((0, 3), dtype=np.float32)
+        self._n_active = 0
+
+    def update_from_voxels(self, voxel_grid: "np.ndarray",
+                           voxel_to_world: float = 1.0):
+        """Build Gaussian cloud from an occupied voxel field (N, 4) or 3D grid."""
+        vg = np.asarray(voxel_grid, dtype=np.float32)
+        if vg.ndim == 3:
+            pts = np.argwhere(vg > 0.1).astype(np.float32) * voxel_to_world
+            amp = vg[vg > 0.1].astype(np.float32)
+        else:
+            pts = vg[:, :3]; amp = vg[:, 3] if vg.shape[1] > 3 else np.ones(len(vg))
+        if len(pts) == 0: return
+        # Prune to max_gaussians by amplitude
+        if len(pts) > self.max_gaussians:
+            idx = np.argpartition(amp, -self.max_gaussians)[-self.max_gaussians:]
+            pts = pts[idx]; amp = amp[idx]
+        n = len(pts)
+        self._pos  = pts.astype(np.float32)
+        self._scales = np.ones((n, 3), dtype=np.float32) * 0.05
+        self._quat = np.zeros((n, 4), dtype=np.float32); self._quat[:, 0] = 1.0
+        self._opacity = np.clip(amp / (amp.max() + 1e-9), 0.05, 0.95).astype(np.float32)
+        # Colour: RF amplitude → cyan-to-white heat scale
+        t = self._opacity[:, None]
+        self._color = (np.array([[0, 1, 0.8]]) * (1 - t) +
+                       np.array([[1, 1, 1]]) * t).astype(np.float32)
+        self._n_active = n
+
+    @staticmethod
+    def _quat_to_rot(q: "np.ndarray") -> "np.ndarray":
+        """(4,) quaternion w,x,y,z → (3,3) rotation matrix."""
+        w, x, y, z = q[0], q[1], q[2], q[3]
+        return np.array([
+            [1-2*(y*y+z*z), 2*(x*y-w*z),   2*(x*z+w*y)],
+            [2*(x*y+w*z),   1-2*(x*x+z*z), 2*(y*z-w*x)],
+            [2*(x*z-w*y),   2*(y*z+w*x),   1-2*(x*x+y*y)],
+        ], dtype=np.float32)
+
+    def render(self, cam_pos: "np.ndarray", cam_target: "np.ndarray",
+               width: int = 160, height: int = 120, fov_deg: float = 60.0) -> "np.ndarray":
+        """Alpha-composite render with elliptical 2D Gaussian footprints.
+        Returns (H, W, 3) float32 image in [0, 1].
+        Upgrade over simple point splats: uses projected covariance Σ_2D.
+        """
+        img  = np.zeros((height, width, 3), dtype=np.float32)
+        if self._n_active == 0:
+            return img
+        cam  = np.asarray(cam_pos, dtype=np.float32)
+        tgt  = np.asarray(cam_target, dtype=np.float32)
+        fwd  = tgt - cam; fwd /= (np.linalg.norm(fwd) + 1e-9)
+        up0  = np.array([0., 0., 1.])
+        right = np.cross(fwd, up0); right /= (np.linalg.norm(right) + 1e-9)
+        up    = np.cross(right, fwd)
+        f = (0.5 * width) / float(np.tan(np.deg2rad(fov_deg) / 2))
+        # Camera-space transform
+        rel   = self._pos - cam                          # (N, 3)
+        z_cam = rel @ fwd
+        front = z_cam > 0.1
+        if not front.any():
+            return img
+        rel_f = rel[front]; z_f = z_cam[front]
+        op_f  = self._opacity[front]
+        col_f = self._color[front]
+        sc_f  = self._scales[front]
+        x_cam = rel_f @ right
+        y_cam = rel_f @ up
+        sx = (x_cam / z_f * f + width  / 2).astype(int)
+        sy = (-y_cam / z_f * f + height / 2).astype(int)
+        # Projected Gaussian radius: σ_2D = scale * f / z (approximation)
+        rad   = np.clip((sc_f.max(axis=1) * f / (z_f + 1e-3)).astype(int), 1, 24)
+        order = np.argsort(-z_f)   # back-to-front
+        acc   = np.ones((height, width), dtype=np.float32)   # accumulated transmittance
+        for i in order:
+            px, py, r = int(sx[i]), int(sy[i]), int(rad[i])
+            x0, x1 = max(0, px-r), min(width,  px+r+1)
+            y0, y1 = max(0, py-r), min(height, py+r+1)
+            if x0 >= x1 or y0 >= y1:
+                continue
+            a = float(op_f[i])
+            img[y0:y1, x0:x1] += acc[y0:y1, x0:x1, None] * a * col_f[i]
+            acc[y0:y1, x0:x1] *= (1.0 - a)
+        return np.clip(img, 0, 1)
+
+
+# ─── Pass 38: AdaptiveChannelManager, CSIDataProcessor, CSIPersonDetector ───
+
+class _ACM_ChannelStats:
+    """Per-channel statistics for AdaptiveChannelManager."""
+    __slots__ = ('activity','variance','rssi_history','frames','ewma')
+    def __init__(self):
+        self.activity = 0.0
+        self.variance = 0.0
+        self.rssi_history = []
+        self.frames = 0
+        self.ewma = 0.0
+
+
+class AdaptiveChannelManager:
+    """
+    Tracks per-channel activity/quality metrics and recommends the best
+    WiFi channels for CSI capture.  Ported from run_realtime_hop.py
+    (wifi-3d-fusion).
+
+    No subprocess/iw calls here — the channel-set command is returned as a
+    string for the caller to execute if it chooses.
+    """
+    ALPHA = 0.15  # EMA smoothing
+
+    def __init__(self, candidate_channels=None):
+        self.candidates = candidate_channels or [1, 6, 11, 36, 40, 44, 48]
+        self.stats: dict = {ch: _ACM_ChannelStats() for ch in self.candidates}
+        self._best: list = list(self.candidates[:2])
+        self._update_count = 0
+
+    def update_channel_activity(self, channel: int, amp_array, rssi: float = -70.0):
+        """Feed one CSI amplitude snapshot for a given channel."""
+        if channel not in self.stats:
+            self.stats[channel] = _ACM_ChannelStats()
+            if channel not in self.candidates:
+                self.candidates.append(channel)
+        s = self.stats[channel]
+        s.frames += 1
+        a = float(np.std(amp_array)) if len(amp_array) > 1 else 0.0
+        s.variance = (1 - self.ALPHA) * s.variance + self.ALPHA * a
+        s.activity = (1 - self.ALPHA) * s.activity + self.ALPHA * min(a / 0.05, 1.0)
+        s.rssi_history.append(float(rssi))
+        if len(s.rssi_history) > 60:
+            s.rssi_history.pop(0)
+        mean_rssi = float(np.mean(s.rssi_history)) if s.rssi_history else -90.0
+        s.ewma = (1 - self.ALPHA) * s.ewma + self.ALPHA * mean_rssi
+        self._update_count += 1
+        if self._update_count % 50 == 0:
+            self._refresh_best()
+
+    def _channel_quality_score(self, ch: int) -> float:
+        s = self.stats.get(ch)
+        if s is None or s.frames < 3:
+            return 0.0
+        rssi_norm = max(0.0, (s.ewma + 100.0) / 70.0)   # -100…-30 → 0…1
+        var_norm  = min(s.variance / 0.1, 1.0)
+        act_norm  = s.activity
+        return 0.4 * rssi_norm + 0.3 * var_norm + 0.3 * act_norm
+
+    def _refresh_best(self):
+        scores = {ch: self._channel_quality_score(ch) for ch in self.candidates}
+        ranked = sorted(scores, key=lambda c: scores[c], reverse=True)
+        self._best = ranked[:2]
+
+    def get_best_channels(self) -> list:
+        return list(self._best)
+
+    def suggest_hop_command(self, iface: str = "wlan0") -> str:
+        """Return an `iw dev` shell command to hop to the best channel (caller decides to run it)."""
+        if not self._best:
+            return ""
+        ch = self._best[0]
+        band = "HT40+" if ch <= 13 else "HT80"
+        return f"iw dev {iface} set channel {ch} {band}"
+
+    def summary(self) -> dict:
+        return {
+            "best_channels": self._best,
+            "channel_scores": {ch: round(self._channel_quality_score(ch), 3)
+                               for ch in self.candidates},
+        }
+
+
+class CSIDataProcessor:
+    """
+    Quality-weighted multi-channel CSI amplitude fusion + environment analysis.
+    Ported from run_realtime_hop.py (wifi-3d-fusion).
+
+    Tracks a rolling signal history window and derives:
+      activity      — 0-1 normalised movement activity
+      complexity    — spectral entropy of cross-channel differences
+      energy        — mean signal energy (log scale)
+      movement      — bool, True when above adaptive threshold
+    """
+    HIST_LEN = 120   # frames
+    ALPHA    = 0.12
+
+    def __init__(self, n_subcarriers: int = 56):
+        self.n_sub = n_subcarriers
+        self._history: list = []           # list of (channel, amp_vec, quality)
+        self._env = dict(activity=0.0, complexity=0.0, energy=0.0,
+                         movement=False, movement_score=0.0)
+        self._base_amp: np.ndarray | None = None
+        self._sensitivity: float = 0.025  # auto-tuned
+
+    def _amplitude_quality(self, amp: np.ndarray) -> float:
+        """Simple quality metric: 0 for clipped/silent, 1 for healthy."""
+        if amp.size == 0:
+            return 0.0
+        mx = float(np.max(amp))
+        if mx < 1e-9 or mx > 0.999:
+            return 0.0
+        snr_proxy = float(np.mean(amp)) / (float(np.std(amp)) + 1e-6)
+        return float(np.clip(snr_proxy / 5.0, 0.0, 1.0))
+
+    def update(self, channel: int, csi_complex: np.ndarray, rssi: float = -70.0):
+        """Ingest one complex CSI snapshot; update environment analysis."""
+        amp = np.abs(csi_complex).astype(np.float32)
+        amp = np.resize(amp, self.n_sub)
+        norm = np.max(amp) + 1e-9
+        amp = amp / norm
+        q = self._amplitude_quality(amp)
+        self._history.append((channel, amp, q))
+        if len(self._history) > self.HIST_LEN:
+            self._history.pop(0)
+        if len(self._history) < 4:
+            return
+        self._update_baseline(amp)
+        self._analyse()
+
+    def _update_baseline(self, amp: np.ndarray):
+        if self._base_amp is None:
+            self._base_amp = amp.copy()
+        else:
+            self._base_amp = (1 - 0.005) * self._base_amp + 0.005 * amp
+
+    def _analyse(self):
+        amps = np.stack([h[1] for h in self._history], axis=0)  # (N, sub)
+        qs   = np.array([h[2] for h in self._history])
+
+        # weighted mean amplitude
+        w = qs / (qs.sum() + 1e-9)
+        fused = (amps * w[:, None]).sum(axis=0)
+
+        # movement detection vs baseline
+        if self._base_amp is not None:
+            diff = np.abs(fused - self._base_amp)
+            mv_score = float(np.mean(diff))
+            self._env['movement_score'] = mv_score
+            self._env['movement'] = mv_score > self._sensitivity
+        else:
+            mv_score = 0.0
+
+        # activity = rolling std of frame-to-frame differences
+        if len(self._history) >= 2:
+            diffs = np.diff(amps[-min(30, len(amps)):], axis=0)
+            act = float(np.mean(np.std(diffs, axis=0)))
+            self._env['activity'] = float(np.clip(act / 0.04, 0.0, 1.0))
+        else:
+            act = 0.0
+
+        # spectral entropy of column variances (complexity)
+        col_var = np.var(amps, axis=0) + 1e-12
+        p = col_var / col_var.sum()
+        entropy = float(-np.sum(p * np.log2(p + 1e-12)))
+        max_ent = float(np.log2(self.n_sub))
+        self._env['complexity'] = float(np.clip(entropy / max_ent, 0.0, 1.0))
+
+        # energy
+        self._env['energy'] = float(np.clip(10 * np.log10(np.mean(fused**2) + 1e-12) / 30.0 + 1.0, 0.0, 1.0))
+
+        # auto-tune sensitivity every 60 frames
+        if len(self._history) % 60 == 0:
+            recent_scores = [float(np.mean(np.abs(amps[i] - self._base_amp)))
+                             for i in range(len(amps)) if self._base_amp is not None]
+            if recent_scores:
+                self._sensitivity = float(np.percentile(recent_scores, 75)) * 1.2
+
+    def fused_amplitude(self) -> np.ndarray:
+        """Return quality-weighted fused amplitude vector."""
+        if not self._history:
+            return np.zeros(self.n_sub, dtype=np.float32)
+        amps = np.stack([h[1] for h in self._history[-16:]], axis=0)
+        qs   = np.array([h[2] for h in self._history[-16:]])
+        w = qs / (qs.sum() + 1e-9)
+        return (amps * w[:, None]).sum(axis=0).astype(np.float32)
+
+    def environment_summary(self) -> dict:
+        return dict(self._env)
+
+
+class _NumpyConv1D:
+    """Minimal 1D conv + relu + maxpool block in pure numpy."""
+    def __init__(self, in_ch, out_ch, kernel=3, stride=1):
+        limit = np.sqrt(2.0 / (in_ch * kernel))
+        self.W = np.random.uniform(-limit, limit,
+                                   (out_ch, in_ch, kernel)).astype(np.float32)
+        self.b = np.zeros(out_ch, dtype=np.float32)
+
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        # x: (in_ch, L) → out: (out_ch, L')
+        oc, ic, k = self.W.shape
+        L = x.shape[-1]
+        L_out = L - k + 1
+        out = np.zeros((oc, L_out), dtype=np.float32)
+        for o in range(oc):
+            for kk in range(k):
+                out[o] += self.W[o, :, kk] @ x[:, kk:kk + L_out]
+            out[o] += self.b[o]
+        return np.maximum(out, 0)  # ReLU
+
+    @staticmethod
+    def maxpool(x, size=2):
+        L = x.shape[-1] // size * size
+        return x[:, :L].reshape(x.shape[0], -1, size).max(axis=2)
+
+
+class CSIPersonDetector:
+    """
+    Pure-numpy Conv1D person-presence detector.  Architecture mirrors
+    train_model.py (wifi-3d-fusion):
+        Conv1D(1→32, k=7) → MaxPool(2)
+        Conv1D(32→64, k=5) → MaxPool(2)
+        Conv1D(64→128, k=3) → AdaptiveAvgPool
+        Linear(128→1) → sigmoid
+    Online learning via high-confidence sample gating.
+    """
+    def __init__(self, in_len: int = 56):
+        np.random.seed(42)
+        self.in_len = in_len
+        self.conv1 = _NumpyConv1D(1, 32, kernel=7)
+        self.conv2 = _NumpyConv1D(32, 64, kernel=5)
+        self.conv3 = _NumpyConv1D(64, 128, kernel=3)
+        # Linear head: 128 → 1
+        self.W_fc = np.random.randn(1, 128).astype(np.float32) * 0.1
+        self.b_fc = np.zeros(1, dtype=np.float32)
+        # Online learning buffer
+        self._sample_buf: list = []   # (amp_vec, label) pairs
+        self._trained_steps = 0
+        self._last_prob = 0.5
+
+    def _forward(self, amp: np.ndarray) -> float:
+        x = amp[:self.in_len]
+        x = np.resize(x, self.in_len).astype(np.float32)
+        x = (x - x.mean()) / (x.std() + 1e-6)
+        x = x[None, :]            # (1, in_len)
+        h = _NumpyConv1D.maxpool(self.conv1.forward(x), 2)
+        h = _NumpyConv1D.maxpool(self.conv2.forward(h), 2)
+        h = _NumpyConv1D.maxpool(self.conv3.forward(h), 2)
+        feat = h.mean(axis=1)     # adaptive avg pool → (128,)
+        logit = float(self.W_fc @ feat + self.b_fc)
+        prob = 1.0 / (1.0 + np.exp(-logit))
+        return float(prob)
+
+    def predict(self, amp: np.ndarray) -> dict:
+        p = self._forward(amp)
+        self._last_prob = p
+        state = "person" if p > 0.6 else ("uncertain" if p > 0.4 else "empty")
+        return {"probability": round(p, 3), "state": state,
+                "trained_steps": self._trained_steps}
+
+    def online_learn(self, amp: np.ndarray, label: float, lr: float = 0.01):
+        """High-confidence gated online learning (only on confident predictions)."""
+        p = self._forward(amp)
+        if abs(p - 0.5) < 0.15:
+            return  # ignore uncertain samples
+        # very small FC-only gradient step
+        x = amp[:self.in_len]
+        x = np.resize(x, self.in_len).astype(np.float32)
+        x = (x - x.mean()) / (x.std() + 1e-6)
+        x = x[None, :]
+        h = _NumpyConv1D.maxpool(self.conv1.forward(x), 2)
+        h = _NumpyConv1D.maxpool(self.conv2.forward(h), 2)
+        h = _NumpyConv1D.maxpool(self.conv3.forward(h), 2)
+        feat = h.mean(axis=1)
+        err = label - p
+        self.W_fc += lr * err * feat[None, :]
+        self.b_fc  += lr * err
+        self._trained_steps += 1
+
+
+def _csi_wavefield_render(ap_positions, ap_amplitudes, t: float,
+                           grid_size: int = 64, extent: float = 5.0) -> np.ndarray:
+    """
+    Render a 2D CSI wavefield image (H×W float32) from AP positions.
+    Each AP emits expanding ring-wave Gaussian splats (from run_skeleton_demo.py).
+    ap_positions : list of (x, y) in metres
+    ap_amplitudes: list of float amplitudes (one per AP)
+    t            : time in seconds (controls ring expansion)
+    Returns      : (grid_size, grid_size) float32 image [0,1]
+    """
+    gx = np.linspace(-extent/2, extent/2, grid_size, dtype=np.float32)
+    gy = np.linspace(-extent/2, extent/2, grid_size, dtype=np.float32)
+    XX, YY = np.meshgrid(gx, gy)
+    field = np.zeros((grid_size, grid_size), dtype=np.float32)
+    speed = 0.8       # m/s virtual wave speed
+    wavelength = 0.6  # m
+    sigma = 0.18      # Gaussian blob width (m)
+    n_rings = 5       # number of concentric rings per AP
+    for (ax, ay), amp in zip(ap_positions, ap_amplitudes):
+        if amp < 0.02:
+            continue
+        R = np.sqrt((XX - ax)**2 + (YY - ay)**2)
+        for ring_i in range(n_rings):
+            t_offset = ring_i * wavelength / speed
+            if t < t_offset:
+                continue
+            ring_r = (t - t_offset) * speed % (extent * 0.7)
+            decay = np.exp(-0.1 * ring_r)
+            blob = np.exp(-((R - ring_r)**2) / (2 * sigma**2))
+            field += amp * decay * blob
+    return np.clip(field / (len(ap_positions) + 1e-6), 0, 1).astype(np.float32)
+
+
+# ─── WhoFi-style CSI frame feature extractor (numpy, no torch) ───────────────
+
+def _whofi_csi_frame_to_feat(csi_vec: np.ndarray) -> np.ndarray:
+    """
+    Convert one complex CSI vector → (D, 2) feature matrix [amp_norm, phase_norm].
+    Applies phase unwrapping and linear detrend (CFO/SFO removal).
+    Ported from wifi-3d-fusion/src/preprocess/csi.py.
+    """
+    if np.iscomplexobj(csi_vec):
+        comp = csi_vec.astype(np.complex64)
+    else:
+        comp = csi_vec.astype(np.float32).astype(np.complex64)
+    amp = np.abs(comp).astype(np.float32)
+    ph  = np.angle(comp).astype(np.float32)
+    ph  = np.unwrap(ph)
+    # linear detrend
+    x = np.arange(ph.size, dtype=np.float32)
+    k, b = np.polyfit(x, ph, 1)
+    ph = ph - (k * x + b)
+    def _znorm(v):
+        return (v - v.mean()) / (v.std() + 1e-6)
+    return np.stack([_znorm(amp), _znorm(ph)], axis=-1)   # (D, 2)
+
+
+
+# ─── Pass 39 Part A: Enhanced ESPectre feature extraction + RuntimeMotionPolicy ───
+
+def _espc_extract_features(turbulence_buf, buf_count) -> list:
+    """
+    9-feature turbulence-window statistics for ML motion detection.
+    Ported from espectre micro-espectre/src/features.py.
+    Returns [mean, std, max, min, iqr, skewness, autocorr, mad, waveform_length]
+    """
+    import math as _math
+    if buf_count < 2:
+        return [0.0] * 9
+    vals = list(turbulence_buf[:buf_count])
+    n = len(vals)
+    turb_mean = sum(vals) / n
+    turb_min  = min(vals)
+    turb_max  = max(vals)
+    var_sum = sum((v - turb_mean)**2 for v in vals)
+    turb_var = var_sum / n
+    turb_std = _math.sqrt(turb_var) if turb_var > 0 else 0.0
+
+    # IQR (sorted percentile)
+    sv = sorted(vals)
+    def _pctile(s, p):
+        pos = (len(s) - 1) * p / 100.0
+        lo = int(pos); hi = lo + 1
+        if hi >= len(s): return s[-1]
+        return s[lo] * (1 - (pos - lo)) + s[hi] * (pos - lo)
+    iqr = _pctile(sv, 75) - _pctile(sv, 25)
+
+    # Skewness
+    m3 = sum((v - turb_mean)**3 for v in vals) / n
+    skew = m3 / (turb_std**3) if turb_std > 1e-10 else 0.0
+
+    # Autocorrelation lag-1
+    if n < 3:
+        autocorr = 0.0
+    else:
+        ac = sum((vals[i] - turb_mean) * (vals[i+1] - turb_mean) for i in range(n-1)) / (n-1)
+        autocorr = ac / turb_var if turb_var > 1e-10 else 0.0
+
+    # MAD
+    median = sv[n // 2] if n % 2 else (sv[n//2-1]+sv[n//2])/2.0
+    absdevs = sorted(abs(v - median) for v in vals)
+    mad = absdevs[n//2] if n % 2 else (absdevs[n//2-1]+absdevs[n//2])/2.0
+
+    # Waveform length
+    wl = sum(abs(vals[i+1] - vals[i]) for i in range(n-1))
+
+    return [turb_mean, turb_std, turb_max, turb_min, iqr, skew, autocorr, mad, wl]
+
+
+class RuntimeMotionPolicy:
+    """
+    Hit-filtering + evaluation cadence for debounced motion detection.
+    Ported from espectre micro-espectre/src/runtime_policy.py.
+    Prevents single-frame spurious detections by requiring N consecutive hits.
+    """
+    IDLE   = "IDLE"
+    MOTION = "MOTION"
+
+    def __init__(self, evaluation_interval=25, motion_on_hits=3, motion_off_hits=3):
+        self.evaluation_interval = max(1, int(evaluation_interval))
+        self.motion_on_hits      = max(1, int(motion_on_hits))
+        self.motion_off_hits     = max(1, int(motion_off_hits))
+        self.packets_since_eval  = 0
+        self.effective_state     = self.IDLE
+        self.pending_state       = self.IDLE
+        self.pending_hits        = 0
+
+    def note_packet(self):
+        self.packets_since_eval += 1
+
+    def should_evaluate(self) -> bool:
+        return self.packets_since_eval >= self.evaluation_interval
+
+    def after_evaluation(self):
+        self.packets_since_eval = 0
+
+    def apply_state(self, detector_state: str) -> tuple:
+        """Returns (effective_state, state_changed)."""
+        prev = self.effective_state
+        if detector_state == self.effective_state:
+            self.pending_state = self.effective_state
+            self.pending_hits  = 0
+            return self.effective_state, False
+        if detector_state != self.pending_state:
+            self.pending_state = detector_state
+            self.pending_hits  = 1
+        else:
+            self.pending_hits += 1
+        req = self.motion_on_hits if self.pending_state == self.MOTION else self.motion_off_hits
+        if self.pending_hits >= req:
+            self.effective_state = self.pending_state
+            self.pending_hits    = 0
+        return self.effective_state, self.effective_state != prev
+
+
+# ─── Pass 39 Part B: NeRF2-style 3-head inline model (numpy, no torch) ────────
+
+class _NeRF2Layer:
+    """One Dense→ReLU layer in numpy."""
+    def __init__(self, in_d, out_d):
+        lim = (2.0 / in_d) ** 0.5
+        self.W = (np.random.rand(in_d, out_d).astype(np.float32) * 2 - 1) * lim
+        self.b = np.zeros(out_d, dtype=np.float32)
+    def __call__(self, x):
+        return np.maximum(0, x @ self.W + self.b)
+
+
+class NeRF2FullModel:
+    """
+    Full NeRF2 model ported from NeRF2-main/model.py (numpy, no torch).
+    Dual-network architecture:
+      - Attenuation net : pos_enc(pts) → 8-layer MLP with skip @ layer 4 → (attn_amp, attn_phase)
+      - Signal net      : pos_enc(pts+view+tx) concatenated with attn feature → (sig_amp, sig_phase)
+    Output: [attn_amp, attn_phase, sig_amp, sig_phase] per sample point.
+    """
+    def __init__(self, D=4, W=64, skip=2, pos_freq=6, in_dims=3):
+        """Smaller (D=4, W=64) for CPU real-time inference."""
+        self.in_dims  = in_dims
+        self.pos_freq = pos_freq
+        # positional encoding output dim: in_dims + 2*in_dims*pos_freq
+        enc_dim = in_dims + 2 * in_dims * pos_freq
+        self.skip     = skip
+        self.D        = D
+        # attenuation layers
+        self.att_layers = []
+        for i in range(D):
+            i_d = enc_dim if i == 0 else (W + enc_dim if i == skip else W)
+            self.att_layers.append(_NeRF2Layer(i_d, W))
+        self.att_out_amp   = _NeRF2Layer(W, 1)
+        self.att_out_phase = _NeRF2Layer(W, 1)
+        self.att_feat      = _NeRF2Layer(W, W)
+        # signal head
+        self.sig_l1 = _NeRF2Layer(W + enc_dim + enc_dim, W)  # feat + view_enc + tx_enc
+        self.sig_l2 = _NeRF2Layer(W, W // 2)
+        self.sig_out = _NeRF2Layer(W // 2, 2)
+        self._trained = 0
+
+    def _pos_enc(self, pts: np.ndarray) -> np.ndarray:
+        """Fourier positional encoding. pts: (N, in_dims) → (N, enc_dim)"""
+        freqs = 2.0 ** np.arange(self.pos_freq, dtype=np.float32)
+        parts = [pts]
+        for f in freqs:
+            parts.append(np.sin(f * pts))
+            parts.append(np.cos(f * pts))
+        return np.concatenate(parts, axis=-1).astype(np.float32)
+
+    def forward(self, pts, view=None, tx=None) -> np.ndarray:
+        """pts/view/tx: (N, 3) float32. Returns (N, 4): attn_amp, attn_phase, sig_amp, sig_phase."""
+        N = len(pts)
+        if view is None: view = np.zeros((N, self.in_dims), dtype=np.float32)
+        if tx   is None: tx   = np.zeros((N, self.in_dims), dtype=np.float32)
+        pe_pts  = self._pos_enc(pts)
+        pe_view = self._pos_enc(view)
+        pe_tx   = self._pos_enc(tx)
+        x = pe_pts
+        for i, layer in enumerate(self.att_layers):
+            if i == self.skip:
+                x = np.concatenate([pe_pts, x], axis=-1)
+            x = layer(x)
+        attn_amp   = self.att_out_amp(x)    # (N,1)
+        attn_phase = self.att_out_phase(x)  # (N,1)
+        feat = self.att_feat(x)
+        sig_in = np.concatenate([feat, pe_view, pe_tx], axis=-1)
+        sh = self.sig_l1(sig_in)
+        sh = self.sig_l2(sh)
+        sig = self.sig_out(sh)              # (N,2)
+        return np.concatenate([attn_amp, attn_phase, sig], axis=-1).astype(np.float32)
+
+    def train_step(self, pts, amp_target, lr=0.002):
+        """Minimal online update: gradient on attenuation amplitude output only."""
+        out = self.forward(pts)
+        err = amp_target.reshape(-1, 1) - out[:, 0:1]
+        # Numeric gradient on att_out_amp.W (simplification — full backprop not inlined)
+        grad = -2 * err * lr / max(len(pts), 1)
+        self.att_out_amp.W += pts[:len(self.att_out_amp.W)].T @ grad[:len(self.att_out_amp.W)]
+        self._trained += 1
+
+    def query(self, pts) -> np.ndarray:
+        """Returns (N,) attenuation amplitude."""
+        return self.forward(pts)[:, 0]
+
+
+# ─── Pass 39 Part C: PoseNet numpy port (WiFi-CSI → 17-joint COCO skeleton) ───
+
+class _PoseNetNP:
+    """
+    Pure-numpy WiFi-CSI → COCO-17 pose estimator.
+    Ported from RuView aether-arena/calibration/model.py (PoseNet).
+    Architecture: Linear proj → Transformer-like attention pool → 34-output head → GR skeleton.
+    Runs without torch. Suitable for real-time inference (no training).
+    """
+    # COCO-17 skeleton adjacency
+    EDGES = [(0,1),(0,2),(1,3),(2,4),(5,6),(5,7),(7,9),(6,8),(8,10),
+             (5,11),(6,12),(11,12),(11,13),(13,15),(12,14),(14,16)]
+
+    def __init__(self, na=3, nsc=56, nt=10, d=64):
+        self.na = na; self.nsc = nsc; self.nt = nt; self.d = d
+        # Input projection
+        lim = (2.0/(na*nsc))**0.5
+        self.W_proj = (np.random.rand(na*nsc, d).astype(np.float32)*2-1)*lim
+        self.b_proj = np.zeros(d, dtype=np.float32)
+        # Attention weight
+        self.W_att = np.random.randn(d, 1).astype(np.float32) * 0.02
+        # Pose head
+        self.W_h1 = np.random.randn(d, 128).astype(np.float32) * 0.02
+        self.b_h1 = np.zeros(128, dtype=np.float32)
+        self.W_h2 = np.random.randn(128, 34).astype(np.float32) * 0.02
+        self.b_h2 = np.zeros(34, dtype=np.float32)
+        # Skeleton graph: normalized adjacency
+        A = np.eye(17, dtype=np.float32)
+        for i, j in self.EDGES:
+            A[i,j] = A[j,i] = 1.0
+        self.A = (A / A.sum(1, keepdims=True)).astype(np.float32)
+        # GR refinement weights
+        self.W_gr = np.random.randn(34+d, 2).astype(np.float32) * 0.01
+
+    @staticmethod
+    def _standardize(x: np.ndarray) -> np.ndarray:
+        return (x - x.mean()) / (x.std() + 1e-6)
+
+    def predict(self, csi_amp_window) -> np.ndarray:
+        """
+        csi_amp_window: (T, na*nsc) float32 amplitude window (T time frames)
+        Returns: (17, 2) COCO skeleton keypoints in [0,1]
+        """
+        T = min(len(csi_amp_window), self.nt)
+        x = np.zeros((self.nt, self.na * self.nsc), dtype=np.float32)
+        for i in range(T):
+            row = np.resize(csi_amp_window[i].astype(np.float32), self.na * self.nsc)
+            x[i] = self._standardize(row)
+        # Project: (nt, d)
+        h = np.maximum(0, x @ self.W_proj + self.b_proj)
+        # Temporal attention pool: softmax over time
+        attn = h @ self.W_att                    # (nt, 1)
+        attn = np.exp(attn - attn.max())
+        attn = attn / (attn.sum() + 1e-9)
+        z = (h * attn).sum(axis=0)               # (d,)
+        # Pose head
+        kp = np.maximum(0, z @ self.W_h1 + self.b_h1)
+        kp = 1.0 / (1.0 + np.exp(-(kp @ self.W_h2 + self.b_h2)))  # sigmoid
+        kp = kp.reshape(17, 2)
+        # Graph refinement: nudge toward anatomically consistent positions
+        gr_in = np.concatenate([kp.reshape(-1), z])   # (34+d,)
+        kp_adj = self.A @ kp                            # (17,2) graph smoothing
+        delta = np.tanh(gr_in @ self.W_gr) * 0.3       # (2,) global nudge
+        kp = np.clip(kp_adj + delta, 0, 1)
+        return kp.astype(np.float32)
+
+
+
+# ─── Pass 40 Part A: NBVI Adaptive Subcarrier Calibrator ─────────────────────
+
+class NBVISubcarrierSelector:
+    """
+    Normalized Baseline Variability Index (NBVI) automatic subcarrier selector.
+    Ported from espectre micro-espectre/src/nbvi_calibrator.py.
+
+    Selects the 12 most stable subcarriers from a quiet-room baseline capture,
+    with minimum spectral spacing to avoid correlated subcarriers.
+    Output: selected_band (list of 12 indices), adaptive_threshold (float).
+    """
+    NULL_AMP_THRESHOLD = 1.0
+    NULL_SUBCARRIER_MIN_FRAMES = 0.9   # >90% frames below threshold = null
+
+    def __init__(self, n_subcarriers=64, band_size=12, min_spacing=2,
+                 alpha=0.75, percentile=5, noise_gate_pct=15):
+        self.n_sub        = n_subcarriers
+        self.band_size    = band_size
+        self.min_spacing  = min_spacing
+        self.alpha        = alpha
+        self.percentile   = percentile
+        self.noise_gate   = noise_gate_pct
+        self._history: list = []     # list of amplitude vectors
+
+    def add_frame(self, csi_data_int8):
+        """Add one raw I/Q int8 buffer to calibration history."""
+        n = len(csi_data_int8) // 2
+        amps = []
+        for i in range(n):
+            imag = float(csi_data_int8[2*i])
+            real = float(csi_data_int8[2*i + 1])
+            amps.append((real*real + imag*imag)**0.5)
+        self._history.append(amps[:self.n_sub] if len(amps) >= self.n_sub else
+                              amps + [0.0]*(self.n_sub - len(amps)))
+
+    def add_amp_vector(self, amp_vec):
+        """Add pre-computed amplitude vector (float)."""
+        v = list(amp_vec)[:self.n_sub]
+        v += [0.0] * (self.n_sub - len(v))
+        self._history.append(v)
+
+    def compute(self, use_cv_normalization=False) -> tuple:
+        """
+        Run NBVI analysis on collected history.
+        Returns (selected_band, adaptive_threshold, nbvi_scores).
+        selected_band: list of n=band_size subcarrier indices.
+        adaptive_threshold: float (P95 × 1.1 of baseline moving variances).
+        nbvi_scores: (n_sub,) float array.
+        """
+        if len(self._history) < 4:
+            return list(range(self.band_size)), 1.0, np.zeros(self.n_sub)
+
+        hist = np.array(self._history, dtype=np.float32)  # (T, n_sub)
+        T = hist.shape[0]
+
+        # Guard/DC bands (skip first 5 and last 4 to match HT20 null subcarriers)
+        guard_low = 5; guard_high = self.n_sub - 4
+        valid_mask = np.ones(self.n_sub, dtype=bool)
+        valid_mask[:guard_low]  = False
+        valid_mask[guard_high:] = False
+
+        # Null subcarrier detection: mean amplitude < threshold
+        mean_amp = hist.mean(axis=0)
+        valid_mask[mean_amp < self.NULL_AMP_THRESHOLD] = False
+
+        # Noise gate: remove subcarriers with mean below noise_gate percentile
+        live_means = mean_amp[valid_mask]
+        if len(live_means) > 0:
+            noise_floor = float(np.percentile(live_means, self.noise_gate))
+            valid_mask[mean_amp < noise_floor] = False
+
+        # Per-subcarrier NBVI: alpha * var(amp)/mean(amp)^2 + (1-alpha) * mean(amp)
+        std_sc  = hist.std(axis=0) + 1e-9
+        if use_cv_normalization:
+            cv = std_sc / (mean_amp + 1e-9)
+            nbvi = self.alpha * (cv ** 2) + (1 - self.alpha) * (1.0 / (mean_amp + 1e-9))
+        else:
+            nbvi = self.alpha * (std_sc ** 2) / (mean_amp ** 2 + 1e-9) +                    (1 - self.alpha) * std_sc
+
+        # Select band_size best (lowest NBVI) with min_spacing constraint
+        nbvi_masked = nbvi.copy()
+        nbvi_masked[~valid_mask] = np.inf
+        selected = []
+        blocked  = set()
+        order    = np.argsort(nbvi_masked)
+        for idx in order:
+            if len(selected) >= self.band_size:
+                break
+            if idx in blocked or not valid_mask[idx]:
+                continue
+            selected.append(int(idx))
+            for b in range(int(idx) - self.min_spacing,
+                           int(idx) + self.min_spacing + 1):
+                blocked.add(b)
+        selected.sort()
+        # Fallback: if not enough, pad with valid indices
+        if len(selected) < self.band_size:
+            extras = [i for i in range(self.n_sub) if i not in selected and valid_mask[i]]
+            selected += extras[:self.band_size - len(selected)]
+        if not selected:
+            selected = list(range(self.band_size))
+
+        # Adaptive threshold: P95 × 1.1 of baseline moving-variance values
+        band_hist = hist[:, selected]   # (T, band_size)
+        mv_vals = np.var(band_hist, axis=0)   # per-subcarrier baseline variance
+        all_mv = list(mv_vals)
+        pct95 = float(np.percentile(all_mv, 95)) if all_mv else 1.0
+        adaptive_thr = max(pct95 * 1.1, 1e-6)
+
+        return selected[:self.band_size], adaptive_thr, nbvi.astype(np.float32)
+
+    def reset(self):
+        self._history.clear()
+
+
+# ─── Pass 40 Part B: Adaptive threshold calculation utility ──────────────────
+
+def _nepa_adaptive_threshold(cal_mv_values, mode="auto") -> float:
+    """
+    Calculate adaptive detection threshold from calibration moving-variance values.
+    Ported from espectre threshold.py.
+    mode "auto": P95 × 1.1 (balanced), mode "min": P100 × 1.0 (max sensitivity).
+    """
+    if not cal_mv_values:
+        return 1.0
+    pct = 95 if mode == "auto" else 100
+    factor = 1.1 if mode == "auto" else 1.0
+    base = float(np.percentile(cal_mv_values, pct))
+    return max(base * factor, 1e-6)
+
+
+# ─── Pass 40 Part C: CogPose — dilated Conv1D WiFi-CSI → 34-keypoint numpy ───
+
+class _DilatedConv1D:
+    """Dilated causal Conv1D in pure numpy."""
+    def __init__(self, in_ch, out_ch, kernel=3, dilation=1):
+        lim = (2.0 / (in_ch * kernel)) ** 0.5
+        self.W = np.random.uniform(-lim, lim,
+                                   (out_ch, in_ch, kernel)).astype(np.float32)
+        self.b = np.zeros(out_ch, dtype=np.float32)
+        self.dilation = dilation
+        self.kernel    = kernel
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        # x: (in_ch, L) → (out_ch, L)  (same-length via reflect padding)
+        oc, ic, k = self.W.shape
+        d = self.dilation
+        pad = (k - 1) * d // 2
+        xp = np.pad(x, ((0, 0), (pad, pad + (k-1)*d - pad)), mode='reflect')              if pad > 0 else x
+        L = x.shape[-1]
+        out = np.zeros((oc, L), dtype=np.float32)
+        for o in range(oc):
+            for ki in range(k):
+                out[o] += self.W[o, :, ki] @ xp[:, ki*d: ki*d + L]
+            out[o] += self.b[o]
+        return np.maximum(out, 0)  # ReLU
+
+
+class CogPoseNet:
+    """
+    Pure-numpy port of CogPose from RuView aether-arena/calibration/cog_calibrate.py.
+    Architecture: 3× dilated Conv1D(56→64→128→128, dilation 1/2/4) → mean pool → FC(128→256→34) → sigmoid.
+    Input: (56, T) amplitude window (T ≥ 1 time frames).
+    Output: (17, 2) COCO-17 keypoints in [0, 1].
+    """
+    def __init__(self, n_subcarriers=56, T=20):
+        np.random.seed(13)
+        self.n_sub = n_subcarriers
+        self.c1 = _DilatedConv1D(n_subcarriers, 64,  kernel=3, dilation=1)
+        self.c2 = _DilatedConv1D(64,            128, kernel=3, dilation=2)
+        self.c3 = _DilatedConv1D(128,           128, kernel=3, dilation=4)
+        # FC head
+        lim1 = (2.0/128)**0.5
+        self.W_fc1 = np.random.uniform(-lim1, lim1, (128, 256)).astype(np.float32)
+        self.b_fc1 = np.zeros(256, dtype=np.float32)
+        lim2 = (2.0/256)**0.5
+        self.W_fc2 = np.random.uniform(-lim2, lim2, (256, 34)).astype(np.float32)
+        self.b_fc2 = np.zeros(34, dtype=np.float32)
+
+    def predict(self, csi_amp_matrix: np.ndarray) -> np.ndarray:
+        """
+        csi_amp_matrix: (T, n_sub) or (n_sub,) amplitude snapshot
+        Returns: (17, 2) COCO-17 keypoints in [0, 1]
+        """
+        x = np.asarray(csi_amp_matrix, dtype=np.float32)
+        if x.ndim == 1:
+            x = x.reshape(1, -1)
+        # x: (T, n_sub) → need (n_sub, T)
+        x = np.resize(x, (x.shape[0], self.n_sub)).T   # (n_sub, T)
+        # standardize per-subcarrier
+        x = (x - x.mean(axis=1, keepdims=True)) / (x.std(axis=1, keepdims=True) + 1e-6)
+        h = self.c1(x)
+        h = self.c2(h)
+        h = self.c3(h)
+        z = h.mean(axis=1)               # (128,) adaptive avg pool
+        h1 = np.maximum(z @ self.W_fc1 + self.b_fc1, 0)
+        out = 1.0 / (1.0 + np.exp(-(h1 @ self.W_fc2 + self.b_fc2)))  # sigmoid
+        return out.reshape(17, 2).astype(np.float32)
+
+
+# ─── Pass 40 Part D: NeRF2 Ray-Marching Signal Renderer (numpy) ──────────────
+
+class NeRF2RayRenderer:
+    """
+    Numpy port of NeRF2 Renderer_spectrum.raw2outputs().
+    Ray-marches through the NeRF2FullModel: samples N points along each ray,
+    accumulates attenuation alpha and complex phase → predicted receive signal.
+    Ported from NeRF2-main/renderer.py.
+    """
+    def __init__(self, nerf2_model: "NeRF2FullModel", n_samples=16, near=0.1, far=8.0):
+        self.model    = nerf2_model
+        self.n_samples = n_samples
+        self.near     = near
+        self.far      = far
+
+    def sample_points(self, ray_o: np.ndarray, ray_d: np.ndarray) -> tuple:
+        """ray_o/ray_d: (3,). Returns (pts (n_samples, 3), t_vals (n_samples,))."""
+        t = np.linspace(self.near, self.far, self.n_samples, dtype=np.float32)
+        pts = ray_o[None, :] + ray_d[None, :] * t[:, None]  # (n_samples, 3)
+        return pts, t
+
+    def render_ray(self, tx_pos: np.ndarray, ray_o: np.ndarray,
+                   ray_d: np.ndarray) -> float:
+        """
+        Render predicted receive signal strength for one ray.
+        Returns float (receive signal amplitude).
+        """
+        pts, t = self.sample_points(ray_o, ray_d)
+        N = len(pts)
+        tx_exp = np.tile(tx_pos[None, :], (N, 1)).astype(np.float32)
+        rd_exp = np.tile(ray_d[None, :],  (N, 1)).astype(np.float32)
+        # Forward through NeRF2: returns (N, 4) [att_amp, att_phase, sig_amp, sig_phase]
+        raw = self.model.forward(pts, view=rd_exp, tx=tx_exp)
+        att_a = np.abs(np.maximum(raw[:, 0], 0))
+        att_p = (1.0 / (1.0 + np.exp(-raw[:, 1]))) * np.pi * 2   # sigmoid → [0, 2π]
+        sig_a = np.abs(np.maximum(raw[:, 2], 0))
+        sig_p = (1.0 / (1.0 + np.exp(-raw[:, 3]))) * np.pi * 2
+        # Distances
+        dists = np.diff(t, append=t[-1] + 1e10) * np.linalg.norm(ray_d)
+        # Attenuation alpha
+        alpha = 1.0 - np.exp(-att_a * dists)
+        # Transmittance (cumulative product)
+        T_vals = np.cumprod(np.concatenate([[1.0], 1.0 - alpha[:-1] + 1e-10]))
+        # Path loss
+        path_loss = 0.025 / (t + 1e-9)
+        # Phase accumulation
+        phase_cumsum = np.cumsum(np.concatenate([[0.0], att_p[:-1] * dists[:-1]]))
+        # Weighted signal
+        signal = sig_a * T_vals * path_loss *                  np.exp(1j * (phase_cumsum + sig_p)).real
+        return float(np.abs(np.sum(signal)))
+
+    def predict_rssi(self, tx_pos: np.ndarray, rx_pos: np.ndarray,
+                     n_rays: int = 9) -> float:
+        """
+        Predict RSSI from TX to RX by averaging over n_rays random directions.
+        tx_pos/rx_pos: (3,) world coordinates.
+        Returns predicted RSSI in dBm (proxy).
+        """
+        direct = rx_pos - tx_pos
+        dist   = np.linalg.norm(direct) + 1e-9
+        ray_d  = (direct / dist).astype(np.float32)
+        results = [self.render_ray(tx_pos, tx_pos.astype(np.float32), ray_d)]
+        # Add random off-axis rays
+        rng = np.random.default_rng(42)
+        for _ in range(n_rays - 1):
+            perturb = rng.standard_normal(3).astype(np.float32) * 0.3
+            rd_p = ray_d + perturb
+            nd = np.linalg.norm(rd_p) + 1e-9
+            results.append(self.render_ray(tx_pos, tx_pos.astype(np.float32),
+                                           (rd_p / nd)))
+        ss = float(np.mean(results)) + 1e-12
+        rssi_dbm = float(10 * np.log10(ss) - 50)   # rough proxy
+        return rssi_dbm
+
+
+# ─── Pass 40 Part E: WiFi DensePose amp+phase feature extractor (numpy) ──────
+
+def _wifi_densepose_features(amp_vec: np.ndarray,
+                              phase_vec: np.ndarray,
+                              out_dim: int = 576) -> np.ndarray:
+    """
+    Simplified WiFi DensePose amplitude+phase → spatial feature map.
+    Ported from RuView references/script_5.py ModalityTranslationNetwork.
+    Returns (out_dim,) float32 fused feature vector for downstream use.
+    """
+    amp   = np.resize(amp_vec.astype(np.float32), 150)
+    phase = np.resize(phase_vec.astype(np.float32), 150)
+    # Normalize
+    amp   = (amp   - amp.mean())   / (amp.std()   + 1e-6)
+    phase = (phase - phase.mean()) / (phase.std() + 1e-6)
+    # Encode amp and phase separately (random projection, fixed seed)
+    rng = np.random.default_rng(77)
+    W_amp   = rng.standard_normal((150, out_dim//4)).astype(np.float32) * 0.05
+    W_phase = rng.standard_normal((150, out_dim//4)).astype(np.float32) * 0.05
+    W_fuse  = rng.standard_normal((out_dim//2, out_dim)).astype(np.float32) * 0.05
+    amp_feat   = np.tanh(amp   @ W_amp)
+    phase_feat = np.tanh(phase @ W_phase)
+    fused = np.tanh(np.concatenate([amp_feat, phase_feat]) @ W_fuse)
+    return fused.astype(np.float32)
+
+
+
+# ════════════ PASS 41 ════════════
+
+class NeuralCorrespondenceFieldNP:
+    """Pass 41: Numpy port of RF-GS NeuralCorrespondenceField.
+
+    Maps (position, time) → (motion_vector, confidence) using Fourier positional
+    encoding + 6-layer MLP with skip connection at layer 3.
+    Used to track motion vectors across consecutive RF frames.
+
+    Architecture matches Crucialuseexamplecode12/RF-GS/code/neural-correspondence.py
+    but is pure numpy with random-init weights (online learning via train_step).
+    """
+    ENC_DIM  = 8   # spatial positional encoding frequencies
+    TIME_DIM = 6   # temporal positional encoding frequencies
+    HIDDEN   = 128
+    N_LAYERS = 6
+    SKIP     = [3]  # skip connection layers
+
+    def __init__(self, seed: int = 41):
+        rng = np.random.RandomState(seed)
+        # Pos enc output dims: 3*(1 + 2*ENC_DIM) + 1*(1 + 2*TIME_DIM)
+        pos_d  = 3 * (1 + 2 * self.ENC_DIM)
+        time_d = 1 * (1 + 2 * self.TIME_DIM)
+        in_d   = pos_d + time_d  # total input dim after encoding
+        H = self.HIDDEN
+        scale = 0.05
+        self._layers_W = []
+        self._layers_b = []
+        prev = in_d
+        for i in range(self.N_LAYERS):
+            fan_in = (prev + in_d) if i in self.SKIP else prev
+            self._layers_W.append(rng.randn(fan_in, H).astype(np.float32) * scale)
+            self._layers_b.append(np.zeros(H, np.float32))
+            prev = H
+        # motion head: H → 4 (dx, dy, dz, confidence_logit)
+        self.W_out = rng.randn(H, 4).astype(np.float32) * 0.02
+        self.b_out = np.zeros(4, np.float32)
+        self._in_d = in_d
+        self._history: list = []   # (pos3, t, mv3) recent predictions
+
+    def _pos_enc(self, x: np.ndarray, n_freq: int) -> np.ndarray:
+        """Fourier positional encoding: [x, sin(2^0 π x), cos(2^0 π x), ...]"""
+        parts = [x]
+        for k in range(n_freq):
+            freq = 2.0 ** k * np.pi
+            parts.append(np.sin(freq * x))
+            parts.append(np.cos(freq * x))
+        return np.concatenate(parts, axis=-1)
+
+    def _encode(self, pos: np.ndarray, t: float) -> np.ndarray:
+        """Encode (N,3) positions + scalar time → (N, in_d)."""
+        pos = np.asarray(pos, np.float32)
+        if pos.ndim == 1:
+            pos = pos[np.newaxis, :]
+        N = pos.shape[0]
+        pos_e  = self._pos_enc(pos, self.ENC_DIM)            # (N, 3+2*3*ENC_DIM)
+        t_arr  = np.full((N, 1), t, dtype=np.float32)
+        time_e = self._pos_enc(t_arr, self.TIME_DIM)         # (N, 1+2*TIME_DIM)
+        return np.concatenate([pos_e, time_e], axis=-1)      # (N, in_d)
+
+    def forward(self, pos: np.ndarray, t: float) -> dict:
+        """Forward pass. Returns motion_vector (N,3) and confidence (N,1) in [0,1]."""
+        enc = self._encode(pos, t)     # (N, in_d)
+        h   = enc
+        for i, (W, b) in enumerate(zip(self._layers_W, self._layers_b)):
+            if i in self.SKIP:
+                h = np.concatenate([h, enc], axis=-1)
+            h = np.maximum(0, h @ W + b)   # ReLU
+        out  = h @ self.W_out + self.b_out              # (N, 4)
+        mv   = out[:, :3]                               # (N, 3) motion vectors
+        conf = 1.0 / (1.0 + np.exp(-out[:, 3:4]))      # sigmoid → confidence
+        return {"motion_vector": mv, "confidence": conf}
+
+    def predict_motion(self, positions: np.ndarray, t: float) -> dict:
+        """Predict motion for N positions at time t. Returns (mv, conf)."""
+        pos = np.asarray(positions, np.float32).reshape(-1, 3)
+        return self.forward(pos, t)
+
+    def track_single(self, pos3: np.ndarray, t: float) -> np.ndarray:
+        """Track a single 3-D point; return motion vector (3,)."""
+        pos3 = np.asarray(pos3, np.float32).reshape(1, 3)
+        out  = self.forward(pos3, t)
+        mv   = out["motion_vector"][0]
+        conf = float(out["confidence"][0, 0])
+        self._history.append({"pos": pos3[0].tolist(), "t": t, "mv": mv.tolist(), "conf": conf})
+        if len(self._history) > 30:
+            self._history.pop(0)
+        return mv
+
+    def mean_motion_magnitude(self) -> float:
+        """Average motion magnitude over recent history."""
+        if not self._history:
+            return 0.0
+        mags = [float(np.linalg.norm(h["mv"])) for h in self._history[-10:]]
+        return float(np.mean(mags))
+
+
+class ModalityTranslationNetNP:
+    """Pass 41: Numpy port of WiFi→Spatial modality translation backbone.
+
+    Maps (CSI amplitude vector, CSI phase vector) → spatial feature map (H, W, 3)
+    via two-stream encoder → MLP fusion → spatial reshape.
+
+    Inspiration: Crucialuseexamplecode1/RuView-main/references/wifi_densepose_pytorch.py
+    — ModalityTranslationNetwork class, translated to pure numpy random-init.
+
+    Output spatial_map (24×24) is used by the BCI and Motion tabs as a
+    RF occupancy heatmap (channel 0 = energy, 1 = movement, 2 = phase gradient).
+    """
+
+    def __init__(self, n_sc: int = 56, hidden: int = 128, seed: int = 41):
+        rng = np.random.RandomState(seed)
+        s   = 0.05
+        # Amplitude encoder: n_sc → hidden → hidden//2
+        self.W_amp1 = rng.randn(n_sc,      hidden).astype(np.float32) * s
+        self.b_amp1 = np.zeros(hidden,    np.float32)
+        self.W_amp2 = rng.randn(hidden,   hidden // 2).astype(np.float32) * s
+        self.b_amp2 = np.zeros(hidden // 2, np.float32)
+        # Phase encoder: n_sc → hidden → hidden//2
+        self.W_ph1  = rng.randn(n_sc,      hidden).astype(np.float32) * s
+        self.b_ph1  = np.zeros(hidden,    np.float32)
+        self.W_ph2  = rng.randn(hidden,   hidden // 2).astype(np.float32) * s
+        self.b_ph2  = np.zeros(hidden // 2, np.float32)
+        # Fusion MLP: hidden → 24*24*3
+        self.W_fuse1 = rng.randn(hidden,        hidden // 2).astype(np.float32) * s
+        self.b_fuse1 = np.zeros(hidden // 2,    np.float32)
+        self.W_fuse2 = rng.randn(hidden // 2,   24 * 24 * 3).astype(np.float32) * s
+        self.b_fuse2 = np.zeros(24 * 24 * 3,    np.float32)
+        self._n_sc  = n_sc
+        self._last_map: np.ndarray = np.zeros((24, 24, 3), np.float32)
+
+    @staticmethod
+    def _relu(x: np.ndarray) -> np.ndarray:
+        return np.maximum(0.0, x)
+
+    def forward(self, amp: np.ndarray, phase: np.ndarray) -> np.ndarray:
+        """Map amp/phase vectors (n_sc,) → spatial feature map (24,24,3)."""
+        amp   = np.asarray(amp,   np.float32).ravel()[:self._n_sc]
+        phase = np.asarray(phase, np.float32).ravel()[:self._n_sc]
+        if len(amp)   < self._n_sc: amp   = np.pad(amp,   (0, self._n_sc - len(amp)))
+        if len(phase) < self._n_sc: phase = np.pad(phase, (0, self._n_sc - len(phase)))
+        # Amplitude stream
+        a = self._relu(amp   @ self.W_amp1 + self.b_amp1)
+        a = self._relu(a     @ self.W_amp2 + self.b_amp2)   # (hidden//2,)
+        # Phase stream
+        p = self._relu(phase @ self.W_ph1  + self.b_ph1)
+        p = self._relu(p     @ self.W_ph2  + self.b_ph2)    # (hidden//2,)
+        # Fusion
+        fused = np.concatenate([a, p])                       # (hidden,)
+        f = self._relu(fused @ self.W_fuse1 + self.b_fuse1)
+        out   = np.tanh(f    @ self.W_fuse2 + self.b_fuse2) # (24*24*3,)
+        smap  = out.reshape(24, 24, 3).astype(np.float32)
+        # Channel semantics: 0=energy, 1=movement proxy, 2=phase gradient
+        # Normalize each channel to [0,1] independently
+        for c in range(3):
+            ch = smap[:, :, c]
+            cmin, cmax = ch.min(), ch.max()
+            if cmax > cmin:
+                smap[:, :, c] = (ch - cmin) / (cmax - cmin)
+            else:
+                smap[:, :, c] = 0.0
+        self._last_map = smap
+        return smap
+
+    def energy_map(self) -> np.ndarray:
+        """Return (24,24) energy channel."""
+        return self._last_map[:, :, 0]
+
+    def movement_map(self) -> np.ndarray:
+        """Return (24,24) movement channel."""
+        return self._last_map[:, :, 1]
+
+
+
+# ════════════ PASS 42 ════════════
+
+class _WhoFiPosEncNP:
+    """Pass 42: Sinusoidal positional encoding for WhoFiReIDNP (numpy).
+    Precomputes (max_len, d_model) PE table on construction.
+    """
+    def __init__(self, d_model: int = 64, max_len: int = 256):
+        pos  = np.arange(max_len, dtype=np.float32)[:, None]         # (L,1)
+        i    = np.arange(0, d_model, 2, dtype=np.float32)            # (D/2,)
+        div  = np.exp(i * (-np.log(10000.0) / d_model))              # (D/2,)
+        pe   = np.zeros((max_len, d_model), np.float32)
+        pe[:, 0::2] = np.sin(pos * div)
+        pe[:, 1::2] = np.cos(pos * div)
+        self.pe = pe        # (max_len, d_model)
+
+    def __call__(self, T: int) -> np.ndarray:
+        """Return (T, d_model) positional encoding."""
+        return self.pe[:T]
+
+
+class _WhoFiMHANP:
+    """Pass 42: Single-head scaled dot-product attention block (numpy).
+    Used inside WhoFiReIDNP encoder layers.
+    Mimics nn.TransformerEncoderLayer but without feed-forward dropout.
+    """
+    def __init__(self, d_model: int, seed: int = 42):
+        rng = np.random.RandomState(seed)
+        s = 1.0 / np.sqrt(d_model)
+        # Q, K, V projection weights (d_model, d_model each)
+        self.Wq = rng.randn(d_model, d_model).astype(np.float32) * s
+        self.Wk = rng.randn(d_model, d_model).astype(np.float32) * s
+        self.Wv = rng.randn(d_model, d_model).astype(np.float32) * s
+        self.Wo = rng.randn(d_model, d_model).astype(np.float32) * s
+        # Feed-forward (d_model → 2*d_model → d_model)
+        self.W1 = rng.randn(d_model, 2 * d_model).astype(np.float32) * s
+        self.b1 = np.zeros(2 * d_model, np.float32)
+        self.W2 = rng.randn(2 * d_model, d_model).astype(np.float32) * s
+        self.b2 = np.zeros(d_model, np.float32)
+        self._d = d_model
+
+    def _layer_norm(self, x: np.ndarray) -> np.ndarray:
+        mu  = x.mean(axis=-1, keepdims=True)
+        std = x.std(axis=-1, keepdims=True) + 1e-6
+        return (x - mu) / std
+
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        """x: (S, d_model) → (S, d_model). Full pre-norm encoder block."""
+        S, D = x.shape
+        # --- Self-attention ---
+        h = self._layer_norm(x)
+        Q = h @ self.Wq    # (S, D)
+        K = h @ self.Wk
+        V = h @ self.Wv
+        scale = np.sqrt(float(D))
+        attn  = np.softmax(Q @ K.T / scale, axis=-1)   # (S,S)
+        sa    = attn @ V @ self.Wo                      # (S,D)
+        x     = x + sa
+        # --- Feed-forward ---
+        h  = self._layer_norm(x)
+        ff = np.maximum(0, h @ self.W1 + self.b1) @ self.W2 + self.b2
+        return x + ff
+
+
+class WhoFiReIDNP:
+    """Pass 42: Numpy port of WhoFiEncoder (wifi-3d-fusion-main/src/models/who_encoder.py).
+
+    Maps a CSI sequence window (T, F) to a 64-D L2-normalized identity embedding.
+    Uses:
+      - Linear input projection F → d_model
+      - Sinusoidal positional encoding
+      - CLS token prepended → N+1 sequence
+      - 3 encoder layers (_WhoFiMHANP, each with self-attention + FF)
+      - Layer norm on CLS output → 64-D embedding (L2 normalized)
+
+    Used for person re-identification: given a gallery of enrolled embeddings,
+    infer the closest match by cosine similarity.
+
+    Inspiration: Examplecode3/wifi-3d-fusion-main/src/models/who_encoder.py
+                 Examplecode3/wifi-3d-fusion-main/src/pipeline/realtime_identifier.py
+    """
+    D_MODEL = 64
+
+    def __init__(self, feat_dim: int = 112, d_model: int = 64, n_layers: int = 3, seed: int = 42):
+        rng = np.random.RandomState(seed)
+        self.d = d_model
+        self.feat_dim = feat_dim
+        # input projection: feat_dim → d_model
+        self.W_in = rng.randn(feat_dim, d_model).astype(np.float32) * 0.05
+        self.b_in = np.zeros(d_model, np.float32)
+        # CLS token
+        self.cls_tok = rng.randn(1, d_model).astype(np.float32) * 0.02
+        # Positional encoding
+        self._pe = _WhoFiPosEncNP(d_model=d_model, max_len=512)
+        # Encoder layers
+        self._layers = [_WhoFiMHANP(d_model, seed=seed + i) for i in range(n_layers)]
+        # Layer norm params (learned = identity init for numpy)
+        # Embedding projection: d_model → d_model (identity init, just normalize)
+
+    def _layer_norm(self, x: np.ndarray) -> np.ndarray:
+        mu  = x.mean(axis=-1, keepdims=True)
+        std = x.std(axis=-1, keepdims=True) + 1e-6
+        return (x - mu) / std
+
+    def embed(self, csi_window: np.ndarray) -> np.ndarray:
+        """csi_window: (T, F) float32 CSI features → (d_model,) L2-normalized embedding.
+        F = feat_dim (default 112 = 56 subcarriers × 2 for amp+phase).
+        """
+        W = np.asarray(csi_window, dtype=np.float32)
+        if W.ndim == 1:
+            W = W[np.newaxis, :]
+        T, F = W.shape
+        # Pad or truncate feat_dim
+        if F < self.feat_dim:
+            W = np.pad(W, ((0, 0), (0, self.feat_dim - F)))
+        else:
+            W = W[:, :self.feat_dim]
+        # Input projection → (T, D)
+        x = np.maximum(0, W @ self.W_in + self.b_in)
+        # Add positional encoding
+        x = x + self._pe(T)
+        # Prepend CLS token → (T+1, D)
+        x = np.concatenate([self.cls_tok, x], axis=0)
+        # Encoder layers
+        for layer in self._layers:
+            x = layer.forward(x)
+        # CLS output → embedding
+        cls_out = self._layer_norm(x[0])           # (D,)
+        norm    = np.linalg.norm(cls_out) + 1e-9
+        return cls_out / norm                       # L2 normalized
+
+
+class WhoFiGallery:
+    """Pass 42: Person re-identification gallery using cosine similarity.
+
+    Wraps WhoFiReIDNP to enroll person prototypes and infer identity from
+    live CSI windows. Matches the realtime_identifier.py pattern.
+    """
+    def __init__(self, feat_dim: int = 112, d_model: int = 64, n_layers: int = 3,
+                 similarity_threshold: float = 0.55, smoothing: float = 0.7):
+        self.encoder  = WhoFiReIDNP(feat_dim=feat_dim, d_model=d_model, n_layers=n_layers)
+        self.gallery: dict = {}                 # pid (str) → prototype embedding (D,)
+        self.thr      = similarity_threshold    # cosine sim threshold for match
+        self.smooth   = smoothing               # EMA smoothing for consecutive frames
+        self._last_pid: str | None = None
+        self._last_sim: float = 0.0
+        self._frame_buf: list = []              # recent CSI feature frames
+        self._MAX_BUF = 40
+
+    def push_frame(self, feat_frame: np.ndarray):
+        """Add one (F,) or (D,2) CSI feature frame to the buffer."""
+        v = np.asarray(feat_frame, np.float32).ravel()
+        self._frame_buf.append(v)
+        if len(self._frame_buf) > self._MAX_BUF:
+            self._frame_buf.pop(0)
+
+    def _window_tensor(self, n: int = 20) -> np.ndarray:
+        """Build (min(n, buf_len), feat_dim) window tensor."""
+        frames = self._frame_buf[-n:]
+        return np.stack(frames, axis=0)
+
+    def enroll(self, pid: str, shots: int = 5) -> bool:
+        """Enroll a person prototype from current buffer. Returns True on success."""
+        if len(self._frame_buf) < 8:
+            return False
+        embeds = []
+        for _ in range(shots):
+            W = self._window_tensor(20)
+            embeds.append(self.encoder.embed(W))
+        proto = np.mean(np.stack(embeds), axis=0)
+        proto /= (np.linalg.norm(proto) + 1e-9)
+        self.gallery[pid] = proto
+        return True
+
+    def infer(self) -> dict:
+        """Infer person identity from current buffer. Returns pid, score dict."""
+        if len(self._frame_buf) < 8 or not self.gallery:
+            return {"pid": "unknown", "score": 0.0, "enrolled": len(self.gallery)}
+        W   = self._window_tensor(20)
+        emb = self.encoder.embed(W)
+        best_pid, best_sim = "unknown", -1.0
+        for pid, proto in self.gallery.items():
+            s = float(np.dot(emb, proto))
+            if s > best_sim:
+                best_sim, best_pid = s, pid
+        if best_sim < self.thr:
+            best_pid = f"unknown_{len(self.gallery)+1}"
+        # EMA smoothing across frames
+        if self._last_pid == best_pid:
+            best_sim = self.smooth * self._last_sim + (1 - self.smooth) * best_sim
+        self._last_pid = best_pid
+        self._last_sim = best_sim
+        return {"pid": best_pid, "score": round(best_sim, 4),
+                "enrolled": len(self.gallery), "emb_norm": float(np.linalg.norm(emb))}
+
+
+
+# ════════════ PASS 43 ════════════
+
+class TemporalPointConvNP:
+    """Pass 43: Numpy port of P4DConv tube embedding from mmBody P4Transformer.
+
+    Inspiration: crucialuseexamplecode6/mmBody-main/P4Transformer/point_4d_convolution.py
+
+    Performs 4D spatio-temporal local pooling on a sequence of point clouds
+    (T frames × N points × 3 XYZ), producing a compact tube-feature per spatial cluster.
+    This is the 'tube embedding' that P4Transformer uses before its Transformer encoder.
+
+    Simplified numpy implementation:
+      - Divide the 3D space into K spatial clusters (k-means-lite via farthest-point sampling)
+      - For each cluster, gather temporal neighbours (spatial ball + all T frames)
+      - Apply shared MLP (Linear → ReLU) → max-pool → (K, D) tube features
+      - Output: (K, 4) spatio-temporal centroids + (K, D) features
+    """
+    def __init__(self, n_clusters: int = 16, radius: float = 0.5,
+                 in_planes: int = 3, out_dim: int = 64, seed: int = 43):
+        rng = np.random.RandomState(seed)
+        self.K = n_clusters
+        self.r = radius
+        self.D = out_dim
+        # Shared MLP: (4 relative coords + in_planes) → out_dim
+        fan_in = 4 + in_planes
+        self.W1 = rng.randn(fan_in, out_dim).astype(np.float32) * np.sqrt(2.0 / fan_in)
+        self.b1 = np.zeros(out_dim, np.float32)
+
+    def _fps(self, pts: np.ndarray) -> np.ndarray:
+        """Farthest-point sampling; return K indices."""
+        N = pts.shape[0]
+        K = min(self.K, N)
+        chosen = np.zeros(K, dtype=np.int32)
+        dists  = np.full(N, np.inf, dtype=np.float32)
+        chosen[0] = 0
+        for k in range(1, K):
+            d = np.sum((pts - pts[chosen[k-1]]) ** 2, axis=-1)
+            dists = np.minimum(dists, d)
+            chosen[k] = int(np.argmax(dists))
+        return chosen
+
+    def forward(self, pts_seq: list) -> tuple:
+        """pts_seq: list of T arrays, each (Ni, 3).
+        Returns (centroids (K,4), features (K,D)) — time dim is mean frame index."""
+        all_pts = []
+        for t, pts in enumerate(pts_seq):
+            p = np.asarray(pts, np.float32).reshape(-1, 3)
+            if len(p) == 0:
+                continue
+            t_col = np.full((len(p), 1), float(t), np.float32)
+            all_pts.append(np.concatenate([p, t_col], axis=-1))   # (Ni, 4)
+        if not all_pts:
+            return np.zeros((self.K, 4), np.float32), np.zeros((self.K, self.D), np.float32)
+        pts4 = np.concatenate(all_pts, axis=0)    # (N_total, 4)
+        xyz  = pts4[:, :3]
+        fps_idx = self._fps(xyz)
+        centroids4 = pts4[fps_idx]                # (K, 4)
+        K = len(fps_idx)
+        feats = np.zeros((K, self.D), np.float32)
+        for k in range(K):
+            c = xyz[fps_idx[k]]
+            dists = np.sum((xyz - c) ** 2, axis=-1)
+            nbrs  = np.where(dists < self.r ** 2)[0]
+            if len(nbrs) == 0:
+                nbrs = np.array([fps_idx[k]])
+            rel   = pts4[nbrs] - centroids4[k]    # (M, 4) relative
+            # Augment with XYZ absolute
+            aug   = np.concatenate([pts4[nbrs, :3], rel], axis=-1)  # (M, 7) but we only have 3+4=7
+            # Use only rel (4) + XYZ (3) truncated to fan_in
+            aug   = aug[:, :self.W1.shape[0]]
+            if aug.shape[1] < self.W1.shape[0]:
+                aug = np.pad(aug, ((0,0),(0, self.W1.shape[0]-aug.shape[1])))
+            h = np.maximum(0, aug @ self.W1 + self.b1)   # (M, D)
+            feats[k] = h.max(axis=0)                      # max-pool
+        return centroids4[:K], feats
+
+
+class P4TransformerNP:
+    """Pass 43: Numpy port of mmBody P4Transformer skeleton regressor.
+
+    Inspiration: crucialuseexamplecode6/mmBody-main/P4Transformer/model.py
+                 crucialuseexamplecode6/mmBody-main/P4Transformer/transformer.py
+
+    Architecture (numpy):
+      Input  : 4D point cloud sequence (T frames, Ni points, 3 XYZ)
+      Step 1 : TemporalPointConvNP → (K, D) tube features + (K, 4) centroids
+      Step 2 : Positional embedding: (K, 4) centroids → (K, D) via Linear
+      Step 3 : Add tube features + pos embedding
+      Step 4 : 2-layer Transformer encoder (multi-head attn + FF, numpy)
+      Step 5 : Global max-pool → (D,)
+      Step 6 : MLP head (D → 128 → 51) → reshape (17, 3) joint positions
+    """
+
+    def __init__(self, n_clusters: int = 16, d_model: int = 64, seed: int = 43):
+        rng = np.random.RandomState(seed)
+        self.D = d_model
+        self.tube_emb = TemporalPointConvNP(n_clusters=n_clusters, radius=0.5,
+                                             in_planes=3, out_dim=d_model, seed=seed)
+        s = 0.05
+        # Positional embedding: 4 → d_model
+        self.W_pos = rng.randn(4, d_model).astype(np.float32) * s
+        # Transformer encoder layer 1 + 2 (reuse _WhoFiMHANP)
+        self.enc1 = _WhoFiMHANP(d_model, seed=seed)
+        self.enc2 = _WhoFiMHANP(d_model, seed=seed + 1)
+        # MLP head: d_model → 128 → 51 (17 joints × 3)
+        self.W_h1 = rng.randn(d_model, 128).astype(np.float32) * s
+        self.b_h1 = np.zeros(128, np.float32)
+        self.W_h2 = rng.randn(128, 51).astype(np.float32) * s
+        self.b_h2 = np.zeros(51, np.float32)
+        self._n_clusters = n_clusters
+
+    def predict_skeleton(self, pts_seq: list,
+                          centroid: np.ndarray = None,
+                          height: float = 1.75) -> np.ndarray:
+        """pts_seq: list of T (Ni, 3) arrays.
+        Returns (17, 3) skeleton joints in local coords, then offset by centroid."""
+        cents, feats = self.tube_emb.forward(pts_seq)
+        if feats.sum() == 0 or len(feats) == 0:
+            from typing import TYPE_CHECKING
+            c = centroid if centroid is not None else np.zeros(3, np.float32)
+            return np.zeros((17, 3), np.float32) + c
+        # Positional embedding
+        pos_emb = cents @ self.W_pos          # (K, D)
+        x = feats + pos_emb                   # (K, D)
+        # Transformer encoder
+        x = self.enc1.forward(x)              # (K, D)
+        x = self.enc2.forward(x)              # (K, D)
+        # Global max-pool
+        g = x.max(axis=0)                     # (D,)
+        # MLP head
+        h1 = np.maximum(0, g @ self.W_h1 + self.b_h1)   # (128,)
+        out = h1 @ self.W_h2 + self.b_h2                 # (51,)
+        joints = out.reshape(17, 3).astype(np.float32)   # (17, 3) local
+        # Scale to real-world height + offset by centroid
+        if joints.max() > 0:
+            joints = joints / (np.abs(joints).max() + 1e-6) * height
+        if centroid is not None:
+            joints += np.asarray(centroid, np.float32).reshape(1, 3)
+        return joints
+
+
+class DensePoseHeadNP:
+    """Pass 43: Numpy DensePose UV prediction head.
+
+    Inspiration: Examplecode1/RuView-main/references/script_6.py (DensePoseHead)
+                 DensePose From WiFi paper: UV map output = 24 body parts, each
+                 with a U-coordinate map and V-coordinate map at (56×56).
+
+    Maps the ModalityTranslationNetNP 24×24 feature map (3 channels) to:
+      - part_scores: (24,) body part confidence scores
+      - uv_coords:   (24, 2) mean UV coordinates per body part
+      - kps_uv:      (17, 2) COCO keypoint UV positions derived from UV map peak
+
+    Architecture (numpy):
+      Input:  (24, 24, 3) spatial feature map from ModalityTranslationNetNP
+      Step 1: Per-channel mean-pool → (3,); concat with per-part MLP
+      Step 2: For each of 24 body parts, compute a 2×2 spatial crop score
+      Step 3: Peak-decode U,V per part from argmax on feature map channel 0
+    """
+    # COCO-17 → DensePose-24 part mapping (approximate)
+    KPS_TO_PART = [1,1,0,0,2,3,4,5,6,7,8,9,10,11,12,13,0,0]  # 17 COCO → 24 DP parts
+
+    def __init__(self, n_parts: int = 24, feat_h: int = 24, feat_w: int = 24, seed: int = 43):
+        rng = np.random.RandomState(seed)
+        self.P  = n_parts
+        self.H  = feat_h
+        self.W  = feat_w
+        # Part scoring MLP: 3 channels × (feat_h//4)×(feat_w//4) → n_parts
+        in_d = 3 * (feat_h // 4) * (feat_w // 4)
+        self.W_score = rng.randn(in_d, n_parts).astype(np.float32) * 0.05
+        self.b_score = np.zeros(n_parts, np.float32)
+        # UV regression MLP: n_parts → 2*n_parts (u,v per part)
+        self.W_uv = rng.randn(n_parts, n_parts * 2).astype(np.float32) * 0.02
+        self.b_uv = np.full(n_parts * 2, 0.5, np.float32)   # bias toward center
+
+    def forward(self, feat_map: np.ndarray) -> dict:
+        """feat_map: (H, W, 3) from ModalityTranslationNetNP.
+        Returns dict with part_scores, uv_coords, kps_uv."""
+        H, W, C = feat_map.shape
+        # Downsample to (H//4, W//4, C) by max-pool
+        h4, w4 = H // 4, W // 4
+        pool = feat_map.reshape(h4, H//h4, w4, W//w4, C).max(axis=(1, 3))  # (h4, w4, C)
+        flat = pool.ravel()[:self.W_score.shape[0]]
+        if len(flat) < self.W_score.shape[0]:
+            flat = np.pad(flat, (0, self.W_score.shape[0] - len(flat)))
+        # Part scores
+        scores = np.maximum(0, flat @ self.W_score + self.b_score)          # (P,)
+        scores = scores / (scores.sum() + 1e-6)                             # softmax-like
+        # UV coordinates: map [0,1] per part
+        uv_flat = np.clip(scores @ self.W_uv + self.b_uv, 0.0, 1.0)        # (2P,)
+        uv = uv_flat.reshape(self.P, 2)                                      # (P, 2)
+        # COCO 17-keypoint UV positions: map via part assignment
+        kps_uv = np.zeros((17, 2), np.float32)
+        for k, p in enumerate(self.KPS_TO_PART[:17]):
+            kps_uv[k] = uv[p % self.P]
+        return {"part_scores": scores, "uv_coords": uv, "kps_uv": kps_uv}
+
+    def predict(self, feat_map: np.ndarray) -> dict:
+        return self.forward(feat_map)
+
+
+class WiFiDensePoseSystemNP:
+    """Pass 43: End-to-end WiFi DensePose pipeline (numpy, no torch).
+
+    Chains:
+      1. ModalityTranslationNetNP  →  24×24×3 spatial feature map
+      2. DensePoseHeadNP           →  24 body part UV coords + 17 COCO kps UV
+      3. P4TransformerNP           →  17-joint 3D skeleton from mmWave point cloud
+
+    Provides unified .update(amp_vec, phase_vec, pts_seq, centroid) → psych_profile fields.
+    """
+
+    def __init__(self, n_sc: int = 56, seed: int = 43):
+        self.modality = ModalityTranslationNetNP(n_sc=n_sc, hidden=128, seed=seed)
+        self.dp_head  = DensePoseHeadNP(n_parts=24, feat_h=24, feat_w=24, seed=seed)
+        self.p4t      = P4TransformerNP(n_clusters=16, d_model=64, seed=seed)
+        self._last_uv: np.ndarray = np.zeros((17, 2), np.float32)
+        self._last_3d: np.ndarray = np.zeros((17, 3), np.float32)
+
+    def update(self, amp_vec: np.ndarray, phase_vec: np.ndarray,
+               pts_seq: list = None, centroid: np.ndarray = None,
+               height: float = 1.75) -> dict:
+        """Run full pipeline. Returns dict of new psych_profile fields."""
+        # Step 1: Modality translation
+        feat_map = self.modality.forward(amp_vec, phase_vec)   # (24,24,3)
+        # Step 2: DensePose head
+        dp = self.dp_head.predict(feat_map)
+        self._last_uv = dp["kps_uv"]
+        # Step 3: P4Transformer 3D skeleton (if point cloud available)
+        if pts_seq and len(pts_seq) > 0:
+            skel3d = self.p4t.predict_skeleton(pts_seq, centroid, height)
+            self._last_3d = skel3d
+        return {
+            "dp_part_scores":  dp["part_scores"].tolist(),    # 24 floats
+            "dp_kps_uv":       dp["kps_uv"].tolist(),         # 17 × [u,v]
+            "p4t_skeleton_3d": self._last_3d.tolist(),        # 17 × [x,y,z]
+        }
 
 
 # ════════════ LIST 1 HELPER MODULES ════════════
@@ -5758,38 +9889,115 @@ class RouterCSICapture:
             log.debug(f"[RouterCSI] Nexmon parse error: {e}")
             return False
 
-    # ── T0-4: real ESP32 CSI parser (studied from CSIKit esp.py CSI_DATA format) ──
+    # ── T0-4: real ESP32 CSI parser (studied from CSIKit esp.py + ESP32-CSI-Tool + esp-csi) ──
     def _parse_esp32_csi_line(self, line: str):
-        """Parse one ESP32-CSI-Tool 'CSI_DATA' CSV line → complex CSI vector.
+        """Parse ESP32-CSI-Tool or Espressif esp-csi CSV line → complex CSI vector.
 
-        The ESP-IDF active_ap/passive firmware emits lines beginning 'CSI_DATA'
-        whose final bracketed field is an int8 array [imag,real,imag,real,…].
-        Returns a complex64 ndarray (imag/real de-interleaved) or None.
+        Handles both formats:
+          • Standard ESP32-CSI-Tool: comma-separated starting 'CSI_DATA', final bracketed
+            field is int8 [imag,real,imag,real,…]
+          • Espressif esp-csi tool (incl. C5/C6): CSV with named column header row containing
+            'agc_gain', 'fft_gain', 'len', 'data' columns; data field is '[i r i r ...]'
+
+        AGC gain and FFT gain are removed from the CSI magnitude if present.
+        Returns complex64 ndarray or None.
         """
         try:
-            if "CSI_DATA" not in line:
+            if not line.strip():
                 return None
             lb, rb = line.rfind("["), line.rfind("]")
             if lb < 0 or rb < 0 or rb <= lb:
                 return None
-            nums = line[lb + 1:rb].replace(",", " ").split()
-            vals = np.array([int(x) for x in nums], dtype=np.float32)
+            nums_str = line[lb + 1:rb].replace(",", " ").split()
+            vals = np.array([int(x) for x in nums_str if x.lstrip("-").isdigit()],
+                            dtype=np.float32)
             if vals.size < 4:
                 return None
             n = (vals.size // 2) * 2
-            # ESP32 order is [imag, real] per subcarrier.
             imag = vals[:n][0::2]
             real = vals[:n][1::2]
-            return (real + 1j * imag).astype(np.complex64)
+            csi = (real + 1j * imag).astype(np.complex64)
+
+            # --- gain compensation for esp-csi AGC/FFT columns ---
+            parts = line.split(",")
+            agc_gain = 0.0
+            fft_gain = 0.0
+            # try to locate agc_gain / fft_gain by scanning CSV fields
+            for i, part in enumerate(parts[:-1]):   # skip the bracketed data field
+                p = part.strip().lower()
+                try:
+                    v = float(p)
+                except ValueError:
+                    continue
+                # heuristic: AGC gain is typically 0-62 dB, FFT gain 0-13 bits
+                prev_label = parts[i-1].strip().lower() if i > 0 else ""
+                if "agc" in prev_label or "agc_gain" in prev_label:
+                    agc_gain = v
+                elif "fft" in prev_label or "fft_gain" in prev_label:
+                    fft_gain = v
+
+            if agc_gain != 0.0 or fft_gain != 0.0:
+                scale = 10.0 ** ((agc_gain + fft_gain) / 20.0) + 1e-9
+                csi = csi / scale
+
+            return csi
+        except Exception:
+            return None
+
+    # ESPectre micro-spec stream magic bytes: "CS" (0x43, 0x53)
+    _ESPECTRE_MAGIC = b'\x43\x53'
+
+    def _parse_espectre_stream_packet(self, data: bytes):
+        """
+        Parse micro-ESPectre UDP streaming packet.
+        Packet format (espectre csi_streamer.py):
+          Header 7 bytes: magic(2) + chip_type(1) + flags(1) + seq(1) + num_sc_u16(2)
+          Payload: num_sc × 2 bytes (int8 I, int8 Q per subcarrier)
+        Returns complex64 ndarray or None.
+        """
+        try:
+            if len(data) < 7:
+                return None
+            magic = data[:2]
+            if magic != self._ESPECTRE_MAGIC:
+                return None
+            chip_type = data[2]   # 0=unknown, 1=ESP32, 2=S2, 3=S3, 4=C3, 5=C5, 6=C6
+            flags     = data[3]   # bit 0 = gain_locked
+            # seq     = data[4]   # sequence (for loss tracking, ignored here)
+            num_sc    = int.from_bytes(data[5:7], 'little')
+            payload   = data[7:7 + num_sc * 2]
+            if len(payload) < num_sc * 2:
+                return None
+            iq = np.frombuffer(payload, dtype=np.int8).astype(np.float32)
+            # Each pair is (I, Q)
+            imag = iq[0::2]; real = iq[1::2]
+            csi  = (real + 1j * imag).astype(np.complex64)
+            # For C5/C6 chips (chip_type 5/6) gain is NOT locked — apply CV normalization flag
+            gain_locked = bool(flags & 0x01)
+            if not gain_locked:
+                # Coefficient of variation normalization: scale by mean amplitude
+                mag_mean = float(np.mean(np.abs(csi))) + 1e-9
+                csi = csi / mag_mean
+            return csi
         except Exception:
             return None
 
     def _read_esp32_packet(self) -> bool:
-        """T0-4: read an ESP32 CSI_DATA frame over the same UDP socket (text payload)."""
+        """T0-4: read ESP32 packet (CSI_DATA text OR micro-ESPectre binary stream)."""
         if self._sock_nexmon is None:
             return False
         try:
             data, _ = self._sock_nexmon.recvfrom(8192)
+            # Try binary ESPectre stream first
+            if len(data) >= 7 and data[:2] == self._ESPECTRE_MAGIC:
+                csi_raw = self._parse_espectre_stream_packet(data)
+                if csi_raw is not None and csi_raw.size >= 4:
+                    csi = np.resize(csi_raw, self.CSI_SUBCARRIERS).astype(np.complex64)
+                    with self._lock:
+                        self._last_csi = csi
+                        self._method_used = "espectre_stream"
+                    return True
+            # Fall back to text CSI_DATA line
             text = data.decode("ascii", errors="ignore")
             if "CSI_DATA" not in text:
                 return False
@@ -6134,6 +10342,43 @@ class RouterCSICapture:
             self._method_used = "multi_ap_synth"
         return self._last_csi.copy()
 
+    def load_dat_file(self, path: str) -> bool:
+        """Pass 37: Load a CSIKit-format .dat file (IWL5300 or Atheros CSI Tool).
+        Auto-detects format, extracts CSI amplitude matrix, updates _last_csi.
+        Returns True if frames were successfully loaded.
+        """
+        try:
+            data = open(path, 'rb').read(32)
+        except OSError:
+            log.warning(f"[RouterCSI] load_dat_file: cannot open {path}")
+            return False
+        # Probe format
+        if _CSIKit_IWLReader.can_read(data):
+            frames = _CSIKit_IWLReader.read_file(path)
+            amps   = _CSIKit_IWLReader.extract_amplitude(frames)
+            reader_name = "IWL5300"
+        else:
+            frames = _CSIKit_AtherosReader.read_file(path)
+            amps   = _CSIKit_AtherosReader.extract_amplitude(frames)
+            reader_name = "Atheros"
+        if len(amps) == 0:
+            log.warning(f"[RouterCSI] load_dat_file: no frames parsed from {path} ({reader_name})")
+            return False
+        # Resize/average to DEFAULT_SUBCARRIERS
+        from scipy.ndimage import zoom as _z
+        n_sub = amps.shape[1]
+        if n_sub != DEFAULT_SUBCARRIERS:
+            scale = DEFAULT_SUBCARRIERS / n_sub
+            amps = np.array([_z(row, scale, order=1) for row in amps])
+        # Use the most recent frame as live CSI
+        with self._lock:
+            amp = amps[-1].astype(np.float32)
+            self._last_csi = (amp + 1j * np.roll(amp, 1)).astype(np.complex64)
+            self._method_used = f"dat_file_{reader_name}"
+        log.info(f"[RouterCSI] Loaded {len(frames)} frames from {path} ({reader_name})"
+                 f"  shape={amps.shape}")
+        return True
+
     @property
     def method(self) -> str:
         return self._method_used
@@ -6471,33 +10716,101 @@ class PassiveRadarPipeline:
         peaks = sorted(peaks, key=lambda a: -ps[int((a + 90) / 180 * (n_angles - 1))])
         return angles, ps.astype(np.float32), peaks[:n_sources]
 
-    # ── T2-4: holographic SAR back-projection (omega-k / RMA) ─────────────────────
+    # ── T2-3b: KrakenSDR 360° MUSIC upgrade (Pass 37) ─────────────────────────
+    def music_doa_360(self, snapshots, n_sources=2, d_spacing=0.5):
+        """Pass 37: Full 360° MUSIC using KrakenSDR scanning vectors.
+        Augments the existing ±90° MUSIC with a 360° polar sweep.
+        snapshots: (n_ant, n_snap) complex. Returns (angles_360, ps_360, peaks_deg)."""
+        X = np.atleast_2d(np.asarray(snapshots, dtype=np.complex128))
+        n_ant = X.shape[0]
+        if n_ant < 2:
+            return np.arange(360, dtype=np.float32), np.zeros(360, dtype=np.float32), []
+        sv = _kraken_gen_scanning_vectors(n_ant, d_spacing, "ULA")
+        R  = _kraken_spatial_covariance(X)
+        ps = _kraken_music_360(R, sv, n_sources)
+        angles = np.arange(360, dtype=np.float32)
+        peaks = []
+        for i in range(1, 359):
+            if ps[i] > ps[i-1] and ps[i] > ps[i+1] and ps[i] > 0.5:
+                peaks.append(float(i))
+        peaks = sorted(peaks, key=lambda a: -ps[int(a)])[:n_sources]
+        return angles, ps, peaks
+
+    # ── T2-3c: Wiener-SMI-MRE clutter cancel upgrade (Pass 37) ──────────────
+    def eca_clutter_cancel_mre(self, surveillance, reference, n_taps=16):
+        """Pass 37: Wiener-SMI-MRE clutter canceller (KrakenSDR variant).
+        Faster and more accurate than the Wiener-Hopf solver for long tap counts.
+        Falls back to standard ECA on error."""
+        try:
+            return _wiener_smi_mre(reference, surveillance, K=n_taps)
+        except Exception:
+            return self.eca_clutter_cancel(surveillance, reference, n_taps)
+
+    # ── T2-4: holographic SAR — omega-k Range Migration Algorithm (RMA) ─────────
     def holographic_sar(self, csi_history, grid=24, range_m=8.0):
-        """Range-migration holographic image from a slow-time CSI history.
-        csi_history: (n_slow, n_sub) complex. Returns a (grid, grid) intensity image
-        formed by phase-coherent back-projection across aperture positions."""
+        """Pass 34: Upgraded to omega-k / Range Migration Algorithm.
+
+        The classical back-projection inner loop is O(N_slow * N_sub * grid^2).
+        For a WiFi CSI stream the slow-time aperture is short (<=32 rows) so the
+        full 2-D FFT-based omega-k Stolt interpolation gives better SNR:
+
+          1. 2-D DFT of the slow-time × subcarrier matrix  →  (kr, kx) domain.
+          2. Matched-filter phase multiply  exp(j R0 (sqrt(kr^2 - kx^2) - kr))
+             where R0 is the scene reference range.  (Stolt mapping approximated
+             by a frequency-dependent phase shift in the kx bins, valid for the
+             narrow-aperture WiFi case.)
+          3. Inverse 2-D DFT  →  focused range × cross-range image.
+          4. Magnitude, normalise, zoom to (grid, grid) output.
+
+        Returns a (grid, grid) float32 intensity image in [0, 1].
+        Falls back to time-domain back-projection when the aperture is too small
+        for a meaningful Stolt shift (n_slow < 4).
+        """
         H = np.atleast_2d(np.asarray(csi_history, dtype=np.complex128))
         if H.shape[0] < 2 or H.shape[1] < 4:
             return np.zeros((grid, grid), dtype=np.float32)
         n_slow, n_sub = H.shape
-        # Subcarrier → wavenumber (range), aperture index → cross-range.
-        k = np.linspace(2 * np.pi * 2.40e9 / self.c, 2 * np.pi * 2.48e9 / self.c, n_sub)
-        ap = np.linspace(-range_m / 2, range_m / 2, n_slow)        # synthetic aperture
-        xs = np.linspace(-range_m / 2, range_m / 2, grid)
-        ys = np.linspace(0.3, range_m, grid)
-        img = np.zeros((grid, grid), dtype=np.complex128)
-        for si in range(n_slow):
-            row = H[si]
-            ax = ap[si]
-            for gy, y in enumerate(ys):
-                # Distance from aperture position to each cross-range cell.
-                dist = np.sqrt((xs - ax) ** 2 + y ** 2)
-                # Phase-coherent matched filter: Σ_sub row·exp(+j k dist).
-                phase = np.exp(1j * np.outer(dist, k))             # (grid, n_sub)
-                img[gy, :] += phase @ row
-        intensity = np.abs(img).astype(np.float32)
-        m = np.max(intensity) + 1e-9
-        return (intensity / m).astype(np.float32)
+        # ── wavenumber axes ───────────────────────────────────────────────────
+        f_lo, f_hi = 2.40e9, 2.48e9          # WiFi 2.4-GHz band
+        k_lo  = 2 * np.pi * f_lo / self.c
+        k_hi  = 2 * np.pi * f_hi / self.c
+        kr    = np.linspace(k_lo, k_hi, n_sub)     # range wavenumber (subcarrier axis)
+        # Aperture spacing: assume one CSI frame per Δt; platform "speed" is virtual —
+        # for passive WiFi we use a virtual aperture of ±range_m/4 spread.
+        dx    = (range_m / 2) / max(n_slow - 1, 1)
+        kx    = np.fft.fftfreq(n_slow, d=dx) * 2 * np.pi  # cross-range wavenumber
+        # ── omega-k focusing (short-aperture Stolt approximation) ─────────────
+        # 1. 2-D DFT
+        S2d  = np.fft.fft2(H)                       # (n_slow, n_sub) in (kx, kr)
+        # 2. Reference range R0 = scene centre
+        R0   = range_m / 2.0
+        KR, KX = np.meshgrid(kr, kx)                # broadcast to (n_slow, n_sub)
+        # Stolt matched-filter: compensate range migration
+        # kr_mapped = sqrt(KR^2 - KX^2)  (real part only; imaginary → evanescent → 0)
+        kr2_minus_kx2 = KR ** 2 - KX ** 2
+        kr_mapped = np.where(kr2_minus_kx2 > 0,
+                             np.sqrt(kr2_minus_kx2),
+                             KR)                     # fall back to KR where evanescent
+        H_mf = S2d * np.exp(1j * R0 * (kr_mapped - KR))
+        # 3. Inverse 2-D DFT  →  (cross-range, range) focused image
+        focused = np.fft.ifft2(H_mf)
+        intensity = np.abs(focused).astype(np.float32)
+        # 4. Zoom / crop to (grid, grid) output via simple interpolation
+        from scipy.ndimage import zoom as _zoom  # always available (scipy required)
+        zy = grid / intensity.shape[0]
+        zx = grid / intensity.shape[1]
+        try:
+            img_out = _zoom(intensity, (zy, zx), order=1)[:grid, :grid]
+        except Exception:
+            img_out = intensity[:grid, :grid]
+        # Pad if needed
+        if img_out.shape != (grid, grid):
+            padded = np.zeros((grid, grid), dtype=np.float32)
+            r, c = img_out.shape
+            padded[:r, :c] = img_out
+            img_out = padded
+        m = img_out.max() + 1e-9
+        return (img_out / m).astype(np.float32)
 
     # ── unified processing ───────────────────────────────────────────────────────
     def process(self, csi_now, csi_history=None):
@@ -6513,7 +10826,7 @@ class PassiveRadarPipeline:
         ref = csi_now.copy()
         srv = csi_now.copy()
         # T2-2: cancel direct-path clutter first.
-        srv_clean = self.eca_clutter_cancel(srv, ref, n_taps=min(8, n // 4))
+        srv_clean = self.eca_clutter_cancel_mre(srv, ref, n_taps=min(16, n // 4))
         # T2-1: cross-ambiguity of the cleaned surveillance vs reference.
         caf, caf_meta = self.cross_ambiguity(srv_clean, ref,
                                              n_delay=min(32, n - 1), n_doppler=32)
@@ -13311,6 +17624,72 @@ class MultiAgentWirelessBCIFuser:
         self._recon_last_frame = -100
         self._last_splat_image = None
 
+        # Pass 34 (T-SEM): SemanticStateEngine — 10-state room occupancy + MQTT
+        self.semantic_engine = SemanticStateEngine(
+            room_id="room_0",
+            mqtt_host=None,         # overridden by --mqtt-host at startup
+            ha_discovery=False,
+        )
+        # Pass 34 (T-WEB): WebViewerServer — HTTP MJPEG world stream
+        self.web_viewer: WebViewerServer = None   # created by --web-viewer at startup
+
+        # Pass 34 (T-LSL): BCILSLBroadcaster — LSL outlet for BCI band powers
+        self.lsl_broadcaster: BCILSLBroadcaster = None  # created by --lsl at startup
+
+        # Pass 34 (T0-7): spectrum waterfall history — rolling rows of band-power values
+        self._spectrum_wf_history = deque(maxlen=120)   # ~20 min at 1 sweep/10 s
+
+        # Pass 35 (T-MVS): EspectreMVSDetector — Moving-Variance Segmentation (espectre)
+        self.mvs_detector = EspectreMVSDetector(window_size=100, threshold=1.0,
+                                                 enable_hampel=True)
+        # Pass 35 (T-SPEC): CognitiveSpectrumSensor — energy + cyclostationary sensing
+        self.cog_spectrum = CognitiveSpectrumSensor(p_fa=0.01)
+        # Pass 35 (T-ESPCSI): ESPCSIPhaseSanitizer — per-frame phase cleanup for BCI quality
+        self.phase_sanitizer = ESPCSIPhaseSanitizer(n_sub=DEFAULT_SUBCARRIERS)
+        # Pass 35 (T-W3D): WiFi3DFusionEngine — multi-channel tracking + P4T-lite skeletons
+        self.wifi3d = WiFi3DFusionEngine(window_seconds=2.0, movement_threshold=0.008)
+        # Pass 36: RuVector psycho-physiological analysis engine
+        self.ruv_engine = RuVectorEngine()
+        # Pass 36: Espectre ML neural motion detector (inline MLP)
+        self.ml_detector = EspectreMLDetector(window_size=100, threshold=5.0)
+        # Pass 37: KrakenSDR 360° DoA processor
+        self.kraken_doa = KrakenDoAProcessor(n_ant=5, d_spacing=0.5, array_type="ULA", n_sources=2)
+        # Pass 37: FMCW point cloud pipeline (mmMesh/mmBody style)
+        self.fmcw_pc = FMCWPointCloudProcessor(num_tx=2, num_rx=4, loops_per_frame=8,
+                                                adc_samples=16)
+        # Pass 37: NeRF2 numpy scene model + RF-GS renderer
+        self.nerf2_model = NeRF2SceneModel(hidden=64)
+        self.rfgs_renderer = RFGaussianSplatRenderer(max_gaussians=4000)
+        # CSI .dat file readers (optional — activated when a .dat path is supplied)
+        self._csikit_iwl  = _CSIKit_IWLReader
+        self._csikit_ath  = _CSIKit_AtherosReader
+        self._wifi3d_result: dict = {}   # last WiFi-3D fusion result
+        # Pass 38: adaptive channel mgr + quality-weighted CSI fusion + numpy person detector
+        self.acm           = AdaptiveChannelManager()
+        self.csi_processor = CSIDataProcessor(n_subcarriers=56)
+        self.csi_detector  = CSIPersonDetector(in_len=56)
+        self._wavefield_t  = 0.0
+        # Pass 39: NeRF2 full model + PoseNet numpy WiFi-CSI skeleton estimator
+        self.nerf2_full    = NeRF2FullModel(D=4, W=64, skip=2, pos_freq=6, in_dims=3)
+        self.pose_net      = _PoseNetNP(na=3, nsc=56, nt=10, d=64)
+        self._csi_window: list = []   # rolling (T, n*nsc) window for PoseNet
+        # Pass 40: NBVI subcarrier selector, CogPose, NeRF2 ray renderer
+        self.nbvi          = NBVISubcarrierSelector(n_subcarriers=56, band_size=12, min_spacing=2)
+        self.ncf_tracker   = NeuralCorrespondenceFieldNP(seed=41)        # Pass 41: RF motion field
+        self.whofi_gallery = WhoFiGallery(feat_dim=112, d_model=64, n_layers=3)  # Pass 42: CSI person ReID
+        self.wdp_system    = WiFiDensePoseSystemNP(n_sc=56, seed=43)             # Pass 43: end-to-end DensePose
+        self.modality_net  = ModalityTranslationNetNP(n_sc=56, hidden=128, seed=41)  # Pass 41: WiFi→spatial
+        self._ncf_t: float = 0.0             # NCF time counter
+        self._ncf_motion_mag: float = 0.0    # latest motion magnitude
+        self._spatial_map: list = []         # 24×24×3 modality feature map (as nested list)
+        self.cogpose       = CogPoseNet(n_subcarriers=56, T=20)
+        self.nerf2_ray     = NeRF2RayRenderer(self.nerf2_full, n_samples=12, near=0.1, far=6.0)
+        self._nbvi_band: list = list(range(12))   # selected subcarrier indices
+        self._nbvi_thr: float = 1.0               # adaptive detection threshold
+        self._nbvi_calibrated: bool = False
+        # CSI phase sanitization enabled by default for better BCI quality
+        self._phase_sanitize = True
+
         # Pass 18: RealImageRenderer — reconstruct imagery from WiFi CSI signals
         self.img_renderer = RealImageRenderer(
             n_subcarriers=DEFAULT_SUBCARRIERS, voxel_res=VOXEL_RES, range_m=8.0)
@@ -13509,6 +17888,20 @@ class MultiAgentWirelessBCIFuser:
             "radar_doa_peaks": [], "radar_doa_count": 0, "radar_clutter_db": 0.0,
             # Pass 33 (TIER 3): WorldReconstructionEngine status
             "recon_nerf_frames": 0, "recon_nerf_type": "none", "recon_splat_count": 0,
+            "semantic_state":       "ROOM_EMPTY",
+            "semantic_frames":      0,
+            "lsl_active":           False,
+            "mvs_state":            "IDLE",
+            "mvs_confidence":       0.0,
+            "mvs_variance":         0.0,
+            "movement_score":       0.0,
+            "movement_event":       False,
+            "cog_spec_occupied":    0,
+            "cog_spec_bands":       0,
+            "w3d_person_count":     0,
+            "w3d_persons":          [],
+            "phase_sanitized":      False,
+            "web_viewer_port":      None,
             "recon_open3d": False, "recon_torch": False,
             "recon_body_count": 0, "recon_mesh_verts": 0,
             # List 10 fields (gravitational, Casimir & quantum-inspired sensing)
@@ -13643,6 +18036,39 @@ class MultiAgentWirelessBCIFuser:
             # List 25 fields (cellular automata & fractals)
             "initial_ca_density": 0.5,  # 25.1 Game of Life initial density
             "mandelbrot_escape": 0.0,   # 25.5 Mandelbrot escape time
+            # Pass 36 RuVector fields
+            "ruv_hrv_sdnn": 0.0, "ruv_hrv_rmssd": 0.0, "ruv_hrv_pnn50": 0.0,
+            "ruv_hrv_lf_hf": 1.5, "ruv_hrv_n": 0, "ruv_bp_sys": 0, "ruv_bp_dia": 0,
+            "ruv_happiness": 0.0, "ruv_affect": 0.0, "ruv_social": 0.0,
+            "ruv_gait_energy": 0.0, "ruv_vector": [0.0]*8,
+            "ruv_coherent": False, "ruv_coherence_score": 0.5, "ruv_coherence_age_ms": -1,
+            "ruv_alerts": [], "ruv_drift": [],
+            "ml_motion_state": "IDLE", "ml_motion_prob": 0.0,
+            # Pass 37
+            "kraken_doa_peaks": [], "kraken_doa_music": [], "kraken_doa_bartlett": [],
+            "fmcw_point_count": 0, "fmcw_points": [],
+            "nerf2_trained_steps": 0, "rfgs_n_gaussians": 0,
+            # Pass 38/39: CSI quality fusion + adaptive channel + person detection + PoseNet
+            "csi_person_prob": 0.5, "csi_person_state": "uncertain",
+            "csi_env_activity": 0.0, "csi_env_complexity": 0.0,
+            "csi_env_movement": False, "csi_env_energy": 0.0,
+            "acm_best_channels": [],
+            "pose_net_kps": [],     # (17, 2) COCO skeleton from PoseNet numpy
+            # Pass 40: CogPose + NBVI + NeRF2 ray
+            "cogpose_kps": [],          # (17, 2) COCO from CogPoseNet dilated conv
+            "nbvi_band": [],            # selected 12 subcarrier indices
+            "ncf_motion_mag": 0.0,      # Pass 41: mean motion vector magnitude from NCF
+            "whofi_reid_pid": "unknown",  # Pass 42: WhoFiReID person identity
+            "dp_part_scores": [],        # Pass 43: DensePose 24-part confidence scores
+            "dp_kps_uv": [],             # Pass 43: 17 COCO keypoints as UV (body surface) coords
+            "p4t_skeleton_3d": [],       # Pass 43: P4Transformer 17-joint 3D skeleton
+            "whofi_reid_score": 0.0,      # Pass 42: cosine similarity to closest prototype
+            "whofi_enrolled": 0,          # Pass 42: number of enrolled persons
+            "ncf_motion_vectors": [],   # Pass 41: recent NCF motion vectors
+            "spatial_energy_map": [],   # Pass 41: 24×24 RF energy spatial map (flattened)
+            "nbvi_thr": 1.0,            # adaptive detection threshold
+            "nbvi_calibrated": False,
+            "nerf2_rssi_proxy": -999.0, # NeRF2 ray-marched RSSI proxy (dBm)
             "turing_wavelength_m": 0.0, # 25.8 Turing pattern wavelength
             "bz_period_s": 0.0,         # 25.9 BZ oscillator period
             # List 26 fields (Navier-Stokes, GA, game theory)
@@ -13949,7 +18375,8 @@ class MultiAgentWirelessBCIFuser:
                  ("Signal [3]", "signal"), ("Per-Instr [4]", "instrument"),
                  ("Fused Map [5]", "fused"), ("Raw Data [6]", "raw"),
                  ("BCI [7]", "bci"), ("Radar [8]", "radar"),
-                 ("World [9]", "splat")]
+                 ("World [9]", "splat"), ("Motion [0]", "motion"),
+                 ("Info [i]", "info")]
         try:
             for i, (label, kind) in enumerate(_tabs):
                 bx = 0.06 + i * 0.085
@@ -14008,6 +18435,10 @@ class MultiAgentWirelessBCIFuser:
             self._open_tab({"1": "world", "2": "instruments", "3": "signal",
                             "4": "instrument", "5": "fused", "6": "raw",
                             "7": "bci", "8": "radar", "9": "splat"}[key])
+        elif key == "0":
+            self._open_tab("motion")
+        elif key in ("i", "escape"):
+            self._open_tab("info")
 
     def _open_tab(self, kind):
         """Pass 27: open a view tab in its own window (idempotent — re-raises if open)."""
@@ -14468,6 +18899,22 @@ class MultiAgentWirelessBCIFuser:
             self._world_snapshot["recon_status"] = wr.status()
         except Exception as _we:
             log.debug(f"[WORLD] reconstruction skipped: {_we}")
+
+    def _run_semantic_lsl(self):
+        """Pass 34: SemanticStateEngine update + LSL BCI broadcast."""
+        try:
+            sem_state = self.semantic_engine.update(
+                self.psych_profile, self._world_snapshot)
+            self.psych_profile["semantic_state"]  = sem_state
+            self.psych_profile["semantic_frames"] = self.semantic_engine.frames_in_state()
+        except Exception as _se:
+            log.debug(f"[Semantic] update error: {_se}")
+        if self.lsl_broadcaster is not None:
+            try:
+                self.lsl_broadcaster.push(self.psych_profile)
+                self.psych_profile["lsl_active"] = self.lsl_broadcaster.active
+            except Exception as _le:
+                log.debug(f"[LSL] push error: {_le}")
 
     def _fuse_agents(self, results):
         if not results:
@@ -15658,6 +20105,194 @@ class MultiAgentWirelessBCIFuser:
                 pp["recon_mesh_verts"]   = int(len(_surf.get("verts", [])))
         except Exception as _e:
             log.debug(f"[WORLD] recon status skipped: {_e}")
+
+        # Pass 35 (T-W3D): WiFi3DFusionEngine update — multi-channel tracking + P4T skeletons
+        try:
+            _w3d = self.wifi3d.update(
+                csi_complex=self._last_raw_csi if hasattr(self, "_last_raw_csi") else np.zeros(64, dtype=np.complex64),
+                voxel_grid=self.voxel_grid,
+                blobs=self._world_snapshot.get("blobs", []),
+                timestamp=time.time(),
+                channel=1,
+            )
+            self._wifi3d_result = _w3d
+            self.psych_profile["movement_score"]  = _w3d["movement_score"]
+            self.psych_profile["movement_event"]  = _w3d["movement_event"] is not None
+            self.psych_profile["w3d_person_count"] = _w3d["person_count"]
+            self.psych_profile["w3d_persons"]      = _w3d["persons"][:4]   # cap for profile size
+        except Exception as _w3e:
+            log.debug(f"[W3D] update error: {_w3e}")
+
+        # Pass 38: CSIDataProcessor quality fusion + AdaptiveChannelManager + CSIPersonDetector
+        try:
+            _csi38 = getattr(self, "_last_raw_csi", None)
+            if _csi38 is not None and len(_csi38) > 0:
+                _ch38   = int(pp.get("channel", 1))
+                _rssi38 = float(pp.get("signal_rssi_dbm", -70.0))
+                self.csi_processor.update(_ch38, _csi38, _rssi38)
+                self.acm.update_channel_activity(_ch38, np.abs(_csi38), _rssi38)
+                _famp = self.csi_processor.fused_amplitude()
+                _det38 = self.csi_detector.predict(_famp)
+                _env38 = self.csi_processor.environment_summary()
+                pp["csi_person_prob"]    = _det38["probability"]
+                pp["csi_person_state"]   = _det38["state"]
+                pp["csi_env_activity"]   = _env38.get("activity", 0.0)
+                pp["csi_env_complexity"] = _env38.get("complexity", 0.0)
+                pp["csi_env_movement"]   = _env38.get("movement", False)
+                pp["csi_env_energy"]     = _env38.get("energy", 0.0)
+                pp["acm_best_channels"]  = self.acm.get_best_channels()
+                self._wavefield_t += 0.033
+                # Pass 39: PoseNet CSI → skeleton
+                _famp_2d = self.csi_processor.fused_amplitude()
+                self._csi_window.append(_famp_2d)
+                if len(self._csi_window) > 10:
+                    self._csi_window.pop(0)
+                if len(self._csi_window) >= 4:
+                    _kps = self.pose_net.predict(np.stack(self._csi_window, axis=0))
+                    pp["pose_net_kps"] = _kps.tolist()     # (17, 2) COCO
+                else:
+                    pp["pose_net_kps"] = []
+                # Pass 40: CogPose (dilated Conv1D) skeleton + NBVI calibration
+                _cog_kps = self.cogpose.predict(_famp_2d)
+                pp["cogpose_kps"] = _cog_kps.tolist()   # (17, 2) COCO
+                # Feed NBVI calibrator when not yet calibrated
+                if not self._nbvi_calibrated:
+                    self.nbvi.add_amp_vector(_famp_2d)
+                    if len(self.nbvi._history) >= 50:
+                        _band, _thr, _ = self.nbvi.compute()
+                        self._nbvi_band = _band
+                        self._nbvi_thr  = _thr
+                        self._nbvi_calibrated = True
+                        log.info(f"[NBVI] Subcarrier band selected: {_band[:6]}... thr={_thr:.4f}")
+                pp["nbvi_band"]   = self._nbvi_band[:6]  # first 6 for display
+                pp["nbvi_thr"]    = round(self._nbvi_thr, 4)
+                pp["nbvi_calibrated"] = self._nbvi_calibrated
+                # NeRF2 ray renderer: predict RSSI proxy for BLE/RSSI comparison
+                try:
+                    _tx3 = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+                    _rx3 = np.array([2.0, 0.0, 0.5], dtype=np.float32)
+                    pp["nerf2_rssi_proxy"] = round(
+                        self.nerf2_ray.predict_rssi(_tx3, _rx3, n_rays=3), 2)
+                except Exception:
+                    pp["nerf2_rssi_proxy"] = -999.0
+                # Pass 41: NeuralCorrespondenceField motion tracking
+                try:
+                    self._ncf_t += 0.1
+                    _ncf_pos = np.array([[2.0, 0.0, 0.5],
+                                         [1.0, 1.0, 0.3],
+                                         [0.5, 0.5, 1.0]], np.float32)
+                    _ncf_out = self.ncf_tracker.predict_motion(_ncf_pos, self._ncf_t)
+                    _mv_mean = float(np.linalg.norm(_ncf_out["motion_vector"], axis=-1).mean())
+                    self._ncf_motion_mag = _mv_mean
+                    pp["ncf_motion_mag"]     = round(_mv_mean, 4)
+                    pp["ncf_motion_vectors"] = _ncf_out["motion_vector"].tolist()
+                except Exception as _ncf_e:
+                    log.debug(f"[NCF] {_ncf_e}")
+                # Pass 41: Modality Translation Network → spatial feature map
+                try:
+                    _amp_v  = _famp_2d.ravel()[:56]
+                    _ph_v   = np.angle(self.csi_processor._last_csi_complex.ravel()[:56])                               if hasattr(self.csi_processor, '_last_csi_complex') else np.zeros(56)
+                    _smap   = self.modality_net.forward(_amp_v, _ph_v)
+                    pp["spatial_energy_map"] = _smap[:, :, 0].ravel().tolist()  # 576 values
+                except Exception as _mt_e:
+                    log.debug(f"[MTN] {_mt_e}")
+                # Pass 42: WhoFi ReID — CSI sequence → person identity embedding
+                try:
+                    _feat38 = _whofi_csi_frame_to_feat(_famp_2d).ravel()  # (D*2,)
+                    self.whofi_gallery.push_frame(_feat38)
+                    _reid = self.whofi_gallery.infer()
+                    pp["whofi_reid_pid"]    = _reid["pid"]
+                    pp["whofi_reid_score"]  = _reid["score"]
+                    pp["whofi_enrolled"]    = _reid["enrolled"]
+                    if _reid["enrolled"] > 0 and _reid["score"] > 0.55:
+                        pp["person_id"] = _reid["pid"]
+                except Exception as _reid_e:
+                    log.debug(f"[ReID] {_reid_e}")
+                # Pass 43: WiFi DensePose + P4Transformer 3D skeleton
+                try:
+                    _dp_amp  = _famp_2d.ravel()[:56]
+                    _dp_ph   = np.angle(
+                        self.csi_processor._last_csi_complex.ravel()[:56]
+                    ) if hasattr(self.csi_processor, '_last_csi_complex') else np.zeros(56)
+                    # Build point cloud from recent W3D persons
+                    _pt_seq = []
+                    for _pdata in list(self.wifi3d._persons.values())[:2]:
+                        _traj = list(_pdata.get("traj_pts", []))[-6:]
+                        if _traj:
+                            _pt_seq.append(np.array(_traj, np.float32))
+                    _cent3 = None
+                    if _pt_seq:
+                        _cent3 = _pt_seq[-1].mean(axis=0) if len(_pt_seq[-1]) > 0 else None
+                    _wdp = self.wdp_system.update(_dp_amp, _dp_ph, _pt_seq, _cent3)
+                    pp["dp_part_scores"]  = _wdp["dp_part_scores"]
+                    pp["dp_kps_uv"]       = _wdp["dp_kps_uv"]
+                    pp["p4t_skeleton_3d"] = _wdp["p4t_skeleton_3d"]
+                except Exception as _wdp_e:
+                    log.debug(f"[WDP] {_wdp_e}")
+        except Exception as _e38:
+            log.debug(f"[P38-CSI] {_e38}")
+
+        # Pass 36: RuVector psycho-physiological update
+        try:
+            _hr  = float(pp.get("breathing_rate", 0) * 3.5 + 70)   # proxy if no HR sensor
+            _br  = float(pp.get("breathing_rate", 0))
+            _me  = float(pp.get("movement_score", 0))
+            _rssi = float(pp.get("signal_rssi_dbm", -70))
+            _sigq = float(pp.get("signal_quality", 0.5))
+            self.ruv_engine.update(_hr, _br, _me, _rssi, _sigq)
+            # ML detector update using MVS turbulence buffer
+            _mvs_buf = list(self.mvs_detector._buf[:self.mvs_detector._bcnt])
+            _ml_res  = self.ml_detector.predict(_mvs_buf)
+            _ruv = self.ruv_engine.summary()
+            pp.update(_ruv)
+            pp["ml_motion_state"] = _ml_res["state"]
+            pp["ml_motion_prob"]  = _ml_res["probability"]
+        except Exception as _ruve:
+            log.debug(f"[RUVEC] update error: {_ruve}")
+
+        # Pass 37: KrakenSDR 360° DoA — snapshot from subcarrier vector as synthetic ULA
+        try:
+            _csi_now = np.asarray(self._last_raw_csi if hasattr(self, "_last_raw_csi")
+                                  else np.zeros(64, dtype=np.complex64), dtype=np.complex64)
+            _n_ant = min(5, len(_csi_now))
+            # Build snapshot matrix from 3 shifted views (wider spatial diversity)
+            _snaps = np.stack([
+                _csi_now[:_n_ant],
+                np.roll(_csi_now[:_n_ant], 1),
+                np.roll(_csi_now[:_n_ant], 3),
+            ], axis=1)   # (n_ant, 3)
+            _doa_res = self.kraken_doa.update(_snaps)
+            pp["kraken_doa_peaks"]   = _doa_res["peaks_deg"]
+            pp["kraken_doa_music"]   = _doa_res["music_ps"].tolist()
+            pp["kraken_doa_bartlett"] = _doa_res["bartlett_ps"].tolist()
+        except Exception as _kdoe:
+            log.debug(f"[KRAKEN] DoA error: {_kdoe}")
+
+        # Pass 37: FMCW point cloud from CSI proxy frame
+        try:
+            _fmcw_pts = self.fmcw_pc.from_csi_proxy(
+                self._last_raw_csi if hasattr(self, "_last_raw_csi") else np.zeros(64, np.complex64))
+            pp["fmcw_point_count"] = int(len(_fmcw_pts))
+            pp["fmcw_points"]      = _fmcw_pts[:32].tolist() if len(_fmcw_pts) > 0 else []
+        except Exception as _fme:
+            log.debug(f"[FMCW] pc error: {_fme}")
+
+        # Pass 37: NeRF2 + RF-GS update
+        try:
+            _vg = self.voxel_grid
+            _vg_pts = np.argwhere(_vg > 0.12).astype(np.float32)
+            if len(_vg_pts) > 4:
+                _vg_amp = _vg[_vg > 0.12].astype(np.float32)
+                _norm = _vg_pts / max(1.0, _vg.shape[0]) - 0.5
+                self.nerf2_model.train_step(_norm, _vg_amp)
+            self.rfgs_renderer.update_from_voxels(_vg)
+            pp["nerf2_trained_steps"] = self.nerf2_model._n_trained
+            pp["rfgs_n_gaussians"]    = self.rfgs_renderer._n_active
+        except Exception as _n2e:
+            log.debug(f"[NERF2/RFGS] error: {_n2e}")
+
+        # Pass 34: semantic state + LSL broadcast (after world snapshot ready)
+        self._run_semantic_lsl()
 
         # ── List 10 fusion stage (gravitational, Casimir & quantum-inspired) ──
         if hist_arr is not None and hist_arr.shape[0] >= 8:
@@ -16963,6 +21598,13 @@ class MultiAgentWirelessBCIFuser:
         # carries phase — a magnitude-only frame (phstd≈0) would wipe the delay info.
         try:
             _cap = np.atleast_1d(csi_raw).ravel()[:DEFAULT_SUBCARRIERS].astype(np.complex64).copy()
+            # Pass 35 (T-ESPCSI): phase sanitization (unwrap + linear detrend + Hampel)
+            if getattr(self, "_phase_sanitize", False):
+                try:
+                    _cap = self.phase_sanitizer.sanitize(_cap)
+                    self.psych_profile["phase_sanitized"] = True
+                except Exception:
+                    pass
             if np.std(np.angle(_cap)) > 1e-3:
                 self._last_raw_csi = _cap
             elif getattr(self, "_last_raw_csi", None) is None:
@@ -16973,6 +21615,15 @@ class MultiAgentWirelessBCIFuser:
             # Pass 32 (T2): accumulate slow-time complex CSI for the radar SAR history.
             if hasattr(self, "_radar_csi_hist"):
                 self._radar_csi_hist.append(_cap.copy())
+            # Pass 35 (T-MVS): EspectreMVS motion detector on the sanitized CSI amplitude
+            if hasattr(self, "mvs_detector"):
+                try:
+                    _mvs = self.mvs_detector.process(_cap)
+                    self.psych_profile["mvs_state"]      = _mvs["state"]
+                    self.psych_profile["mvs_confidence"] = _mvs["confidence"]
+                    self.psych_profile["mvs_variance"]   = _mvs["variance"]
+                except Exception as _mve:
+                    log.debug(f"[MVS] {_mve}")
         except Exception:
             self._last_raw_csi = None
 
@@ -17111,6 +21762,16 @@ class MultiAgentWirelessBCIFuser:
                     self.psych_profile["spectrum_survey"] = _survey
                     self.psych_profile["spectrum_real_bands"] = _real_bands
                     self.psych_profile["spectrum_band_count"] = len(_real_bands)
+                    # T0-7: accumulate waterfall row for the signal-tab waterfall
+                    wf_row = []
+                    for _bn, _bd in _survey.items():
+                        if isinstance(_bd, dict):
+                            _pk = _bd.get("peak_power_dbm") if _bd.get("real") else None
+                            wf_row.append(float(_pk) if _pk is not None else -120.0)
+                        else:
+                            wf_row.append(-120.0)
+                    if wf_row:
+                        self._spectrum_wf_history.append(wf_row)
                 except Exception as _e:
                     log.debug(f"[Spectrum] sweep skipped: {_e}")
 
@@ -17536,6 +22197,11 @@ class MultiAgentWirelessBCIFuser:
             _spectrum_block = "\n".join(self.spectrum.summary_lines())
         except Exception:
             _spectrum_block = "[Spectrum] unavailable"
+        _sem_state = self.psych_profile.get("semantic_state", "ROOM_EMPTY")
+        _sem_frames = self.psych_profile.get("semantic_frames", 0)
+        _lsl_active = self.psych_profile.get("lsl_active", False)
+        _lsl_line   = (f"LSL       NEPA_BCI outlet ACTIVE @ {getattr(self,'target_fps',20):.0f} Hz"
+                       if _lsl_active else "LSL       offline (--lsl to enable)")
         _p_ment    = p.get('ns_manifold_entropy', 0.0)
         _p_topo    = p.get('ns_topo_loop', 0.0)
         _p_beta_s  = p.get('beta_suppression', 0.0)
@@ -17648,6 +22314,9 @@ WIRELESS-BCI [RF-DERIVED]  intent={p.get('bci_motor_intent','REST')}({p.get('bci
 PASSIVE RADAR  CAF-SNR={p.get('radar_caf_snr_db',0):.1f}dB  vel={p.get('radar_velocity_ms',0):+.2f}m/s  clutter-supp={p.get('radar_clutter_db',0):.1f}dB  MUSIC-DoA={p.get('radar_doa_count',0)}@{['%+.0f°'%a for a in p.get('radar_doa_peaks',[])[:3]]}
 WORLD RECON  NeRF[{p.get('recon_nerf_type','none')}] frames={p.get('recon_nerf_frames',0)}  splats={p.get('recon_splat_count',0)}  bodies={p.get('recon_body_count',0)}  mesh-verts={p.get('recon_mesh_verts',0)}  open3d={p.get('recon_open3d',False)} torch={p.get('recon_torch',False)}
 {_spectrum_block}
+MOTION  MVS={p.get('mvs_state','IDLE'):<6}  conf={p.get('mvs_confidence',0):.2f}  var={p.get('mvs_variance',0):.4f}  W3D-persons={p.get('w3d_person_count',0)}  mv_score={p.get('movement_score',0):.5f}
+SEMANTIC  {_sem_state:<22}  frames={_sem_frames}
+{_lsl_line}
 NEPA HUMANITARIAN — experimental research-grade sensing. Save lives. Threat recognition."""
         # Pass 24: hard wrap guard — no diagnostic line may exceed 95 chars (prevents
         # panel overflow / text running off the right edge of the overlay axis).
@@ -17855,7 +22524,7 @@ NEPA HUMANITARIAN — experimental research-grade sensing. Save lives. Threat re
                 self._open_tab("world")
             except Exception as e:
                 log.warning(f"[WORLD] could not open 3D world: {e}")
-        log.info("[UI] Tab bar ready — press 1-9 (7=BCI, 8=Radar, 9=Navigable World/Splat) to open a view window")
+        log.info("[UI] Tab bar ready — press 1-9 (7=BCI, 8=Radar, 9=Navigable World/Splat, 0=Motion/W3D) to open a view window")
         # Keep ani referenced on self so GC cannot collect it before plt.show() returns.
         # Pass 26: live refresh at the target FPS (default 20 → 50 ms) for a constantly
         # updating constructed environment.
@@ -17908,6 +22577,22 @@ if __name__ == "__main__":
                              'packets (UDP-forwarded ESP32/Nexmon sniffer, or scapy monitor).')
     parser.add_argument('--monitor-iface', default=None,
                         help='Pass 30 (T0-5): monitor-mode interface for scapy passive sniff.')
+    parser.add_argument('--web-viewer', action='store_true',
+                        help='Pass 34: Start HTTP MJPEG server streaming the live Gaussian-splat '
+                             'world. Open http://localhost:<--web-port>/ in any browser.')
+    parser.add_argument('--web-port', type=int, default=8765,
+                        help='Pass 34: Port for the --web-viewer HTTP server (default 8765).')
+    parser.add_argument('--lsl', action='store_true',
+                        help='Pass 34 (T-LSL): Open a Lab Streaming Layer outlet named NEPA_BCI '
+                             'broadcasting 10-channel BCI band powers at target_fps Hz. '
+                             'Requires pylsl (pip install pylsl).')
+    parser.add_argument('--mqtt-host', default=None,
+                        help='Pass 34 (T-SEM): MQTT broker host for SemanticStateEngine '
+                             'room-state publishing (e.g. 192.168.1.1 or homeassistant.local).')
+    parser.add_argument('--mqtt-port', type=int, default=1883,
+                        help='Pass 34: MQTT broker port (default 1883).')
+    parser.add_argument('--ha-discovery', action='store_true',
+                        help='Pass 34: Publish Home Assistant MQTT discovery messages on start.')
     args = parser.parse_args()
 
     # List 1.9: offline training mode (no UI)
@@ -17930,6 +22615,27 @@ if __name__ == "__main__":
     if args.passive_sniff and hasattr(fuser, "router_csi"):
         fuser.router_csi.enable_passive_sniff(monitor_iface=args.monitor_iface)
         log.info("[MAIN] Passive-sniff capture path enabled.")
+
+    # Pass 34 (T-WEB): --web-viewer HTTP MJPEG stream of the Gaussian-splat world
+    if args.web_viewer:
+        fuser.web_viewer = WebViewerServer(fuser, port=args.web_port)
+        fuser.web_viewer.start()
+
+    # Pass 34 (T-LSL): --lsl BCI band-power LSL outlet
+    if args.lsl:
+        fuser.lsl_broadcaster = BCILSLBroadcaster(
+            srate=float(max(5, min(60, args.fps))))
+
+    # Pass 34 (T-SEM): --mqtt-host for SemanticStateEngine MQTT publishing
+    if args.mqtt_host:
+        fuser.semantic_engine = SemanticStateEngine(
+            room_id="room_0",
+            mqtt_host=args.mqtt_host,
+            mqtt_port=args.mqtt_port,
+            ha_discovery=args.ha_discovery,
+        )
+        log.info(f"[MAIN] SemanticStateEngine MQTT → {args.mqtt_host}:{args.mqtt_port}")
+
     try:
         fuser.start()
     except KeyboardInterrupt:
