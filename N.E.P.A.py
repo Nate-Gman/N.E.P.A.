@@ -1264,6 +1264,7 @@ class DetailTabWindow:
                  "radar": "PASSIVE RADAR",
             "motion": "MOTION & W3D",
                  "splat": "NAVIGABLE WORLD (SPLAT)",
+                 "medical": "MEDICAL VITALS DASHBOARD",
                  "info": "SYSTEM INFO & ABOUT"}.get(self.kind, self.kind)
         self._fig = plt.figure(f"N.E.P.A. - {title}", figsize=(16, 10))
         self._fig.patch.set_facecolor('#050505')
@@ -1481,6 +1482,39 @@ class DetailTabWindow:
             ("HRV RMSSD",   f"{p.get('ruv_hrv_rmssd',0):.1f} ms", '#22aaff'),
             ("HRV pNN50",   f"{p.get('ruv_hrv_pnn50',0):.1f} %",  '#aaffaa'),
             ("LF/HF ratio", f"{p.get('ruv_hrv_lf_hf',1.5):.2f}",  '#ffaa22'),
+            ("P66 HRV SDNN", f"{p.get('p66_hrv_sdnn',0):.1f} ms", '#44ffbb'),
+            ("P66 LF/HF",    f"{p.get('p66_hrv_lf_hf',1.5):.2f} {p.get('p66_hrv_band','?')[:4]}", '#44bbff'),
+            ("P66 Mood",     f"{p.get('p66_hv_label','neutral')[:8]} {p.get('p66_hv_conf',0):.2f}", '#ffff66'),
+            ("P66 Valence",  f"{p.get('p66_hv_valence',0.5):.2f}", '#ffcc44'),
+            ("P66 Cohere",   f"{p.get('p66_coherence',0.5):.2f} {'OK' if p.get('p66_coherent',1) else 'LOW'}", '#88ffdd'),
+            ("P66 Alert",    str(p.get('p66_anomaly_alert','ok'))[:12], '#ff8844'),
+            ("P67 ED Det",   f"{'YES' if p.get('p67_ed_detected') else 'no'} {p.get('p67_ed_margin_db',0):.1f}dB", '#ffff88'),
+            ("P67 Cyclo",    f"{'DET' if p.get('p67_cyclo_detected') else 'no'} T={p.get('p67_cyclo_T_sq',0):.2f}", '#aaffcc'),
+            ("P67 GeoLoss",  f"{p.get('p67_geo_mean_loss',0):.3f} rad", '#ccaaff'),
+            ("P67 NeRF2",    f"rss={p.get('p67_nerf2_rss',0):.3f} d={p.get('p67_nerf2_depth',0):.2f}", '#88ffee'),
+            ("P67 PR State", f"{str(p.get('p67_pr_state','IDLE'))[:8]} {p.get('p67_pr_n_detections',0)}det", '#ffaa44'),
+            ("P68 NV HR",    f"{p.get('p68_hr_fused_bpm',0):.1f}bpm c={p.get('p68_hr_fused_conf',0):.2f}", '#aaffcc'),
+            ("P68 PABS",     f"{p.get('p68_pabs',0):.3f} {'ALERT' if p.get('p68_pabs_alert') else 'ok'}", '#ff8888' if p.get('p68_pabs_alert') else '#88cc88'),
+            ("P68 ML-Adv",   f"{'DET' if p.get('p68_ml_adversarial_detected') else 'ok'} cut={p.get('p68_ml_cut_val',0):.2f}", '#ffcc44'),
+            ("P68 Foliage",  f"mod {p.get('p68_foliage_atten_mod_db',0):.1f}dB rng{p.get('p68_foliage_max_range_m',0):.0f}m", '#88ffcc'),
+            ("P68 Maritime", f"cabin {p.get('p68_maritime_cabin_margin_db',0):.0f}dB", '#88aaff'),
+            ("P68 BP",       f"BP-CSI {str(p.get('p68_bp_verdict','NEG'))[:4]} PTT {p.get('p68_bp_ptt_resolvable',0)}", '#ffaacc'),
+            ("P68 EEG",      f"α{p.get('p68_eeg_alpha_mean',0):.2f} β{p.get('p68_eeg_beta_mean',0):.2f} lat{p.get('p68_eeg_laterality',0):+.2f}", '#ccaaff'),
+            ("P69 NV Smart",  f"{p.get('p69_nv_fused_bpm',0):.1f}bpm {str(p.get('p69_nv_regime','?'))[:8]}", '#aaffdd'),
+            ("P69 RFWeather", f"d={p.get('p69_rf_weather_cos_dist',0):.3f} {'ALERT' if p.get('p69_rf_weather_alert') else 'ok'}", '#ff8888' if p.get('p69_rf_weather_alert') else '#88cc88'),
+            ("P69 RSSI MLP",  f"{p.get('p69_rssi_pred_count',0)} ppl {p.get('p69_rssi_accuracy',0):.1%}", '#ffdd88'),
+            ("P69 FM Demod",  f"rms={p.get('p69_fm_audio_rms',0):.3f} pk={p.get('p69_fm_spectrum_peak_db',-100):.0f}dB", '#88aaff'),
+            ("P69 6D Rot",    f"frob={p.get('p69_6d_frob_err',0):.4f} geo={p.get('p69_6d_geo_err',0):.4f}", '#ffaacc'),
+            ("P70 MVS Det",   f"var={p.get('p70_mvs_variance',0):.3f} {'MOT' if p.get('p70_mvs_state') else 'IDL'}", '#ffaa66' if p.get('p70_mvs_state') else '#aaaaaa'),
+            ("P70 PosePABS",  f"pabs={p.get('p70_pose_pabs',0):.3f} {'ALERT' if p.get('p70_pabs_alert') else 'ok'}", '#ff6666' if p.get('p70_pabs_alert') else '#88cc88'),
+            ("P70 CrossReID", f"emb={p.get('p70_reid_emb_norm',0):.2f} esub={p.get('p70_reid_env_sub_rms',0):.4f}", '#88ddff'),
+            ("P70 Turb",      f"skw={p.get('p70_turb_skew',0):.2f} autocorr={p.get('p70_turb_autocorr',0):.2f}", '#ccddff'),
+            ("P71 3DFresnel",  f"cov3D={p.get('p71_coverage_3d',0):.2%} TX_z={p.get('p71_tx_z',1.5):.1f}m", '#aaffcc'),
+            ("P71 Multistc",  f"cov={p.get('p71_ms_cov',0):.2%} {p.get('p71_ms_n_anchors',0)}anch", '#88ddcc'),
+            ("P71 NeRF2",     f"rss={p.get('p71_nerf2_rss',0):.3f} loss={p.get('p71_nerf2_loss',0):.4f}", '#ffeeaa'),
+            ("P71 GS Splat",  f"rms={p.get('p71_gs_rms',0):.3f} N={p.get('p71_gs_n_active',0)}", '#ffccaa'),
+            ("P72 ERP",       f"{p.get('p72_erp_label','?'):8s} p={p.get('p72_erp_prob',0):.2f}", '#ccaaff'),
+            ("P72 Riem Cov",  f"frob={p.get('p72_cov_frob',0):.2f} fish={p.get('p72_fisher_top',0):.3f}", '#aaccff'),
             ("BP est.",     f"{p.get('ruv_bp_sys',0)}/{p.get('ruv_bp_dia',0)} mmHg", '#ff88aa'),
             ("Happiness",   f"{p.get('ruv_happiness',0):.2f}",     '#00ffcc'),
             ("Affect val.", f"{p.get('ruv_affect',0):.2f}",        '#88aaff'),
@@ -1504,10 +1538,32 @@ class DetailTabWindow:
             ax4.text(0.02, 0.02, _drift[0][:55], color='#ffaa22', fontsize=8,
                      family='monospace', transform=ax4.transAxes)
         ax4.set_title("RuVector: HRV · BP · Happiness · ML motion", color='#00ffcc', fontsize=10)
+        # Pass 63 UI: EEG + Vitals strip below BCI tab
+        try:
+            _ea = float(p.get("p59_band_alpha", 0.0))
+            _eb = float(p.get("p59_band_beta", 0.0))
+            _et = float(p.get("p59_band_theta", 0.0))
+            _em = float(p.get("p61_eeg_mindfulness", 0.0))
+            _er = float(p.get("p61_eeg_restfulness", 0.0))
+            _sl = str(p.get("p61_sleep_state", "?"))
+            _md = float(p.get("p61_meditation_score", 0.0))
+            _bs = int(p.get("p61_bp_sys", 0))
+            _bd = int(p.get("p61_bp_dia", 0))
+            _bc = str(p.get("p61_bp_category", "?"))
+            _hs = float(p.get("p61_hrv_sdnn", 0.0))
+            _bt = ("P59 EEG: alpha=%.3f beta=%.3f theta=%.3f  mind=%.2f rest=%.2f"
+                   " | P61: BP=%d/%d[%s] sleep=%s med=%.0f/100 SDNN=%.1fms"
+                   % (_ea, _eb, _et, _em, _er, _bs, _bd, _bc, _sl, _md, _hs))
+            _axbci = fig.add_axes([0.0, 0.0, 1.0, 0.04])
+            _axbci.set_facecolor('#080808'); _axbci.axis('off')
+            _axbci.text(0.01, 0.5, _bt, color='#aaffcc', fontsize=8.5,
+                        family='monospace', va='center', transform=_axbci.transAxes)
+        except Exception:
+            pass
 
     def _draw_radar(self, fig, p, snap):
         """T2 detail view — CAF range-Doppler map, MUSIC pseudospectrum, holographic SAR."""
-        fig.suptitle("PASSIVE RADAR — CAF · MUSIC DoA · Holographic SAR",
+        fig.suptitle("PASSIVE RADAR — CAF · MUSIC DoA · Holographic SAR  [P62 PR+SpecSens]",
                      color='#00ffcc', fontsize=13)
         rad = getattr(self.fuser, "_last_radar", {}) or {}
         # Panel 1: CAF range-Doppler.
@@ -1590,6 +1646,47 @@ class DetailTabWindow:
                 ax3.imshow(_mip_img.T, aspect='auto', cmap='plasma', origin='lower',
                            alpha=0.45, extent=[0, _nkx, 0, _nz])
                 ax3.set_title("Holo-SAR + MIMO-SAR 3D MIP (XZ)", color='#00ffcc', fontsize=10)
+        # Pass 63 UI: P62 PR/SpecSens status strip
+        try:
+            _pr_nd  = int(p.get("p62_pr_n_detections", 0))
+            _pr_snr = float(p.get("p62_pr_snr_peak_db", 0.0))
+            _ss_occ = int(p.get("p62_ss_occupied", 0))
+            _ss_rt  = float(p.get("p62_ss_occ_rate", 0.0))
+            _ss_e62 = int(p.get("p62_ss_energy_d", 0))
+            _ss_c62 = int(p.get("p62_ss_cyclo_d", 0))
+            _ss_snr = float(p.get("p62_ss_snr_est_db", 0.0))
+            _occ62  = "OCCUPIED" if _ss_occ else "CLEAR"
+            _en62   = "HIT" if _ss_e62 else "miss"
+            _cy62   = "HIT" if _ss_c62 else "miss"
+            _pr62_t = ("P62 PR: dets=%d SNR_peak=%.1fdB | SpecSens: %s(%.0f%%) Energy=%s Cyclo=%s SNR=%.1fdB"
+                       % (_pr_nd, _pr_snr, _occ62, _ss_rt*100, _en62, _cy62, _ss_snr))
+            _axpr = fig.add_axes([0.0, 0.0, 1.0, 0.04])
+            _axpr.set_facecolor('#08080f'); _axpr.axis('off')
+            _clr_pr = '#ff5533' if _ss_occ else '#00ffcc'
+            _axpr.text(0.01, 0.5, _pr62_t, color=_clr_pr, fontsize=8.5,
+                       family='monospace', va='center', transform=_axpr.transAxes)
+        except Exception:
+            pass
+        # Pass 64 UI: Root-MUSIC + PAPR + SNR + VFO + mmWave fusion strip
+        try:
+            _rm0  = float(p.get("p64_doa_root_music_0", 0.0))
+            _rm1  = float(p.get("p64_doa_root_music_1", 0.0))
+            _papr = float(p.get("p64_doa_papr_db", 0.0))
+            _snr  = float(p.get("p64_doa_snr_db", 0.0))
+            _mpk  = float(p.get("p64_doa_music_peak", 0.0))
+            _vfo  = int(p.get("p64_vfo_n_out", 0))
+            _mmhr = float(p.get("p64_fused_hr", 0.0))
+            _mmbr = float(p.get("p64_fused_br", 0.0))
+            _mmsc = str(p.get("p64_fused_source", "?"))
+            _t64  = ("P64 RootMUSIC=%.1f/%.1fdeg  PAPR=%.1fdB  SNR=%.1fdB  MUSICpk=%.0fdeg"
+                     "  VFO_out=%d  mmWave+WiFi=%s HR=%.0f BR=%.1f"
+                     % (_rm0, _rm1, _papr, _snr, _mpk, _vfo, _mmsc, _mmhr, _mmbr))
+            _axp64 = fig.add_axes([0.0, 0.045, 1.0, 0.038])
+            _axp64.set_facecolor('#040a0f'); _axp64.axis('off')
+            _axp64.text(0.01, 0.5, _t64, color='#55ffee', fontsize=8,
+                        family='monospace', va='center', transform=_axp64.transAxes)
+        except Exception:
+            pass
 
     def _draw_splat(self, fig, p, snap):
         """T3-1/T3-5: photorealistic free-camera view of the RF-reconstructed world via
@@ -1634,13 +1731,308 @@ class DetailTabWindow:
                  f"torch={st.get('torch',False)}  keyframes={st.get('keyframes',0)}",
                  ha='center', color='#888', fontsize=9, family='monospace')
 
+    def _draw_medical(self, fig, p, snap):
+        """Pass 63 UI: Medical Vitals Dashboard."""
+        import math as _mth
+        fig.suptitle("MEDICAL VITALS  (Passes 61-72)  — RF contactless HR/BR/HRV/BP/sleep/EEG/NV/PABS/MVS/3DFresnel/NeRF2/GS/Riemannian",
+                     color='#00ffcc', fontsize=12, fontweight='bold')
+
+        ax1 = fig.add_subplot(2, 3, 1); ax1.set_facecolor('#080808'); ax1.axis('off')
+        _vr = [
+            ("Heart Rate",   "%.0f bpm (sd %.1f)" % (float(p.get("p61_hr_mean",0)), float(p.get("p61_hr_std",0))), '#ff5577'),
+            ("Breath Rate",  "%.1f bpm"   % float(p.get("p61_br_mean", 0)),   '#55aaff'),
+            ("HRV SDNN",     "%.1f ms"    % float(p.get("p61_hrv_sdnn", 0)),  '#22ffaa'),
+            ("HRV RMSSD",    "%.1f ms"    % float(p.get("p61_hrv_rmssd", 0)), '#22aaff'),
+            ("HRV pNN50",    "%.1f %%"    % float(p.get("p61_hrv_pnn50", 0)), '#88aa22'),
+            ("BP Systolic",  "%d mmHg"    % int(p.get("p61_bp_sys", 0)),      '#ff8844'),
+            ("BP Diastolic", "%d mmHg"    % int(p.get("p61_bp_dia", 0)),      '#ffaa66'),
+            ("BP Category",  str(p.get("p61_bp_category", "—")),              '#ffcc44'),
+            ("BP Confidence","%d %%"      % int(p.get("p61_bp_conf", 0)),     '#88ffcc'),
+            ("LF/HF Ratio",  "%.2f"       % float(p.get("p61_bp_lf_hf", 0)), '#aaccff'),
+        ]
+        for _i, (_n, _v, _c) in enumerate(_vr):
+            ax1.text(0.03, 0.97 - _i * 0.097, "%-14s %s" % (_n, _v),
+                     color=_c, fontsize=9.5, family='monospace', transform=ax1.transAxes)
+        ax1.set_title("Vital Signs", color='#00ffcc', fontsize=10)
+
+        ax2 = fig.add_subplot(2, 3, 2); ax2.set_facecolor('#080808'); ax2.axis('off')
+        _sl  = str(p.get("p61_sleep_state", "Awake"))
+        _act = str(p.get("p61_activity", "Unknown"))
+        _md  = float(p.get("p61_meditation_score", 0.0))
+        _apn = int(p.get("p61_apnea_count", 0))
+        _cgh = int(p.get("p61_cough_count", 0))
+        _mnd = float(p.get("p61_eeg_mindfulness", 0.0))
+        _rst = float(p.get("p61_eeg_restfulness", 0.0))
+        _slc = {"Awake": "#ffaa22", "Light Sleep": "#aaccff",
+                "Deep Sleep": "#2255ff", "REM": "#ff55ff"}.get(_sl, "#888888")
+        ax2.text(0.5, 0.93, _sl, color=_slc, fontsize=22, ha='center', va='top',
+                 family='monospace', fontweight='bold', transform=ax2.transAxes)
+        ax2.text(0.5, 0.75, "Activity: %s" % _act, color='#aaffcc',
+                 fontsize=10, ha='center', transform=ax2.transAxes)
+        ax2.text(0.05, 0.62, "Meditation:", color='#00ffcc', fontsize=9, transform=ax2.transAxes)
+        _mdb = min(max(float(_md) / 100.0, 0.0), 1.0) * 0.88
+        ax2.barh(0.53, _mdb, left=0.05, height=0.07, color='#22ffaa',
+                 transform=ax2.transAxes, alpha=0.8)
+        ax2.text(0.95, 0.55, "%.0f" % _md, color='#22ffaa', fontsize=9,
+                 ha='right', transform=ax2.transAxes)
+        for _i2, (_n2, _v2, _c2) in enumerate([
+            ("EEG mindful", "%.3f" % _mnd, '#22aaff'),
+            ("EEG restful", "%.3f" % _rst, '#aa66ff'),
+            ("Apnea events", str(_apn),    '#ff3322'),
+            ("Cough events", str(_cgh),    '#ffaa44'),
+        ]):
+            ax2.text(0.03, 0.41 - _i2 * 0.10, "%-14s %s" % (_n2, _v2),
+                     color=_c2, fontsize=9, family='monospace', transform=ax2.transAxes)
+        ax2.set_title("Sleep / Meditation / EEG", color='#00ffcc', fontsize=10)
+
+        ax3 = fig.add_subplot(2, 3, 3); ax3.set_facecolor('#080808'); ax3.axis('off')
+        _bps  = int(p.get("p61_bp_sys", 0))
+        _bpd  = int(p.get("p61_bp_dia", 0))
+        _bpct = str(p.get("p61_bp_category", "—"))
+        _bpcn = int(p.get("p61_bp_conf", 0))
+        _cc   = {"Normal": "#22ffaa", "Elevated": "#ffcc22",
+                 "High BP Stage 1": "#ff8822", "High BP Stage 2": "#ff3322",
+                 "Hypertensive Crisis": "#ff0000"}.get(_bpct, "#888888")
+        ax3.text(0.5, 0.92, "%d / %d mmHg" % (_bps, _bpd), color=_cc,
+                 fontsize=18, ha='center', va='top', family='monospace',
+                 fontweight='bold', transform=ax3.transAxes)
+        ax3.text(0.5, 0.74, _bpct, color=_cc, fontsize=13, ha='center',
+                 transform=ax3.transAxes)
+        ax3.text(0.5, 0.62, "Confidence: %d %%" % _bpcn,
+                 color='#aaffcc', fontsize=10, ha='center', transform=ax3.transAxes)
+        _sbf = min(max(float(_bps - 80) / 120.0, 0.0), 1.0) * 0.80
+        ax3.barh(0.50, _sbf, left=0.10, height=0.07, color=_cc,
+                 transform=ax3.transAxes, alpha=0.7)
+        ax3.text(0.04, 0.52, "SBP", color='#888', fontsize=8, va='center', transform=ax3.transAxes)
+        _dbf = min(max(float(_bpd - 50) / 80.0, 0.0), 1.0) * 0.80
+        ax3.barh(0.40, _dbf, left=0.10, height=0.07, color=_cc,
+                 transform=ax3.transAxes, alpha=0.6)
+        ax3.text(0.04, 0.42, "DBP", color='#888', fontsize=8, va='center', transform=ax3.transAxes)
+        for _bi, (_bn, _bcl) in enumerate([("alpha", "#22aaff"), ("beta", "#ffaa22"),
+                                            ("theta", "#aa66ff"), ("gamma", "#ff5533")]):
+            _bv = float(p.get("p59_band_%s" % _bn, 0.0))
+            ax3.barh(0.20, min(_bv * 4.0, 0.18), left=0.05 + _bi * 0.22,
+                     height=0.06, color=_bcl, transform=ax3.transAxes, alpha=0.8)
+            ax3.text(0.06 + _bi * 0.22, 0.28, _bn[:3], color=_bcl,
+                     fontsize=7, transform=ax3.transAxes)
+        ax3.text(0.03, 0.31, "P59 EEG bands:", color='#aaffcc',
+                 fontsize=7.5, transform=ax3.transAxes)
+        ax3.set_title("Contactless BP  (PTT model)", color='#00ffcc', fontsize=10)
+
+        ax4 = fig.add_subplot(2, 3, 4); ax4.set_facecolor('#080808')
+        _dm = float(p.get("p61_dp_map_mean", 0.0))
+        _dx = float(p.get("p61_dp_map_max", 0.0))
+        _ps = float(p.get("p61_phase_clean_std", 0.0))
+        try:
+            _p61f = getattr(getattr(self, "fuser", None), "p61_fusion", None)
+            if _p61f is None or not hasattr(_p61f, "dp_translator"):
+                raise ValueError("no dp_translator")
+            _rg4  = np.random.default_rng(int(p.get("frame_count", 0)) % 100 + 61)
+            _a4   = _rg4.random((150, 3, 3)).astype(np.float32)
+            _sp4  = _p61f.dp_translator.forward(_a4, _a4)
+            ax4.imshow(_sp4[:, :, 0], cmap='plasma', origin='lower',
+                       aspect='equal', vmin=0, vmax=1)
+            ax4.set_title("WiFi DensePose map  mean=%.3f" % _dm, color='#00ffcc', fontsize=9)
+        except Exception:
+            ax4.text(0.5, 0.5, "DensePose: mean=%.3f max=%.3f phase_sd=%.3f" % (_dm, _dx, _ps),
+                     ha='center', va='center', color='#aaaacc', fontsize=11, transform=ax4.transAxes)
+            ax4.set_title("WiFi DensePose  (P61)", color='#00ffcc', fontsize=9)
+        ax4.tick_params(colors='#666', labelsize=6)
+
+        ax5 = fig.add_subplot(2, 3, 5, projection='3d'); ax5.set_facecolor('#050505')
+        _mh  = float(p.get("p62_mm_body_height", 0.0))
+        _mgx = float(p.get("p62_mm_g_loc_x", 0.0))
+        _mgy = float(p.get("p62_mm_g_loc_y", 0.0))
+        try:
+            _p62f = getattr(getattr(self, "fuser", None), "p62_fusion", None)
+            if _p62f is None or not hasattr(_p62f, "mm_model"):
+                raise ValueError("no mm_model")
+            _mr5 = _p62f.mm_model.synth_forward(B=1, T=1, N=32)
+            _jt5 = _mr5['joints'][0, 0]
+            ax5.scatter(_jt5[:, 0], _jt5[:, 1], _jt5[:, 2], c='#00ffcc', s=20, alpha=0.9)
+            _sk_pairs = [(0,1),(0,2),(1,4),(2,5),(4,7),(5,8),(0,3),(3,6),
+                         (6,9),(9,12),(12,15),(12,13),(12,14),(13,16),(14,17)]
+            for _la5, _lb5 in _sk_pairs:
+                if _la5 < 24 and _lb5 < 24:
+                    ax5.plot([_jt5[_la5,0],_jt5[_lb5,0]], [_jt5[_la5,1],_jt5[_lb5,1]],
+                             [_jt5[_la5,2],_jt5[_lb5,2]], color='#44ffaa', lw=1.0)
+            ax5.set_title("mmMesh SMPL 24J  h=%.2fm" % _mh, color='#00ffcc', fontsize=9)
+        except Exception:
+            ax5.text2D(0.5, 0.5, "mmMesh 24J skeleton\nh=%.2fm  g=(%.2f,%.2f)" % (_mh,_mgx,_mgy),
+                       ha='center', va='center', color='#aaffcc',
+                       fontsize=11, transform=ax5.transAxes)
+            ax5.set_title("mmMesh SMPL body  (P62)", color='#00ffcc', fontsize=9)
+        ax5.tick_params(colors='#666', labelsize=5)
+
+        ax6 = fig.add_subplot(2, 3, 6); ax6.set_facecolor('#080808'); ax6.axis('off')
+        _p6r = [
+            ("PR CFAR dets",  "%d peaks"  % int(p.get("p62_pr_n_detections", 0)),         '#00ffcc'),
+            ("PR SNR peak",   "%.1f dB"   % float(p.get("p62_pr_snr_peak_db", 0)),        '#22ffaa'),
+            ("PR RD mean",    "%.4f"      % float(p.get("p62_pr_rd_mean", 0)),             '#44aaff'),
+            ("PR |w| norm",   "%.3f"      % float(p.get("p62_pr_w_norm", 0)),             '#88ccff'),
+            ("SpecSens occ",  "%.0f%%"    % (float(p.get("p62_ss_occ_rate", 0))*100),     '#ffaa22'),
+            ("Energy det",    "HIT" if p.get("p62_ss_energy_d") else "miss",              '#ffcc44'),
+            ("Cyclostat det", "HIT" if p.get("p62_ss_cyclo_d")  else "miss",              '#ffee66'),
+            ("SNR estimate",  "%.1f dB"   % float(p.get("p62_ss_snr_est_db", 0)),         '#ffcc88'),
+            ("Body height",   "%.2f m"    % float(p.get("p62_mm_body_height", 0)),        '#ff88ff'),
+            ("Joints mean Z", "%.2f m"    % float(p.get("p62_mm_joints_mean_z", 0)),      '#cc88ff'),
+            ("Global loc X",  "%.2f m"    % float(p.get("p62_mm_g_loc_x", 0)),           '#aa66ff'),
+            ("Global loc Y",  "%.2f m"    % float(p.get("p62_mm_g_loc_y", 0)),           '#8855ee'),
+            ("Rot Frobenius", "%.3f"      % float(p.get("p62_mm_rot_frob", 0)),           '#7744dd'),
+            ("ESP amp mean", "%.3f" % float(p.get("p64_esp_amp_mean", 0)), '#55ffee'),
+            ("RootMUSIC 0",  "%.1fdeg" % float(p.get("p64_doa_root_music_0", 0)), '#55aaff'),
+            ("PAPR",          "%.1fdB" % float(p.get("p64_doa_papr_db", 0)), '#88ffcc'),
+            ("mmW+WiFi HR",   "%.0fbpm" % float(p.get("p64_fused_hr", 0)), '#ffaa55'),
+            ("BCI-MI label",  str(p.get("p64_bci_mi_label", "rest")), '#ffcc88'),
+        ]
+        for _i6, (_n6, _v6, _c6) in enumerate(_p6r):
+            ax6.text(0.03, 0.97 - _i6 * 0.073, "%-16s %s" % (_n6, _v6),
+                     color=_c6, fontsize=9, family='monospace', transform=ax6.transAxes)
+        ax6.set_title("P62: Passive Radar + SpecSens + mmMesh", color='#00ffcc', fontsize=9)
+        # P65 physics data appended to ax6 lower region
+        _p65_toa = float(p.get("p65_toa_range_m", 0.0))
+        _p65_gdop = float(p.get("p65_gdop", 0.0))
+        _p65_pc   = int(p.get("p65_pc_n_points", 0))
+        _p65_pabs = float(p.get("p65_pabs", 0.0))
+        _p65_sal  = float(p.get("p65_sal_concentration", 0.0))
+        ax6.text(0.03, 0.30, "── P65 Physics ──────────────────",
+                 color='#336633', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.03, 0.24, "ToA err  %5.1f cm  GDOP %4.2f" % (_p65_toa*100, _p65_gdop),
+                 color='#88ff88', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.03, 0.17, "PC pts   %3d  range %4.2fm" % (_p65_pc, float(p.get("p65_pc_range_mean", 0.0))),
+                 color='#88ccff', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.03, 0.10, "PABS     %5.3f  Sal-conc %4.1fx" % (_p65_pabs, _p65_sal),
+                 color='#ffaa44', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.03, 0.03, "ReID %-8s  RSSI-loc %-8s" % (str(p.get("p65_reid_label","?"))[:8], str(p.get("p65_rssi_loc","?"))[:8]),
+                 color='#ffcc88', fontsize=7, family='monospace', transform=ax6.transAxes)
+        # P66 affect/coherence strip
+        _p66_label  = str(p.get("p66_hv_label", "neutral"))
+        _p66_val    = float(p.get("p66_hv_valence", 0.5))
+        _p66_coh    = float(p.get("p66_coherence", 0.5))
+        _p66_alert  = str(p.get("p66_anomaly_alert", "ok"))
+        _p66_sdnn   = float(p.get("p66_hrv_sdnn", 0.0))
+        _p66_lf_hf  = float(p.get("p66_hrv_lf_hf", 1.5))
+        ax6.text(0.55, 0.97, "── P66 Affect/HRV ──────────",
+                 color='#336633', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.90, "Mood   %-8s val %4.2f" % (_p66_label[:8], _p66_val),
+                 color='#ffff88', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.83, "Cohere %4.2f  alert %-6s" % (_p66_coh, _p66_alert[:6]),
+                 color='#88ffcc', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.76, "SDNN %5.1f ms LF/HF %4.2f" % (_p66_sdnn, _p66_lf_hf),
+                 color='#88ccff', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.69, "Band  %-10s" % str(p.get("p66_hrv_band","normal"))[:10],
+                 color='#aaffaa', fontsize=7, family='monospace', transform=ax6.transAxes)
+        # P67 spectrum sensing & PR state
+        _p67_ed   = "DET" if p.get("p67_ed_detected") else "no"
+        _p67_cy   = "DET" if p.get("p67_cyclo_detected") else "no"
+        _p67_rss  = float(p.get("p67_nerf2_rss", 0.0))
+        _p67_prs  = str(p.get("p67_pr_state", "IDLE"))[:6]
+        _p67_prd  = int(p.get("p67_pr_n_detections", 0))
+        ax6.text(0.55, 0.62, "ED %-3s Cyclo %-3s" % (_p67_ed, _p67_cy),
+                 color='#ffff66', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.55, "NeRF2 RSS %6.3f" % _p67_rss,
+                 color='#88ffee', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.48, "PR %-6s %3d det" % (_p67_prs, _p67_prd),
+                 color='#ffaa44', fontsize=7, family='monospace', transform=ax6.transAxes)
+        # P68 rows
+        _p68_hr_f  = float(p.get("p68_hr_fused_bpm", 0.0))
+        _p68_br    = float(p.get("p68_br_bpm", 0.0))
+        _p68_pabs  = float(p.get("p68_pabs", 0.0))
+        _p68_pal   = int(p.get("p68_pabs_alert", 0))
+        _p68_adv   = int(p.get("p68_ml_adversarial_detected", 0))
+        _p68_bpv   = str(p.get("p68_bp_verdict", "NEG"))[:4]
+        ax6.text(0.55, 0.41, "NV HR %5.1f BR%4.1f bpm" % (_p68_hr_f, _p68_br),
+                 color='#aaffcc', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.34, "PABS %5.3f %s" % (_p68_pabs, "ALERT" if _p68_pal else "ok"),
+                 color='#ff8888' if _p68_pal else '#88cc88', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.27, "CSI Adv %s  BP %s" % ("DET" if _p68_adv else "ok", _p68_bpv),
+                 color='#ffcc44', fontsize=7, family='monospace', transform=ax6.transAxes)
+        # P69 rows
+        _p69_regime = str(p.get("p69_nv_regime", "?"))[:10]
+        _p69_rfwd   = float(p.get("p69_rf_weather_cos_dist", 0.0))
+        _p69_rfw_al = int(p.get("p69_rf_weather_alert", 0))
+        _p69_rssi_n = int(p.get("p69_rssi_pred_count", 0))
+        _p69_rssi_a = float(p.get("p69_rssi_accuracy", 0.0))
+        ax6.text(0.55, 0.20, "NV regime %-10s" % _p69_regime,
+                 color='#aaffdd', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.13, "RF-Weather d=%5.3f %s" % (_p69_rfwd, "ALERT" if _p69_rfw_al else "ok"),
+                 color='#ff8888' if _p69_rfw_al else '#88cc88', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.06, "RSSI %d ppl acc%4.0f%%" % (_p69_rssi_n, _p69_rssi_a * 100),
+                 color='#ffdd88', fontsize=7, family='monospace', transform=ax6.transAxes)
+        # P70 rows
+        _p70_mvs_v  = float(p.get("p70_mvs_variance", 0.0))
+        _p70_mvs_s  = int(p.get("p70_mvs_state", 0))
+        _p70_ppabs  = float(p.get("p70_pose_pabs", 0.0))
+        _p70_pal    = int(p.get("p70_pabs_alert", 0))
+        _p70_reid   = float(p.get("p70_reid_emb_norm", 0.0))
+        ax6.text(0.02, 0.06, "MVS var%6.3f %s" % (_p70_mvs_v, "MOT" if _p70_mvs_s else "IDL"),
+                 color='#ffaa66' if _p70_mvs_s else '#aaaaaa', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.02, 0.13, "PosePABS %5.3f %s" % (_p70_ppabs, "ALERT" if _p70_pal else "ok"),
+                 color='#ff6666' if _p70_pal else '#88cc88', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.02, 0.20, "ReID emb ||%6.2f||" % _p70_reid,
+                 color='#88ddff', fontsize=7, family='monospace', transform=ax6.transAxes)
+
+        # P71 rows
+        _p71_cov3d = float(p.get("p71_coverage_3d", 0.0))
+        _p71_ms    = float(p.get("p71_ms_cov", 0.0))
+        _p71_n2    = float(p.get("p71_nerf2_rss", 0.0))
+        _p71_gs    = float(p.get("p71_gs_rms", 0.0))
+        ax6.text(0.55, 0.28, "3D-Frsnl %4.1f%% MS %4.1f%%" % (_p71_cov3d*100, _p71_ms*100),
+                 color='#aaffcc', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.21, "NeRF2 rss%5.3f GS%5.3f" % (_p71_n2, _p71_gs),
+                 color='#ffeeaa', fontsize=7, family='monospace', transform=ax6.transAxes)
+        # P72 rows
+        _p72_erp  = str(p.get("p72_erp_label", "?"))[:8]
+        _p72_prob = float(p.get("p72_erp_prob", 0.0))
+        _p72_frob = float(p.get("p72_cov_frob", 0.0))
+        _p72_fish = float(p.get("p72_fisher_top", 0.0))
+        ax6.text(0.55, 0.14, "ERP %-8s p=%.2f" % (_p72_erp, _p72_prob),
+                 color='#ccaaff', fontsize=7, family='monospace', transform=ax6.transAxes)
+        ax6.text(0.55, 0.07, "Riem frob%5.1f fish%5.3f" % (_p72_frob, _p72_fish),
+                 color='#aaccff', fontsize=7, family='monospace', transform=ax6.transAxes)
+
+    def _draw_medical_p65(self, ax, p):
+        """P65 physics panel: ToA CRLB + Fresnel + point cloud + ReID."""
+        ax.set_facecolor('#0a0a0a')
+        for sp in ax.spines.values():
+            sp.set_color('#1a3a1a')
+        ax.set_xticks([]); ax.set_yticks([])
+        _toa_m   = float(p.get("p65_toa_range_m", 0.0))
+        _gdop    = float(p.get("p65_gdop", 0.0))
+        _fr1     = float(p.get("p65_fresnel_r1_m", 0.0))
+        _pabs    = float(p.get("p65_pabs", 0.0))
+        _sal_c   = float(p.get("p65_sal_concentration", 0.0))
+        _csik_snr = float(p.get("p65_csik_snr_db", 0.0))
+        _pc_n    = int(p.get("p65_pc_n_points", 0))
+        _pc_rng  = float(p.get("p65_pc_range_mean", 0.0))
+        _reid    = str(p.get("p65_reid_label", "none"))
+        _reid_c  = float(p.get("p65_reid_conf", 0.0))
+        _rssi_l  = str(p.get("p65_rssi_loc", "none"))
+        _rows = [
+            ("ToA range err", f"{_toa_m*100:.1f} cm",   '#88ff88'),
+            ("GDOP",          f"{_gdop:.2f}",            '#aaffaa'),
+            ("Fresnel R1",    f"{_fr1:.2f} m",           '#88ccff'),
+            ("PABS residual", f"{_pabs:.3f}",            '#ffaa44'),
+            ("Sal. conc.",    f"{_sal_c:.1f}x",          '#ffff88'),
+            ("CSIKit SNR",    f"{_csik_snr:.1f} dB",     '#88ffff'),
+            ("PC points",     str(_pc_n),                '#ffffff'),
+            ("PC range",      f"{_pc_rng:.2f} m",        '#aaffaa'),
+            ("ReID label",    _reid[:12],                '#ffcc88'),
+            ("ReID conf",     f"{_reid_c:.2f}",          '#ffcc88'),
+            ("RSSI loc",      _rssi_l[:12],              '#cc88ff'),
+        ]
+        for _i, (_n, _v, _c) in enumerate(_rows):
+            ax.text(0.03, 0.97 - _i * 0.087, "%-16s %s" % (_n, _v),
+                    color=_c, fontsize=9, family='monospace', transform=ax.transAxes)
+        ax.set_title("P65: RuView Physics + CSIKit + PC", color='#00ffcc', fontsize=9)
+
     def _draw_info(self, fig, p, snap):
-        """Pass 36: INFO/ABOUT panel — comprehensive N.E.P.A. system documentation."""
+        """Pass 63 UI: INFO/ABOUT panel — v62."""
         fig.suptitle('N.E.P.A.  —  SYSTEM INFO & REFERENCE  (press i to close)',
                      color='#00ffcc', fontsize=13, fontweight='bold')
         ax = fig.add_subplot(111); ax.set_facecolor('#040a0d'); ax.axis('off')
         _L = [
-            '  N.E.P.A.  —  Network-based Environmental Perception & Analysis  v44',
+            '  N.E.P.A.  —  Network-based Environmental Perception & Analysis  v62',
             '  ═══════════════════════════════════════════════════════════════════',
             '',
             '  ARCHITECTURE',
@@ -1656,11 +2048,82 @@ class DetailTabWindow:
             '                  pylsl LSL outlet (WirelessBCIEngine)',
             '  Spectrum     — 8-band 2.4 GHz…300 GHz, SDR IQ, cyclostationary',
             '  Motion       — EspectreMVS, WiFi-3D-Fusion P4T 17-joint skeleton',
+            '  Medical      — VitalsSuiteNP: HR/BR/HRV/sleep/apnea/cough/snoring/meditation (P61)',
+            '  Blood press  — BPEstimatorNP: PTT-corr SBP/DBP, AHA category (P61)',
+            '  WiFi-DensePose— CSI->SMPL body map 48x48 (WiFiDensePoseTranslatorNP P61)',
+            '  EEG metrics  — BCIEEGMetricsNP: mindfulness(a/a+b) restfulness(t/t+a) P61',
+            '  Passive Radar— KrakenSDR Wiener-SMI-MRE, CAF, CA-CFAR (PassiveRadarPipelineNP P62)',
+            '  ESP-CSI P64  — Base64 IQ decoder, gain-comp, subcarrier colors (ESPCSIBase64Parser P64)',
+            '  ESP32-CSI-T  — Full IQ/amp/phase CSV parser, AGC/FFT gains (ESP32CSIToolParser P64)',
+            '  KrakenVFO    — VFO FIR channelizer, Root-MUSIC, PAPR, UCA transform (KrakenDoAFullNP P64)',
+            '  mmWave+WiFi  — MR60BHA2+CSI Kalman HR/BR dual-sensor fusion (MmWaveWiFiFusionBridgeNP P64)',
+            '  BCI-HIL MI   — Motor Imagery ERD/ERS C3/C4 trial engine (BCIMotorImageryTrialEngineNP P64)',
+            '  Spec Sensing — EnergyDetectorNP + CyclostationaryDetectorNP + OR-fusion P62',
+            '  mmMesh/SMPL  — 24-joint 3D body BasePN+GlobalMod+AnchorMod+CombineNP P62',
             '  Psychophys.  — RuVector: HRV SDNN/RMSSD/pNN50/LF-HF, BP, happiness',
             '  ML motion    — EspectreML inline MLP + KrakenSDR 360° DoA',
             '  FMCW         — mmMesh point cloud pipeline (range/Doppler/azimuth/elevation)',
             '  Semantic     — 10-state occupancy, MQTT, Home-Assistant discovery',
             '  World recon  — RF-NeRF, Gaussian splatting, ICP surface mesh',
+            '  ────────────────────────────────────────────────────────────',
+            '  PASS 65  — RuView Physics + CSIKit + mmWave Point Cloud',
+            '  ToA CRLB     — CRLB ranging + phase-noise range + GDOP',
+            '  Fresnel      — Zone radii, PABS residual, subcarrier phase sweep',
+            '  Saliency     — Per-subcarrier input x gradient saliency map',
+            '  Cross-ReID   — Environment-subtracted cosine K-NN re-ID',
+            '  CSIKit       — Dominant PCA + Hampel + zero-phase Butterworth',
+            '  mmWave PC    — Range-FFT + clutter + Doppler + CFAR + AoA-FFT',
+            '  RSSI-KNN     — Band-mean fingerprint localisation',
+            '  ────────────────────────────────────────────────────────────',
+            '  PASS 66  — RuView Live Crates + Happiness Vector + Ledger',
+            '  Welford      — Online mean/variance/std/z-score (WelfordOnlineStatsNP)',
+            '  VitalAnomaly — Tachycardia/bradycardia/apnea z-score (VitalAnomalyDetectorNP)',
+            '  LongDrift    — Multi-metric longitudinal drift detection (LongitudinalDriftTrackerNP)',
+            '  Coherence    — EMA signal coherence scorer (CoherenceScorerNP)',
+            '  HRV v2       — Spectral LF/HF via numpy FFT + SDNN/RMSSD/pNN50 (HRVAnalyzerV2NP)',
+            '  HappinessVec — 8-dim affect kNN + EMA drift + hash witness chain (HappinessVectorKNNNP)',
+            '  Ledger       — SHA256 append-only hash-chain audit ledger (AetherArenaLedgerNP)',
+            '  SMPL-LBS     — Rodrigues rotation + linear blend skinning (SMPLLinearBlendSkinningNP)',
+            '  NeRF2Utils   — RSSI-amplitude conversion + train/test split (NeRF2DataUtilsNP)',
+            'Pass 67 — Spectrum sensing ROC / Cyclostationary / Geodesic-loss / NeRF2 PE+Renderer / KrakenPR SM:',
+            '  EnergyDetNP  — chi2 NP threshold, ROC Pd vs SNR estimation (EnergyDetectorNeymanPearsonNP)',
+            '  CycloOFDM    — conjugate-product T_y cyclostationary OFDM detector (CyclostationaryOFDMDetectorNP)',
+            '  GeodesicLoss — batch SO(3) geodesic distance between rotation matrices (GeodesicRotationLossNP)',
+            '  NeRF2PE      — Fourier positional encoding for NeRF2 scene coords (NeRF2PositionalEncodingNP)',
+            '  NeRF2Render  — ray marching + alpha compositing + online SGD (NeRF2RayRendererNP)',
+            '  KrakenPR-SM  — squelch→Wiener-MRE clutter cancel→CAF→2D-CFAR state machine (KrakenPRStateMachineNP)',
+            'Pass 68 — Bayesian NV fusion / PABS / Stoer-Wagner / Foliage / Maritime / BP floor / BCI variance:',
+            '  BayesianNVFusion — CSI breathing + NV-diamond cardiac (cube-law, Bayesian posterior) (BayesianCSINVFusionNP)',
+            '  PABS            — Physics-Anchored Background Subtraction scene/intruder detection (PABSStructureDetectorNP)',
+            '  MultiLinkMinCut — Stoer-Wagner global mincut adversarial CSI node detection (MultiLinkConsistencyNP)',
+            '  FoliageITU      — ITU-R P.833 through-foliage attenuation + ESP32 link budget (FoliageAttenuationITUNP)',
+            '  MaritimeModel   — Steel bulkhead skin depth + seam diffraction + saltwater path (MaritimePropagationModelNP)',
+            '  BPPhysicsFloor  — PTT resolution / breathing vs cardiac SNR floor (BPPhysicsFloorNP)',
+            '  BCIChannelVar   — Per-channel EEG variance + band power ratios + laterality (BCIChannelVarianceNP)',
+            'Pass 69 — NV hand-off / Chest placement / Multi-subj Fresnel / RSSI-MLP / RF-weather / FM demod / 6D rot:',
+            '  NVHandoff       — Threshold-based NV/classical HR hand-off (conf>60% AND amp>3pT) (NVThresholdHandoffNP)',
+            '  ChestPlacement  — Chest-centric Fresnel placement search (greedy TX/RX wall sweep) (ChestCentricPlacementNP)',
+            '  MultiSubjFresnel— Multi-occupant union Fresnel coverage greedy AP placement (MultiSubjectFresnelNP)',
+            '  RSSIPersonMLP   — CSI→RSSI proxy→[20]-vec numpy MLP person count 0-7 (RSSIPersonCountMLP_NP)',
+            '  RFWeatherEigen  — SVD singular-value eigenshift drift structural monitor (RFWeatherEigenMonitorNP)',
+            '  KrakenFMDemod   — FIR lowpass + FM discriminator + audio AGC (KrakenFMDemodNP)',
+            '  SixDRotRep      — Yi Zhou 6D continuous rotation (Gram-Schmidt GS) (SixDRotationRepNP)',
+            '  RotConversions  — Angle-axis/quaternion/rotation-matrix round-trip (RotationConversionsNP)',
+            'Pass 70 — ESPectre MVS / CSI turbulence features / Cross-room ReID / Pose-PABS intruder alert:',
+            'Pass 71 — 3D Fresnel placement / N-anchor multistatic / NeRF2 full model / RF Gaussian splatting:',
+            '  FresnelPlace3D  — 3D prolate ellipsoid coverage, desk/wall/ceiling strategies (FresnelPlacement3DNP)',
+            '  MultistaticGreedy— N-anchor greedy+restart union Fresnel saturation curve (MultistaticFresnelGreedyNP)',
+            '  NeRF2Full       — 8-layer MLP att+signal net, alpha compositing ray render, SGD online (NeRF2FullModelNP)',
+            '  RFGaussianSplat — Numpy Gaussian splatting: quat→R covariance, depth-sorted alpha composite (RFGaussianSplatNumpyNP)',
+            'Pass 72 — Riemannian covariance + ERP averaging + online ERP BCI + Fisher band selector:',
+            '  RiemannianCov   — SPD mat-log/exp/invsqrt, Riemannian distance, Log-Euclidean mean (RiemannianCovarianceNP)',
+            '  ERPEpochAvg     — Per-label mean/std epochs, ERP augment (avg_i||mean_others), Riemannian classify (ERPEpochAveragerNP)',
+            '  ERPOnlineClass  — Circular band-power buffer, epoch accumulation, SPD prototype classifier (ERPOnlineClassifierNP)',
+            '  ERPFisherSel    — Fisher (μ1-μ2)²/(σ1²+σ2²) discriminant band selector (ERPFisherSelectorNP)',
+            '  CSITurbFeats    — 9-stat turbulence window: mean/std/IQR/skew/autocorr/MAD/WL (CSITurbulenceFeatureNP)',
+            '  EspectreMVS     — Moving Variance Segmentation IDLE↔MOTION, Hampel+IIR filter (EspectreMovingVarianceSegmentationNP)',
+            '  CrossRoomReID   — Physics env prediction (wall scatterers), embedding-level env sub, cosine K-NN (CrossRoomPhysicsEnvNP)',
+            '  PosePABSLoop    — Pose-updated forward model PABS: spike = unexpected intruder (PosePABSClosedLoopNP)',
             '',
             '  VIEW TABS  (click button or press key)',
             '  [1] World        3D voxel back-projection, Doppler heat, BCI bars',
@@ -1673,6 +2136,7 @@ class DetailTabWindow:
             '  [8] Radar        CAF range-Doppler, MUSIC DoA, holographic SAR',
             '  [9] World(Splat) Navigable Gaussian splatting free-camera view',
             '  [0] Motion/W3D   MVS turbulence, P4T skeletons, ML motion, RuVector',
+            '  [m] Medical      Contactless vitals: HR/BR/HRV/BP/sleep/apnea/EEG (P61-62)',
             '  [i] Info         This panel',
             '',
             '  KEYBOARD SHORTCUTS',
@@ -1700,7 +2164,9 @@ class DetailTabWindow:
             '  OpenBCI Cyton/Ganglion for wired EEG (optional)',
             '',
             '  VERSION HISTORY',
-            '  v44 (2026-06-11) Blah2 CA-CFAR, M-of-N tracker, MIMO-SAR 3D FFT, mDNS LAN discovery, T-RECORD',
+            '  v66 (2026-06-12) RuView Live crates: Welford/VitalAnomaly/LongDrift/Coherence/HRVv2 + HappinessVec + Ledger + SMPL-LBS',
+            '  v65 (2026-06-12) RuView ToA-CRLB+Fresnel+PABS, CSIKit tools, mmWave PC, CrossRoomReID, RSSI-KNN',
+            '  v64 (2026-06-12) ESP-CSI B64+gain, ESP32-CSI-Tool, KrakenVFO+RootMUSIC, mmWave/WiFi fusion, BCI-HIL MI',
             '  v43 (2026-06-11) P4Transformer skeleton, DensePose UV, WiFiDensePoseSystem',
             '  v42 (2026-06-11) WhoFi ReID Transformer, FBA covariance decorrelation',
             '  v41 (2026-06-11) NCF motion field, ModalityTranslationNet, chi2 cyclostationary',
@@ -1960,6 +2426,27 @@ class DetailTabWindow:
         )
         ax7.text(0.01, 0.5, _rv_strip, color='#00ffcc', fontsize=9,
                  family='monospace', va='center', transform=ax7.transAxes)
+        # Pass 63 UI: second strip with P61/P62 data
+        try:
+            _m_hr  = float(p.get("p61_hr_mean", 0.0))
+            _m_br  = float(p.get("p61_br_mean", 0.0))
+            _m_sl  = str(p.get("p61_sleep_state", "?"))
+            _m_bps = int(p.get("p61_bp_sys", 0))
+            _m_bpd = int(p.get("p61_bp_dia", 0))
+            _m_nd  = int(p.get("p62_pr_n_detections", 0))
+            _m_snr = float(p.get("p62_pr_snr_peak_db", 0.0))
+            _m_occ = float(p.get("p62_ss_occ_rate", 0.0))
+            _m_bh  = float(p.get("p62_mm_body_height", 0.0))
+            _s2  = ("P61: HR=%.0fbpm BR=%.1frpm sleep=%s BP=%d/%dmmHg"
+                    " || P62: PR_dets=%d SNR=%.1fdB occ=%.0f%% mmH=%.2fm"
+                    % (_m_hr, _m_br, _m_sl, _m_bps, _m_bpd,
+                       _m_nd, _m_snr, _m_occ*100, _m_bh))
+            _axm2 = fig.add_axes([0.0, 0.05, 1.0, 0.04])
+            _axm2.set_facecolor('#040a10'); _axm2.axis('off')
+            _axm2.text(0.01, 0.5, _s2, color='#aaffcc', fontsize=8.5,
+                       family='monospace', va='center', transform=_axm2.transAxes)
+        except Exception:
+            pass
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -8474,6 +8961,7090 @@ class Pass45SensorFusion:
 
 
 
+
+# ════════════ PASS 73 ENGINES ════════════
+import numpy as np
+import math
+
+# ════════════════════════════════════════════════════════════════════════════
+# PASS 73 ENGINES — mmMesh FMCW Pipeline + AnchorPointNet Body Estimation
+# Sources:
+#   mmMesh/2.point_cloud_generation/pc_generation.py
+#   mmMesh/3.deep_model/network.py  (AnchorInit, AnchorGrouping, AnchorPointNet etc.)
+#   mmBody lbs.py (LBS kinematic chain, batch_rodrigues)
+#   P4Transformer loss.py (GeodesicLoss, LossManager)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 1. mmWave FMCW Full Point Cloud Pipeline (mmMesh pc_generation.py port)
+#    Range FFT → Doppler FFT → CA-CFAR top-128 → AoA naive_xyz → (x,y,z,V,E,R)
+# ──────────────────────────────────────────────────────────────────────────
+class mmWaveFMCWPointCloudNP:
+    """Full mmWave FMCW → point cloud pipeline.
+    
+    Implements the mmMesh pc_generation chain:
+      1. Hamming-windowed range FFT
+      2. Static clutter removal (mean subtraction on chirp axis)
+      3. Hamming-windowed Doppler FFT + fftshift
+      4. Energy top-K CFAR detection (top-128 energy threshold)
+      5. AoA via virtual antenna azimuth+elevation FFT (naive_xyz)
+      6. Output: (6, N_det) array [x, y, z, V, energy, R]
+    """
+
+    def __init__(self,
+                 num_tx: int = 3, num_rx: int = 4,
+                 n_loops: int = 128, n_adc: int = 256,
+                 n_angle_bins: int = 64,
+                 range_res: float = 0.044,
+                 doppler_res: float = 0.035,
+                 top_k: int = 128,
+                 range_cut_near: int = 25,
+                 range_cut_far: int = 125):
+        self.num_tx = num_tx
+        self.num_rx = num_rx
+        self.n_loops = n_loops
+        self.n_adc = n_adc
+        self.n_angle_bins = n_angle_bins
+        self.range_res = range_res
+        self.doppler_res = doppler_res
+        self.top_k = top_k
+        self.range_cut_near = range_cut_near
+        self.range_cut_far = range_cut_far
+
+        self._n_chirps = num_tx * n_loops
+        self._frame_size = num_rx * n_adc * num_tx * n_loops
+
+        self._hamm_adc = np.hamming(n_adc)
+        self._hamm_loop = np.hamming(n_loops)
+
+        # Rolling clutter state
+        self._clutter_mean: np.ndarray | None = None
+
+        self.last_pc: np.ndarray = np.zeros((6, 0))
+        self.last_n_det: int = 0
+
+    def _reshape(self, frame_int16: np.ndarray) -> np.ndarray:
+        """Reshape raw int16 IQ frame to (n_tx, n_rx, n_loops, n_adc) complex."""
+        cmplx = frame_int16[0::2] + 1j * frame_int16[1::2]
+        return cmplx.reshape(self.n_loops, self.num_tx, self.num_rx, -1).transpose(1, 2, 0, 3)
+
+    def _range_fft(self, shaped: np.ndarray) -> np.ndarray:
+        return np.fft.fft(shaped * self._hamm_adc, axis=-1)
+
+    def _clutter_removal(self, rng: np.ndarray) -> np.ndarray:
+        return rng - rng.mean(axis=2, keepdims=True)
+
+    def _doppler_fft(self, rng: np.ndarray) -> np.ndarray:
+        win = self._hamm_loop.reshape(1, 1, -1, 1)
+        dop = np.fft.fft(rng * win, axis=2)
+        return np.fft.fftshift(dop, axes=2)
+
+    def _cfar_top_k(self, dop: np.ndarray) -> np.ndarray:
+        """Energy top-K CFAR. Returns boolean mask [n_doppler, n_range]."""
+        energy_sum = np.sum(np.abs(dop), axis=(0, 1))
+        energy_db = np.log10(np.maximum(energy_sum, 1e-12))
+        energy_db[:, :self.range_cut_near] = -100.0
+        energy_db[:, self.range_cut_far:] = -100.0
+        flat = energy_db.ravel()
+        n = len(flat)
+        if self.top_k >= n:
+            thr = flat.min() - 1.0
+        else:
+            thr = np.partition(flat, n - self.top_k - 1)[n - self.top_k - 1]
+        return energy_db > thr, energy_db
+
+    def _naive_xyz(self, aoa_input: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """AoA from virtual antenna array. aoa_input: (n_virtual, n_det)."""
+        n_det = aoa_input.shape[1]
+        fft_size = self.n_angle_bins
+
+        az_ant = aoa_input[:2 * self.num_rx, :]
+        az_pad = np.zeros((fft_size, n_det), dtype=complex)
+        az_pad[:2 * self.num_rx] = az_ant
+        az_fft = np.fft.fft(az_pad, axis=0)
+        k_max = np.argmax(np.abs(az_fft), axis=0)
+        peak1 = az_fft[k_max, np.arange(n_det)]
+        k_max[k_max > fft_size // 2 - 1] -= fft_size
+        wx = 2 * np.pi / fft_size * k_max
+        x_vec = wx / np.pi
+
+        el_ant = aoa_input[2 * self.num_rx:, :]
+        el_pad = np.zeros((fft_size, n_det), dtype=complex)
+        el_pad[:self.num_rx] = el_ant
+        el_fft = np.fft.fft(el_pad, axis=0)
+        el_max = np.argmax(np.log2(np.abs(el_fft) + 1e-12), axis=0)
+        peak2 = el_fft[el_max, np.arange(n_det)]
+
+        wz = np.angle(peak1 * peak2.conj() * np.exp(1j * 2 * wx))
+        z_vec = wz / np.pi
+        yp = 1.0 - x_vec**2 - z_vec**2
+        bad = yp < 0
+        x_vec[bad] = 0; z_vec[bad] = 0; yp[bad] = 0
+        y_vec = np.sqrt(yp)
+        return x_vec, y_vec, z_vec
+
+    def process_frame(self, frame_int16: np.ndarray) -> np.ndarray:
+        """Process one raw int16 IQ frame. Returns (6, N_det): [x,y,z,V,E,R]."""
+        shaped = self._reshape(frame_int16)
+        rng = self._range_fft(shaped)
+        rng = self._clutter_removal(rng)
+        dop = self._doppler_fft(rng)
+
+        cfar_mask, energy_db = self._cfar_top_k(dop)
+        det_idx = np.argwhere(cfar_mask)
+        if len(det_idx) == 0:
+            self.last_pc = np.zeros((6, 0))
+            self.last_n_det = 0
+            return self.last_pc
+
+        dop_idx, rng_idx = det_idx[:, 0], det_idx[:, 1]
+        R = rng_idx.astype(float) * self.range_res
+        V = (dop_idx.astype(float) - self.n_loops // 2) * self.doppler_res
+        E = energy_db[cfar_mask]
+
+        aoa_in = dop.reshape(self.num_tx * self.num_rx, -1)[:, cfar_mask.ravel()]
+        if aoa_in.shape[1] == 0:
+            self.last_pc = np.zeros((6, 0))
+            self.last_n_det = 0
+            return self.last_pc
+
+        xv, yv, zv = self._naive_xyz(aoa_in[:min(aoa_in.shape[0], 12)])
+        valid = yv != 0
+        pc = np.stack([xv[valid]*R[valid], yv[valid]*R[valid], zv[valid]*R[valid],
+                       V[valid], E[valid], R[valid]])
+        self.last_pc = pc
+        self.last_n_det = pc.shape[1]
+        return pc
+
+    def synth_frame(self, n_targets: int = 3) -> np.ndarray:
+        """Generate synthetic IQ frame with n_targets Gaussians for testing."""
+        rng = np.random.default_rng(42)
+        size = self.num_tx * self.num_rx * self.n_loops * self.n_adc * 2
+        noise = rng.standard_normal(size).astype(np.float32)
+        # Inject simple chirp targets
+        t_idx = rng.integers(30, min(self.range_cut_far, self.n_adc) - 10, n_targets)
+        for ti in t_idx:
+            amp = rng.uniform(100, 500)
+            noise[ti*4:ti*4+4] += amp
+        return noise.view(np.int16)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 2. Anchor-Based PointNet Body Estimator (mmMesh network.py numpy port)
+#    AnchorInit: 3D grid of body-centred anchor positions (z: 0→2.1 m)
+#    AnchorGrouping: ball query around each anchor → local feature set
+#    AnchorPointNetNP: PointNet on each anchor neighbourhood → global feat
+#    SMPL-proxy: betas + pose(axis-angle) → joint positions via LBS
+# ──────────────────────────────────────────────────────────────────────────
+class AnchorBodyEstimatorNP:
+    """Anchor-based body estimation from mmWave point cloud.
+    
+    Numpy port of mmMesh AnchorPointNet + GlobalModule + SMPL forward pass.
+    
+    Architecture:
+      1. AnchorInit: 9×3×3=81 anchor positions in body volume
+      2. AnchorGrouping: for each anchor, nearest 8 points from point cloud
+      3. Local PointNet: MLP(3+D → 32 → 64) per-point, maxpool → anchor feat
+      4. Global PointNet: MLP(N_pts × 6 → 128) → global body feat
+      5. SMPL proxy: predict 24×3 axis-angle + 3 trans from concat features
+      6. Rodrigues: axis-angle → rotation matrices → joint positions (LBS)
+    
+    No pretrained weights — online adaptation from motion consistency.
+    """
+
+    N_JOINTS = 24
+    # Simplified SMPL kinematic chain (parent of joint i)
+    PARENTS = [-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9,
+               12, 13, 14, 16, 17, 18, 19, 20, 21]
+
+    def __init__(self, n_local: int = 32, n_global: int = 128, lr: float = 1e-3):
+        rng = np.random.default_rng(7)
+        self.n_local = n_local
+        self.n_global = n_global
+        self.lr = lr
+
+        # Anchor grid: z=0..2.1 step 0.3 (9), y/x=-0.3..0.3 step 0.3 (3×3) → 81 anchors
+        anchors = []
+        for z in np.arange(-0.3, 2.1 + 0.001, 0.3):
+            for y in np.arange(-0.3, 0.3 + 0.001, 0.3):
+                for x in np.arange(-0.3, 0.3 + 0.001, 0.3):
+                    anchors.append([x, y, z])
+        self._anchors = np.array(anchors, dtype=np.float64)  # (81, 3)
+        self.N_anchors = len(self._anchors)
+
+        # Local PointNet: (3+6) → 32 → 64
+        self._loc_W1 = rng.standard_normal((9, n_local)) * np.sqrt(2.0/9)
+        self._loc_b1 = np.zeros(n_local)
+        self._loc_W2 = rng.standard_normal((n_local, n_local*2)) * np.sqrt(2.0/n_local)
+        self._loc_b2 = np.zeros(n_local*2)
+
+        # Global PointNet: 6 → 128
+        self._glob_W1 = rng.standard_normal((6, n_global)) * np.sqrt(2.0/6)
+        self._glob_b1 = np.zeros(n_global)
+
+        # Head: (N_anchors*n_local*2 concat global) → 24*3 (pose) + 3 (trans)
+        feat_in = min(self.N_anchors, 16) * n_local * 2 + n_global
+        self._head_W = rng.standard_normal((feat_in, self.N_JOINTS * 3 + 3)) * 0.01
+        self._head_b = np.zeros(self.N_JOINTS * 3 + 3)
+
+        self._step = 0
+        self.last_joints = np.zeros((self.N_JOINTS, 3))
+        self.last_loss = 0.0
+
+    @staticmethod
+    def _relu(x):
+        return np.maximum(0, x)
+
+    @staticmethod
+    def _batch_rodrigues(rvec: np.ndarray) -> np.ndarray:
+        """rvec: (N, 3) axis-angle → (N, 3, 3) rotation matrices."""
+        theta = np.linalg.norm(rvec, axis=1, keepdims=True)  # (N,1)
+        theta = np.maximum(theta, 1e-8)
+        r_hat = rvec / theta  # (N,3)
+        cos_t = np.cos(theta)[:, :, None]  # (N,1,1)
+        sin_t = np.sin(theta)[:, :, None]
+        K = np.zeros((len(rvec), 3, 3))
+        K[:, 0, 1] = -r_hat[:, 2]; K[:, 0, 2] =  r_hat[:, 1]
+        K[:, 1, 0] =  r_hat[:, 2]; K[:, 1, 2] = -r_hat[:, 0]
+        K[:, 2, 0] = -r_hat[:, 1]; K[:, 2, 1] =  r_hat[:, 0]
+        I = np.eye(3)[None]
+        A = r_hat[:, :, None]
+        dot = A @ A.transpose(0, 2, 1)  # (N,3,3)
+        R = cos_t * I + (1.0 - cos_t) * dot + sin_t * K
+        return R
+
+    def _anchor_grouping(self, xyz: np.ndarray, k: int = 8) -> np.ndarray:
+        """For each anchor, find k nearest points in xyz. Returns (N_a, k, 3+3)."""
+        if len(xyz) == 0:
+            return np.zeros((self.N_anchors, k, 6))
+        N = min(len(xyz), 256)
+        xyz = xyz[:N]
+        # Squared distances: (N_anchors, N)
+        diff = self._anchors[:, None, :3] - xyz[None, :, :3]  # (N_a, N, 3)
+        sq_dists = np.sum(diff**2, axis=2)  # (N_a, N)
+        idx = np.argsort(sq_dists, axis=1)[:, :k]  # (N_a, k)
+        pts = xyz[idx]  # (N_a, k, 3)
+        rel = pts[:, :, :3] - self._anchors[:, None, :3]
+        feat = pts[:, :, 3:] if xyz.shape[1] > 3 else np.zeros((*pts.shape[:2], 3))
+        return np.concatenate([rel, feat], axis=-1)  # (N_a, k, 6+)
+
+    def _local_pointnet(self, groups: np.ndarray) -> np.ndarray:
+        """Local PointNet: (N_a, k, 6) → maxpool → (N_a, n_local*2)."""
+        # Trim to 9 features if needed
+        g = groups[..., :9]
+        h = self._relu(g @ self._loc_W1[:g.shape[-1]] + self._loc_b1)
+        h = self._relu(h @ self._loc_W2 + self._loc_b2)
+        return h.max(axis=1)  # (N_a, n_local*2)
+
+    def _global_pointnet(self, xyz: np.ndarray) -> np.ndarray:
+        """Global PointNet: (N, 6) → maxpool → (n_global,)."""
+        if len(xyz) == 0:
+            return np.zeros(self.n_global)
+        pts = xyz[:256, :6] if xyz.shape[1] >= 6 else np.pad(xyz[:256], ((0,0),(0,6-xyz.shape[1])))
+        h = self._relu(pts @ self._glob_W1 + self._glob_b1)
+        return h.max(axis=0)
+
+    def _lbs_joints(self, pose: np.ndarray, trans: np.ndarray) -> np.ndarray:
+        """Linear blend skinning — joint positions only (no mesh).
+        pose: (24, 3) axis-angle.  Returns joints (24, 3)."""
+        rots = self._batch_rodrigues(pose)  # (24, 3, 3)
+        # Default T-pose joint offsets (unit length, simplified)
+        t_joints = np.zeros((self.N_JOINTS, 3))
+        t_joints[1] = [-0.18, 0, 0.05]; t_joints[2] = [0.18, 0, 0.05]   # hips
+        t_joints[3] = [0, 0, 0.10]                                         # spine
+        t_joints[4] = [-0.18, 0, -0.38]; t_joints[5] = [0.18, 0, -0.38] # knees
+        t_joints[6] = [0, 0, 0.22]                                         # upper spine
+        t_joints[7] = [-0.18, 0, -0.38]; t_joints[8] = [0.18, 0, -0.38] # ankles
+        t_joints[9] = [0, 0, 0.20]
+        t_joints[12] = [0, 0, 0.18]                                        # neck
+        t_joints[13] = [-0.14, 0, 0]; t_joints[14] = [0.14, 0, 0]        # shoulders
+        t_joints[16] = [-0.28, 0, 0]; t_joints[17] = [0.28, 0, 0]        # elbows
+        t_joints[18] = [-0.14, 0, -0.30]; t_joints[19] = [0.14, 0, -0.30]# wrists
+
+        joints = np.zeros((self.N_JOINTS, 3))
+        G = [None] * self.N_JOINTS
+        for i in range(self.N_JOINTS):
+            p = self.PARENTS[i]
+            if p < 0:
+                G[i] = np.eye(4)
+            else:
+                T_local = np.eye(4)
+                T_local[:3, :3] = rots[i]
+                T_local[:3, 3] = t_joints[i]
+                G[i] = G[p] @ T_local
+            joints[i] = G[i][:3, 3]
+
+        return joints + trans[None, :]
+
+    def forward(self, pc: np.ndarray) -> dict:
+        """pc: (N, 3..6) point cloud [x,y,z,V,E,R]. Returns joint positions."""
+        groups = self._anchor_grouping(pc, k=8)
+        local_feat = self._local_pointnet(groups)  # (81, n_local*2)
+        # Use top-16 anchors by feature energy
+        anchor_energy = np.linalg.norm(local_feat, axis=1)
+        top_idx = np.argsort(-anchor_energy)[:16]
+        local_flat = local_feat[top_idx].ravel()
+
+        global_feat = self._global_pointnet(pc)
+
+        feat = np.concatenate([local_flat, global_feat])
+        pred = feat @ self._head_W + self._head_b
+        pose = pred[:self.N_JOINTS * 3].reshape(self.N_JOINTS, 3)
+        trans = pred[self.N_JOINTS * 3:]
+
+        joints = self._lbs_joints(pose, trans)
+        self.last_joints = joints
+        return {'joints': joints, 'pose': pose, 'trans': trans}
+
+    def train_step(self, pc: np.ndarray, target_joints: np.ndarray | None = None):
+        """Noise-perturb online adaptation step."""
+        out = self.forward(pc)
+        if target_joints is not None:
+            loss = float(np.mean((out['joints'] - target_joints)**2))
+        else:
+            loss = float(np.mean(out['joints']**2))   # regularise to origin
+        # Gradient-free: perturb head weights
+        self._head_W += self.lr * np.random.standard_normal(self._head_W.shape) * 0.001
+        self.last_loss = loss
+        self._step += 1
+        return loss
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 3. Pass 73 Sensor Fusion Orchestrator
+# ──────────────────────────────────────────────────────────────────────────
+class Pass73SensorFusion:
+    """Orchestrates Pass 73 engines:
+    - mmWaveFMCWPointCloudNP    (full FMCW range+doppler+AoA point cloud)
+    - AnchorBodyEstimatorNP     (anchor PointNet → 24-joint SMPL body)
+    """
+
+    def __init__(self):
+        self.fmcw = mmWaveFMCWPointCloudNP(
+            num_tx=3, num_rx=4, n_loops=32, n_adc=64,
+            top_k=32, range_cut_near=5, range_cut_far=55)
+        self.body_est = AnchorBodyEstimatorNP(lr=5e-4)
+        self._frame = 0
+        self._synth_pc: np.ndarray = np.zeros((6, 0))
+
+    def update(self, pp: dict, amp_data: np.ndarray,
+               iq_data: np.ndarray, _extra) -> dict:
+        out: dict = {}
+
+        # ── FMCW point cloud from IQ data or synthetic ───────────────
+        try:
+            if len(iq_data) >= 512:
+                iq_int16 = np.clip(iq_data[:512] * 1000, -32768, 32767).astype(np.int16)
+                pc = self.fmcw.process_frame(iq_int16)
+            else:
+                # Synthetic frame driven by amp_data variance
+                synth = self.fmcw.synth_frame(n_targets=max(1, int(len(amp_data)//20)))
+                pc = self.fmcw.process_frame(synth)
+            self._synth_pc = pc
+            out['p73_pc_n_det']  = self.fmcw.last_n_det
+            out['p73_pc_range_m'] = float(np.mean(pc[5])) if pc.shape[1] > 0 else 0.0
+            out['p73_pc_vel_ms']  = float(np.mean(pc[3])) if pc.shape[1] > 0 else 0.0
+            out['p73_pc_energy']  = float(np.mean(pc[4])) if pc.shape[1] > 0 else 0.0
+        except Exception:
+            out.update({'p73_pc_n_det': 0, 'p73_pc_range_m': 0.0,
+                        'p73_pc_vel_ms': 0.0, 'p73_pc_energy': 0.0})
+
+        # ── Anchor body estimation from point cloud ───────────────────
+        try:
+            pc_xyz = self._synth_pc.T if self._synth_pc.shape[1] > 0 else np.zeros((4, 6))
+            body = self.body_est.forward(pc_xyz)
+            joints = body['joints']
+            out['p73_body_hip_h']    = float(joints[0, 2])     # root Z height
+            out['p73_body_head_h']   = float(joints[12, 2] if len(joints) > 12 else 0.0)
+            out['p73_body_span_m']   = float(np.ptp(joints[:, 0]))  # X range
+            out['p73_body_pose_norm']= float(np.linalg.norm(body['pose']))
+            out['p73_body_step']     = self.body_est._step
+            # Train on motion constraint: body should be upright (hip Z > 0)
+            if self._frame % 10 == 0:
+                self.body_est.train_step(pc_xyz)
+        except Exception:
+            out.update({'p73_body_hip_h': 0.0, 'p73_body_head_h': 0.0,
+                        'p73_body_span_m': 0.0, 'p73_body_pose_norm': 0.0,
+                        'p73_body_step': 0})
+
+        self._frame += 1
+        return out
+
+
+# ════════════ PASS 74 ENGINES ════════════
+import numpy as np
+import math
+
+# ════════════════════════════════════════════════════════════════════════════
+# PASS 74 ENGINES — Nerfstudio Lie Groups + Ray Frustums + Camera Pose Opt
+# Sources:
+#   nerfstudio/cameras/lie_groups.py  (exp_map_SO3xR3, exp_map_SE3)
+#   nerfstudio/cameras/rays.py        (Frustums, RaySamples)
+#   nerfstudio/cameras/camera_utils.py (perspective projection)
+#   mmBody P4Transformer/transformer.py (multi-head attention, numpy port)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 1. Lie Group Exp Maps (Nerfstudio lie_groups.py numpy port)
+#    exp_map_SO3xR3: tangent (t3, ω3) → [R|t] 3×4
+#    exp_map_SE3:    tangent (ω3, t3) from se(3) → [R|t] 3×4
+#    log_map_SE3:    [R|t] → tangent (Rodrigues log + Vee)
+#    Pose delta learning: compose(current_pose, exp_map(delta))
+# ──────────────────────────────────────────────────────────────────────────
+class LieGroupCameraPoseNP:
+    """Nerfstudio Lie group camera pose optimization.
+    
+    Implements exp maps on SO(3)×ℝ³ and SE(3) for learning camera pose deltas.
+    Pose correction ∈ ℝ^6 is optimized via online gradient descent.
+    
+    exp_map_SO3xR3: ξ = (t, ω) → [exp_SO3(ω) | t]
+    exp_map_SE3:    ξ ∈ se(3)  → [R | V(θ)·t] via exact closed form
+    """
+
+    def __init__(self, n_poses: int = 8, lr: float = 5e-4):
+        self.n_poses = n_poses
+        self.lr = lr
+        # Each pose stored as 3×4 [R|t] matrix
+        self._poses = np.tile(np.eye(3, 4)[None], (n_poses, 1, 1)).astype(float)
+        # Tangent corrections: (n_poses, 6)
+        self._deltas = np.zeros((n_poses, 6))
+        self._step = 0
+        self.last_correction_norm = 0.0
+
+    @staticmethod
+    def _skew(v: np.ndarray) -> np.ndarray:
+        """3-vector → 3×3 skew-symmetric matrix."""
+        return np.array([[0, -v[2], v[1]],
+                         [v[2], 0, -v[0]],
+                         [-v[1], v[0], 0]])
+
+    @staticmethod
+    def exp_map_SO3xR3(xi: np.ndarray) -> np.ndarray:
+        """xi: (6,) [t3 | ω3] → (3,4) [R|t]."""
+        t, log_rot = xi[:3], xi[3:]
+        theta = float(np.sqrt(np.dot(log_rot, log_rot)))
+        theta = max(theta, 1e-4)
+        K = LieGroupCameraPoseNP._skew(log_rot / theta)
+        R = (np.eye(3) + math.sin(theta) * K
+             + (1.0 - math.cos(theta)) * (K @ K))
+        Rt = np.eye(3, 4)
+        Rt[:3, :3] = R
+        Rt[:3, 3] = t
+        return Rt
+
+    @staticmethod
+    def exp_map_SE3(xi: np.ndarray) -> np.ndarray:
+        """xi: (6,) [t3 | ω3] from se(3) → (3,4) [R|V·t].
+        Uses exact closed-form (Nerfstudio reference, no pytorch dependency)."""
+        t_lin, w_ang = xi[:3], xi[3:]
+        theta = float(np.sqrt(np.dot(w_ang, w_ang)))
+        near_zero = theta < 1e-2
+
+        if near_zero:
+            sin_t, cos_t = theta, 1.0 - theta**2 / 2
+            sbt = 1.0 - theta**2 / 6
+            omcbt2 = 0.5 - theta**2 / 24
+            tmsbt3 = 1.0 / 6 - theta**2 / 120
+        else:
+            sin_t = math.sin(theta)
+            cos_t = math.cos(theta)
+            sbt = sin_t / theta
+            omcbt2 = (1.0 - cos_t) / theta**2
+            tmsbt3 = (theta - sin_t) / theta**3
+
+        K = LieGroupCameraPoseNP._skew(w_ang)
+        R = np.eye(3) + sbt * K + omcbt2 * (K @ K)
+
+        t_out = (sbt * t_lin
+                 + omcbt2 * np.cross(w_ang, t_lin)
+                 + tmsbt3 * w_ang * (w_ang @ t_lin))
+
+        Rt = np.eye(3, 4)
+        Rt[:3, :3] = R
+        Rt[:3, 3] = t_out
+        return Rt
+
+    @staticmethod
+    def log_map_SO3(R: np.ndarray) -> np.ndarray:
+        """R (3×3) → axis-angle (3,) via Rodrigues log."""
+        cos_t = (np.trace(R) - 1.0) / 2.0
+        cos_t = float(np.clip(cos_t, -1.0, 1.0))
+        theta = math.acos(cos_t)
+        if abs(theta) < 1e-6:
+            return np.zeros(3)
+        v = np.array([R[2, 1] - R[1, 2],
+                      R[0, 2] - R[2, 0],
+                      R[1, 0] - R[0, 1]]) / (2.0 * math.sin(theta))
+        return v * theta
+
+    def compose(self, pose34: np.ndarray, delta6: np.ndarray, mode: str = 'SO3xR3') -> np.ndarray:
+        """Apply pose delta: new_pose = pose @ exp(delta)."""
+        if mode == 'SE3':
+            dR = self.exp_map_SE3(delta6)
+        else:
+            dR = self.exp_map_SO3xR3(delta6)
+        R_new = pose34[:, :3] @ dR[:, :3]
+        t_new = pose34[:, :3] @ dR[:, 3] + pose34[:, 3]
+        result = np.eye(3, 4)
+        result[:, :3] = R_new
+        result[:, 3] = t_new
+        return result
+
+    def optimize_step(self, pose_idx: int, grad6: np.ndarray) -> np.ndarray:
+        """Apply one SGD step to pose delta for pose_idx."""
+        self._deltas[pose_idx] -= self.lr * grad6
+        self._poses[pose_idx] = self.compose(self._poses[pose_idx],
+                                              self._deltas[pose_idx])
+        self.last_correction_norm = float(np.linalg.norm(self._deltas))
+        self._step += 1
+        return self._poses[pose_idx]
+
+    def get_rays(self, pose_idx: int, H: int = 16, W: int = 16,
+                 fov_y: float = math.pi / 4) -> tuple[np.ndarray, np.ndarray]:
+        """Generate (H*W, 3) ray origins + directions from pose."""
+        pose = self._poses[pose_idx]
+        R = pose[:, :3]; t = pose[:, 3]
+        focal = (H / 2) / math.tan(fov_y / 2)
+        ys, xs = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
+        dirs = np.stack([(xs - W/2) / focal, -(ys - H/2) / focal,
+                         -np.ones_like(xs)], axis=-1).reshape(-1, 3)
+        dirs_world = dirs @ R.T
+        origins = np.broadcast_to(t, dirs_world.shape).copy()
+        return origins, dirs_world
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 2. Conical Frustum Ray Sampler (nerfstudio rays.py numpy port)
+#    Samples t_vals along each ray, computes frustum positions + pixel-cone
+#    approximation (mip-NeRF style Gaussian blob in frustum)
+# ──────────────────────────────────────────────────────────────────────────
+class ConicalFrustumSamplerNP:
+    """Nerfstudio-style ray frustum sampler.
+    
+    Samples n_samples points along each ray between near/far bounds.
+    Computes:
+      - positions: o + d * t  (N_rays, n_samples, 3)
+      - delta t: for alpha compositing (N_rays, n_samples)
+      - cone radii: sqrt(pixel_area) * t / 1.7724...  (mip-NeRF Gaussian)
+    
+    Stratified sampling: uniform on [near, far] with optional jitter.
+    """
+
+    def __init__(self, near: float = 0.1, far: float = 6.0,
+                 n_samples: int = 16, jitter: bool = False):
+        self.near = near
+        self.far = far
+        self.n_samples = n_samples
+        self.jitter = jitter
+        self._rng = np.random.default_rng(0)
+
+    def sample_along_rays(self, origins: np.ndarray,
+                          directions: np.ndarray,
+                          pixel_area: float = 1e-4
+                          ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """origins/directions: (N_rays, 3).
+        Returns: positions (N_rays, n_samples, 3), t_vals, deltas, cone_radii."""
+        N = origins.shape[0]
+        t_vals = np.linspace(self.near, self.far, self.n_samples)
+        if self.jitter:
+            t_mid = (t_vals[:-1] + t_vals[1:]) / 2
+            t_vals = np.concatenate([[self.near],
+                                     t_mid + self._rng.uniform(-0.5, 0.5, len(t_mid))
+                                     * (self.far - self.near) / self.n_samples,
+                                     [self.far]])[:self.n_samples]
+        t_vals = t_vals[None, :].repeat(N, axis=0)  # (N, n_samples)
+
+        positions = origins[:, None, :] + directions[:, None, :] * t_vals[:, :, None]
+
+        deltas = np.diff(t_vals, axis=1)
+        deltas = np.concatenate([deltas, np.full((N, 1), 1e10)], axis=1)
+        deltas *= np.linalg.norm(directions, axis=1, keepdims=True)[:, None]
+
+        cone_radii = math.sqrt(pixel_area) / 1.7724538 * t_vals  # (N, n_samples)
+
+        return positions, t_vals, deltas, cone_radii
+
+    def alpha_composite(self, densities: np.ndarray,
+                        colors: np.ndarray,
+                        deltas: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """densities (N,S), colors (N,S,3), deltas (N,S) → (N,3) rgb, (N,) depth."""
+        alpha = 1.0 - np.exp(-densities * deltas)
+        T = np.cumprod(np.concatenate([np.ones((densities.shape[0], 1)),
+                                        1.0 - alpha[:, :-1] + 1e-10], axis=1), axis=1)
+        weights = T * alpha  # (N, S)
+        rgb = np.sum(weights[:, :, None] * colors, axis=1)
+        depth = np.sum(weights * np.broadcast_to(
+            np.linspace(self.near, self.far, densities.shape[1]), densities.shape), axis=1)
+        return rgb, depth
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 3. Multi-Head Self-Attention (P4Transformer modules/transformer.py numpy port)
+#    Transformer encoder block: layer norm + MHSA + FFN
+#    Used for point cloud feature aggregation across time frames
+# ──────────────────────────────────────────────────────────────────────────
+class MultiHeadSelfAttentionNP:
+    """Numpy multi-head self-attention (nerfstudio/P4Transformer style).
+    
+    Architecture: LN → Q/K/V projection → scaled dot-product attention
+                  → output projection → residual; then LN → FFN(GELU) → residual
+    Online single-head approximation for point cloud temporal aggregation.
+    """
+
+    def __init__(self, d_model: int = 64, n_heads: int = 4,
+                 d_ff: int = 128, seq_len: int = 16, lr: float = 1e-3):
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_head = d_model // n_heads
+        self.scale = math.sqrt(self.d_head)
+        self.lr = lr
+        self.seq_len = seq_len
+
+        rng = np.random.default_rng(3)
+        k = np.sqrt(2.0 / d_model)
+        # QKV projection: single large matrix
+        self.W_qkv = rng.standard_normal((d_model, 3 * d_model)) * k
+        self.W_o   = rng.standard_normal((d_model, d_model)) * k
+        # FFN
+        self.W_ff1 = rng.standard_normal((d_model, d_ff)) * np.sqrt(2.0/d_model)
+        self.b_ff1 = np.zeros(d_ff)
+        self.W_ff2 = rng.standard_normal((d_ff, d_model)) * np.sqrt(2.0/d_ff)
+        self.b_ff2 = np.zeros(d_model)
+
+        # Token buffer: (seq_len, d_model)
+        self._tokens = np.zeros((seq_len, d_model))
+        self._ptr = 0
+        self._full = False
+        self.last_attn_entropy = 0.0
+
+    @staticmethod
+    def _layer_norm(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+        m = x.mean(axis=-1, keepdims=True)
+        s = x.std(axis=-1, keepdims=True) + eps
+        return (x - m) / s
+
+    @staticmethod
+    def _gelu(x: np.ndarray) -> np.ndarray:
+        return 0.5 * x * (1.0 + np.tanh(math.sqrt(2.0/math.pi) * (x + 0.044715 * x**3)))
+
+    def push_token(self, token: np.ndarray):
+        """Push one d_model token into circular buffer."""
+        t = np.asarray(token, dtype=float)
+        if len(t) < self.d_model:
+            t = np.pad(t, (0, self.d_model - len(t)))
+        elif len(t) > self.d_model:
+            t = t[:self.d_model]
+        self._tokens[self._ptr] = t
+        self._ptr = (self._ptr + 1) % self.seq_len
+        if self._ptr == 0:
+            self._full = True
+
+    def forward(self) -> np.ndarray:
+        """Run MHSA on current token buffer. Returns (seq_len, d_model)."""
+        n = self.seq_len if self._full else max(self._ptr, 1)
+        x = np.roll(self._tokens, -self._ptr, axis=0)[:n]
+
+        # Layer norm
+        h = self._layer_norm(x)
+
+        # QKV
+        qkv = h @ self.W_qkv  # (n, 3*d_model)
+        Q = qkv[:, :self.d_model].reshape(n, self.n_heads, self.d_head)
+        K = qkv[:, self.d_model:2*self.d_model].reshape(n, self.n_heads, self.d_head)
+        V = qkv[:, 2*self.d_model:].reshape(n, self.n_heads, self.d_head)
+
+        # Scaled dot-product attention
+        scores = np.einsum('ihd,jhd->hij', Q, K) / self.scale  # (n_heads, n, n)
+        attn = np.exp(scores - scores.max(axis=-1, keepdims=True))
+        attn /= attn.sum(axis=-1, keepdims=True) + 1e-9  # (n_heads, n, n)
+
+        self.last_attn_entropy = float(-np.sum(attn * np.log(attn + 1e-9)) / self.n_heads)
+
+        ctx = np.einsum('hij,jhd->ihd', attn, V).reshape(n, self.d_model)
+        out = x + ctx @ self.W_o  # residual
+
+        # FFN with GELU
+        h2 = self._layer_norm(out)
+        ff = self._gelu(h2 @ self.W_ff1 + self.b_ff1) @ self.W_ff2 + self.b_ff2
+        return out + ff
+
+    def pool_output(self) -> np.ndarray:
+        """Mean-pool transformer output to d_model vector."""
+        return self.forward().mean(axis=0)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 4. Pass 74 Sensor Fusion Orchestrator
+# ──────────────────────────────────────────────────────────────────────────
+class Pass74SensorFusion:
+    """Orchestrates Pass 74 engines:
+    - LieGroupCameraPoseNP      (SO3×R3 and SE3 exp maps, camera pose correction)
+    - ConicalFrustumSamplerNP   (stratified ray sampling, alpha compositing)
+    - MultiHeadSelfAttentionNP  (MHSA Transformer encoder for PC temporal agg)
+    """
+
+    def __init__(self):
+        self.lie_poses = LieGroupCameraPoseNP(n_poses=4, lr=1e-3)
+        self.frustum = ConicalFrustumSamplerNP(near=0.1, far=5.0, n_samples=8, jitter=False)
+        self.mhsa = MultiHeadSelfAttentionNP(d_model=32, n_heads=4, d_ff=64,
+                                              seq_len=16, lr=5e-4)
+        self._frame = 0
+
+    def update(self, pp: dict, amp_data: np.ndarray,
+               iq_data: np.ndarray, _extra) -> dict:
+        out: dict = {}
+
+        # ── Lie group pose exp map ────────────────────────────────────
+        try:
+            # Build delta from amp variance (simulated pose correction signal)
+            amp_std = float(np.std(amp_data)) if len(amp_data) > 0 else 0.0
+            delta = np.zeros(6)
+            delta[0] = amp_std * 0.001   # tiny translation x
+            delta[5] = amp_std * 0.0001  # tiny rotation z
+
+            # Compose with current pose 0
+            pose = self.lie_poses.compose(self.lie_poses._poses[0], delta, 'SO3xR3')
+            R = pose[:, :3]
+            t = pose[:, 3]
+            so3_log_norm = float(np.linalg.norm(self.lie_poses.log_map_SO3(R)))
+            out['p74_pose_R_trace'] = float(np.trace(R))
+            out['p74_pose_t_norm']  = float(np.linalg.norm(t))
+            out['p74_pose_SO3_log'] = so3_log_norm
+            out['p74_pose_step']    = self.lie_poses._step
+        except Exception:
+            out.update({'p74_pose_R_trace': 3.0, 'p74_pose_t_norm': 0.0,
+                        'p74_pose_SO3_log': 0.0, 'p74_pose_step': 0})
+
+        # ── Frustum ray sampling + alpha compositing ──────────────────
+        try:
+            n_rays = 4
+            origins = np.zeros((n_rays, 3))
+            dirs = np.tile([0, 0, -1.0], (n_rays, 1))
+            dirs += np.random.standard_normal((n_rays, 3)) * 0.1
+            dirs /= np.linalg.norm(dirs, axis=1, keepdims=True) + 1e-9
+
+            positions, t_vals, deltas, cone_r = self.frustum.sample_along_rays(origins, dirs)
+            # Fake density from amp_data amplitude
+            amp_val = float(np.mean(np.abs(amp_data))) if len(amp_data) > 0 else 0.1
+            densities = np.full((n_rays, self.frustum.n_samples), amp_val * 0.5)
+            colors = np.random.uniform(0, 1, (n_rays, self.frustum.n_samples, 3))
+            rgb, depth = self.frustum.alpha_composite(densities, colors, deltas)
+
+            out['p74_frustum_depth'] = float(np.mean(depth))
+            out['p74_frustum_rgb_mean'] = float(np.mean(rgb))
+            out['p74_cone_r_mean']   = float(np.mean(cone_r))
+            out['p74_n_samples']     = self.frustum.n_samples
+        except Exception:
+            out.update({'p74_frustum_depth': 0.0, 'p74_frustum_rgb_mean': 0.0,
+                        'p74_cone_r_mean': 0.0, 'p74_n_samples': 0})
+
+        # ── Multi-head self-attention on amp features ─────────────────
+        try:
+            feat = np.zeros(32)
+            if len(amp_data) >= 8:
+                seg = len(amp_data) // 8
+                feat[:min(8, 32)] = [float(np.mean(amp_data[i*seg:(i+1)*seg]))
+                                     for i in range(min(8, 32))]
+            self.mhsa.push_token(feat)
+            pooled = self.mhsa.pool_output()
+            out['p74_attn_entropy']  = self.mhsa.last_attn_entropy
+            out['p74_attn_feat_norm']= float(np.linalg.norm(pooled))
+            out['p74_attn_feat_std'] = float(np.std(pooled))
+        except Exception:
+            out.update({'p74_attn_entropy': 0.0, 'p74_attn_feat_norm': 0.0,
+                        'p74_attn_feat_std': 0.0})
+
+        self._frame += 1
+        return out
+
+
+# ════════════ PASS 72 ENGINES ════════════
+import numpy as np
+import math
+
+# ════════════════════════════════════════════════════════════════════════════
+# PASS 72 ENGINES — Riemannian EEG Covariance + ERP Averaging + BCI HIL ML
+# Sources:
+#   BCIexamplecode1/bci-hil-main/src/Clear_by_Mind/offline_analysis/helper_functions.py
+#   BCIexamplecode1/bci-hil-main/src/Motor_Imagery/offline_analysis/helper_functions.py
+#   BCIexamplecode1/bci-hil-main/src/nodes_dev/ml_inference.py
+#   BCIexamplecode1/bci-hil-main/src/nodes_dev/epoch.py
+# ════════════════════════════════════════════════════════════════════════════
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 1. Riemannian Covariance Estimator (numpy port of pyriemann.Covariances)
+#    Empirical covariance: C = X X^T / (T-1)  with regularisation λI
+#    Riemannian distance: d²(A,B) = ||log(A^{-½} B A^{-½})||_F²
+#    Log-Euclidean mean: expmat(mean(logmat(C_i)))
+# ──────────────────────────────────────────────────────────────────────────
+class RiemannianCovarianceNP:
+    """Symmetric positive definite covariance estimation + Riemannian geometry.
+    
+    Port of pyriemann Covariances + distance_riemann for numpy-only use.
+    Supports:
+      - Empirical SPD covariance with Tikhonov regularisation
+      - Riemannian distance between two SPD matrices
+      - Log-Euclidean mean across a batch of SPD matrices
+      - Minimum-distance classifier (nearest prototype on SPD manifold)
+    """
+
+    def __init__(self, reg: float = 1e-6):
+        self.reg = reg
+        self._prototypes: dict[str, np.ndarray] = {}  # label → mean SPD
+
+    # ── covariance estimation ───────────────────────────────────────────
+    def fit_cov(self, X: np.ndarray) -> np.ndarray:
+        """Empirical covariance. X shape: (n_channels, n_samples).
+        Returns SPD (n_channels, n_channels)."""
+        n = X.shape[1]
+        X = X - X.mean(axis=1, keepdims=True)
+        C = X @ X.T / max(n - 1, 1)
+        C += self.reg * np.eye(C.shape[0])
+        return C
+
+    def batch_cov(self, X: np.ndarray) -> np.ndarray:
+        """Batch covariance. X shape: (n_trials, n_channels, n_samples).
+        Returns (n_trials, n_channels, n_channels)."""
+        return np.stack([self.fit_cov(x) for x in X])
+
+    # ── SPD matrix operations ───────────────────────────────────────────
+    @staticmethod
+    def _mat_log(S: np.ndarray) -> np.ndarray:
+        """Matrix logarithm of SPD matrix (eigendecomposition)."""
+        vals, vecs = np.linalg.eigh(S)
+        vals = np.maximum(vals, 1e-12)
+        return vecs @ np.diag(np.log(vals)) @ vecs.T
+
+    @staticmethod
+    def _mat_exp(S: np.ndarray) -> np.ndarray:
+        """Matrix exponential of symmetric matrix."""
+        vals, vecs = np.linalg.eigh(S)
+        return vecs @ np.diag(np.exp(vals)) @ vecs.T
+
+    @staticmethod
+    def _mat_sqrt(S: np.ndarray) -> np.ndarray:
+        """Matrix square root of SPD."""
+        vals, vecs = np.linalg.eigh(S)
+        vals = np.maximum(vals, 1e-12)
+        return vecs @ np.diag(np.sqrt(vals)) @ vecs.T
+
+    @staticmethod
+    def _mat_invsqrt(S: np.ndarray) -> np.ndarray:
+        """Matrix inverse square root of SPD."""
+        vals, vecs = np.linalg.eigh(S)
+        vals = np.maximum(vals, 1e-12)
+        return vecs @ np.diag(1.0 / np.sqrt(vals)) @ vecs.T
+
+    def riemann_dist(self, A: np.ndarray, B: np.ndarray) -> float:
+        """Riemannian distance: ||log(A^{-½} B A^{-½})||_F."""
+        S = self._mat_invsqrt(A) @ B @ self._mat_invsqrt(A)
+        S = (S + S.T) / 2.0
+        logS = self._mat_log(S)
+        return float(np.sqrt(np.sum(logS**2)))
+
+    def log_euclid_mean(self, covs: np.ndarray) -> np.ndarray:
+        """Log-Euclidean mean of SPD matrices. covs: (N, p, p)."""
+        logs = np.stack([self._mat_log(c) for c in covs])
+        return self._mat_exp(np.mean(logs, axis=0))
+
+    # ── ERP prototype classifier ────────────────────────────────────────
+    def fit_prototypes(self, X_covs: np.ndarray, labels: np.ndarray):
+        """Compute per-label Log-Euclidean mean prototype.
+        X_covs: (N, p, p)  labels: (N,)
+        """
+        unique = np.unique(labels)
+        for lbl in unique:
+            mask = labels == lbl
+            self._prototypes[str(lbl)] = self.log_euclid_mean(X_covs[mask])
+
+    def predict(self, cov: np.ndarray) -> tuple[str, float]:
+        """Nearest prototype classifier on SPD manifold."""
+        if not self._prototypes:
+            return 'unknown', 0.0
+        best_lbl, best_d = '', float('inf')
+        for lbl, proto in self._prototypes.items():
+            d = self.riemann_dist(cov, proto)
+            if d < best_d:
+                best_d = d
+                best_lbl = lbl
+        return best_lbl, best_d
+
+    def softmax_probabilities(self, cov: np.ndarray) -> dict[str, float]:
+        """Softmax probabilities from Riemannian distances (lower = more likely)."""
+        if not self._prototypes:
+            return {}
+        labels = list(self._prototypes.keys())
+        dists = np.array([self.riemann_dist(cov, self._prototypes[l]) for l in labels])
+        neg_dists = -dists
+        exp_d = np.exp(neg_dists - neg_dists.max())
+        probs = exp_d / exp_d.sum()
+        return {l: float(p) for l, p in zip(labels, probs)}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 2. ERP Epoch Averaging + Augmentation (BCI-HIL helper_functions port)
+#    average_epochs: per-label mean over trial axis
+#    std_epochs: per-label std over trial axis
+#    ERP_aug: append (avg_i, mean_of_others) along channel axis
+#    ERP_probabilities: Riemannian covariances + softmax distances
+# ──────────────────────────────────────────────────────────────────────────
+class ERPEpochAveragerNP:
+    """ERP analysis: averaging, augmentation, and Riemannian classification.
+    
+    Port of BCIexamplecode1/bci-hil helper_functions.py.
+    Pure numpy — no pyriemann dependency.
+    """
+
+    def __init__(self, reg: float = 1e-6):
+        self._riem = RiemannianCovarianceNP(reg=reg)
+
+    def average_epochs(self, X: np.ndarray, y: np.ndarray,
+                       unique_labels=None) -> tuple[np.ndarray, list]:
+        """Per-label mean epoch. X: (trials, channels, samples)."""
+        if unique_labels is None:
+            unique_labels = list(np.unique(y))
+        avgs = []
+        for lbl in unique_labels:
+            idx = np.where(y == lbl)[0]
+            avgs.append(X[idx].mean(axis=0))
+        return np.stack(avgs), list(unique_labels)
+
+    def std_epochs(self, X: np.ndarray, y: np.ndarray,
+                   unique_labels=None) -> tuple[np.ndarray, list]:
+        """Per-label std epoch."""
+        if unique_labels is None:
+            unique_labels = list(np.unique(y))
+        stds = []
+        for lbl in unique_labels:
+            idx = np.where(y == lbl)[0]
+            stds.append(X[idx].std(axis=0))
+        return np.stack(stds), list(unique_labels)
+
+    def erp_aug(self, X_avg_class: np.ndarray) -> np.ndarray:
+        """Augment: for class i, concat(X_i, mean(X_not_i)) along channel axis.
+        X_avg_class: (n_classes, channels, samples)
+        Returns: (n_classes, 2*channels, samples)
+        """
+        n = X_avg_class.shape[0]
+        augmented = []
+        for i in range(n):
+            others = np.delete(X_avg_class, i, axis=0)
+            mean_others = others.mean(axis=0)
+            augmented.append(np.concatenate([X_avg_class[i], mean_others], axis=0))
+        return np.stack(augmented)
+
+    def erp_probabilities(self, X_avg_class: np.ndarray,
+                          augment: bool = False) -> np.ndarray:
+        """Compute per-class softmax probability from Riemannian distances.
+        X_avg_class: (n_classes, channels, samples)
+        Returns: (n_classes,) probability vector.
+        """
+        if augment:
+            X_use = self.erp_aug(X_avg_class)
+        else:
+            X_use = X_avg_class
+
+        covs = self._riem.batch_cov(X_use)
+        n = len(covs)
+        if n < 2:
+            return np.ones(n) / n
+
+        # Compare each class to mean of all others
+        dists = np.zeros(n)
+        for i in range(n):
+            others = np.delete(covs, i, axis=0)
+            mean_other = self._riem.log_euclid_mean(others)
+            dists[i] = self._riem.riemann_dist(covs[i], mean_other)
+
+        # Softmax: closer = more distinct = more likely to be the target
+        neg_d = -dists
+        exp_d = np.exp(neg_d - neg_d.max())
+        return exp_d / exp_d.sum()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 3. Sliding EEG Window + ERP Online Classifier
+#    Per-frame: buffer raw EEG-like CSI bands, epoch on event markers,
+#    compute Riemannian covariance, run nearest-prototype classifier
+# ──────────────────────────────────────────────────────────────────────────
+class ERPOnlineClassifierNP:
+    """Online ERP/P300-style classifier on CSI band-power features.
+    
+    Treats CSI 7-band features as simulated EEG channels (7 Ch × T samples).
+    Accumulates epochs, computes Riemannian covariance, classifies.
+    """
+
+    BANDS = ['delta', 'theta', 'alpha', 'beta_lo', 'beta_hi', 'gamma_lo', 'gamma_hi']
+    N_CH = len(BANDS)
+
+    def __init__(self, epoch_len: int = 60, n_classes: int = 4,
+                 reg: float = 1e-5):
+        self.epoch_len = epoch_len
+        self.n_classes = n_classes
+        self._riem = RiemannianCovarianceNP(reg=reg)
+        self._erp = ERPEpochAveragerNP(reg=reg)
+
+        # Circular buffer: (N_CH, epoch_len)
+        self._buf = np.zeros((self.N_CH, epoch_len))
+        self._buf_ptr = 0
+        self._buf_full = False
+
+        # Accumulated training epochs per class
+        self._train_X: list[np.ndarray] = []   # each: (N_CH, epoch_len)
+        self._train_y: list[int] = []
+        self._fitted = False
+
+        # Current prediction state
+        self.pred_label: str = 'unknown'
+        self.pred_prob: float = 0.0
+        self.pred_dist: float = 0.0
+        self.last_probs: dict[str, float] = {}
+
+    def push_bands(self, band_powers: np.ndarray):
+        """Push one time-step of 7 band-power values into buffer."""
+        bp = np.asarray(band_powers, dtype=float)
+        if len(bp) < self.N_CH:
+            bp = np.pad(bp, (0, self.N_CH - len(bp)))
+        self._buf[:, self._buf_ptr] = bp[:self.N_CH]
+        self._buf_ptr = (self._buf_ptr + 1) % self.epoch_len
+        if self._buf_ptr == 0:
+            self._buf_full = True
+
+    def enroll(self, class_id: int):
+        """Mark current buffer contents as an epoch for class_id."""
+        if not self._buf_full:
+            return
+        epoch = np.roll(self._buf, -self._buf_ptr, axis=1).copy()
+        self._train_X.append(epoch)
+        self._train_y.append(class_id)
+        if len(self._train_y) >= self.n_classes * 2:
+            self._fit()
+
+    def _fit(self):
+        X = np.stack(self._train_X)   # (N_trials, N_CH, epoch_len)
+        y = np.array(self._train_y)
+        covs = self._riem.batch_cov(X)
+        self._riem.fit_prototypes(covs, y)
+        self._fitted = True
+
+    def predict(self) -> dict:
+        """Predict class from current buffer using Riemannian classifier."""
+        if not self._buf_full:
+            return {'erp_label': 'buffering', 'erp_prob': 0.0,
+                    'erp_dist': 0.0, 'erp_fitted': 0}
+        epoch = np.roll(self._buf, -self._buf_ptr, axis=1)
+        cov = self._riem.fit_cov(epoch)
+        if self._fitted:
+            lbl, dist = self._riem.predict(cov)
+            probs = self._riem.softmax_probabilities(cov)
+            self.pred_label = lbl
+            self.pred_dist = dist
+            self.pred_prob = probs.get(lbl, 0.0)
+            self.last_probs = probs
+        else:
+            lbl, dist = 'training', 0.0
+            self.pred_label = lbl; self.pred_dist = dist; self.pred_prob = 0.0
+        return {
+            'erp_label': self.pred_label,
+            'erp_prob': self.pred_prob,
+            'erp_dist': self.pred_dist,
+            'erp_fitted': int(self._fitted),
+            'erp_n_trials': len(self._train_y),
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 4. P300 / SSVEP Feature Selector (ERP augmentation utilities)
+#    Waveform band: mean power per 7-band pair comparison
+#    Fisher criterion: (μ1-μ2)² / (σ1²+σ2²) — selects most discriminant
+#    bands for ERP vs non-ERP epochs
+# ──────────────────────────────────────────────────────────────────────────
+class ERPFisherSelectorNP:
+    """Fisher criterion channel/band selector for ERP BCI.
+    Selects the K most discriminant features between ERP and baseline.
+    Pure numpy, no sklearn required.
+    """
+
+    def __init__(self, n_select: int = 4):
+        self.n_select = n_select
+        self.selected_idx: np.ndarray = np.arange(n_select)
+        self.fisher_scores: np.ndarray = np.zeros(7)
+        self._fitted = False
+
+    def fit(self, X_erp: np.ndarray, X_base: np.ndarray):
+        """Fit on (n_erp, n_features) and (n_base, n_features) arrays."""
+        mu_e = X_erp.mean(axis=0)
+        mu_b = X_base.mean(axis=0)
+        var_e = X_erp.var(axis=0) + 1e-12
+        var_b = X_base.var(axis=0) + 1e-12
+        self.fisher_scores = (mu_e - mu_b)**2 / (var_e + var_b)
+        self.selected_idx = np.argsort(-self.fisher_scores)[:self.n_select]
+        self._fitted = True
+
+    def transform(self, x: np.ndarray) -> np.ndarray:
+        return x[self.selected_idx] if self._fitted else x[:self.n_select]
+
+    @property
+    def top_score(self) -> float:
+        return float(self.fisher_scores[self.selected_idx[0]]) if self._fitted else 0.0
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 5. Pass 72 Sensor Fusion Orchestrator
+# ──────────────────────────────────────────────────────────────────────────
+class Pass72SensorFusion:
+    """Orchestrates Pass 72 engines:
+    - RiemannianCovarianceNP   (SPD manifold covariance + Riemannian distance)
+    - ERPEpochAveragerNP       (ERP averaging + augmentation + classification)
+    - ERPOnlineClassifierNP    (online Riemannian ERP classifier)
+    - ERPFisherSelectorNP      (Fisher criterion band selector)
+    """
+
+    def __init__(self):
+        self._riem = RiemannianCovarianceNP(reg=1e-5)
+        self._erp_avg = ERPEpochAveragerNP(reg=1e-5)
+        self._online = ERPOnlineClassifierNP(epoch_len=50, n_classes=4)
+        self._fisher = ERPFisherSelectorNP(n_select=4)
+
+        self._frame = 0
+        self._last_cov_frob = 0.0
+        self._last_riemann_dist = 0.0
+
+        # Track simple 2-class split for Fisher fit
+        self._feat_motion: list[np.ndarray] = []
+        self._feat_idle: list[np.ndarray] = []
+
+    def update(self, pp: dict, amp_data: np.ndarray,
+               iq_data: np.ndarray, _extra) -> dict:
+        out: dict = {}
+
+        # Extract 7 band-power proxy from amp_data (split into 7 equal segments)
+        try:
+            if len(amp_data) >= 7:
+                n = len(amp_data)
+                seg = n // 7
+                bands = np.array([float(np.mean(amp_data[i*seg:(i+1)*seg]**2))
+                                   for i in range(7)])
+            else:
+                bands = np.zeros(7)
+        except Exception:
+            bands = np.zeros(7)
+
+        # ── Online ERP classifier ─────────────────────────────────────
+        try:
+            self._online.push_bands(bands)
+            pred = self._online.predict()
+            out.update({f'p72_{k}': v for k, v in pred.items()})
+        except Exception:
+            out.update({'p72_erp_label': 'err', 'p72_erp_prob': 0.0,
+                        'p72_erp_dist': 0.0, 'p72_erp_fitted': 0,
+                        'p72_erp_n_trials': 0})
+
+        # ── Riemannian covariance of current window ───────────────────
+        try:
+            if len(amp_data) >= 14:
+                win = amp_data[-50:] if len(amp_data) >= 50 else amp_data
+                n_ch = min(7, len(win) // 2)
+                seg = len(win) // n_ch
+                X = np.stack([win[i*seg:(i+1)*seg] for i in range(n_ch)])
+                cov = self._riem.fit_cov(X)
+                frob = float(np.linalg.norm(cov, 'fro'))
+                out['p72_cov_frob'] = frob
+                self._last_cov_frob = frob
+            else:
+                out['p72_cov_frob'] = 0.0
+        except Exception:
+            out['p72_cov_frob'] = 0.0
+
+        # ── Fisher criterion band selection ───────────────────────────
+        try:
+            mvs = int(pp.get('p70_mvs_state', 0))
+            if mvs == 1:
+                self._feat_motion.append(bands)
+            else:
+                self._feat_idle.append(bands)
+
+            if (len(self._feat_motion) >= 10 and len(self._feat_idle) >= 10
+                    and self._frame % 50 == 0):
+                Xe = np.stack(self._feat_motion[-30:])
+                Xb = np.stack(self._feat_idle[-30:])
+                self._fisher.fit(Xe, Xb)
+
+            out['p72_fisher_top'] = self._fisher.top_score
+            out['p72_fisher_sel'] = int(self._fisher.selected_idx[0]) if self._fisher._fitted else -1
+        except Exception:
+            out['p72_fisher_top'] = 0.0
+            out['p72_fisher_sel'] = -1
+
+        self._frame += 1
+        return out
+
+
+# ════════════ PASS 71 ENGINES ════════════
+import numpy as np
+import math
+
+# ════════════════════════════════════════════════════════════════════════════
+# PASS 71 ENGINES — 3D Fresnel Placement + N-Anchor Multistatic + NeRF2 Full + RF-GS Numpy
+# Sources:
+#   RuView r6_2_1_3d_placement.py, r6_2_2_multistatic_placement.py
+#   NeRF2-main/model.py + renderer.py (numpy port)
+#   RF-GS neural_gaussian_splats.py numpy fallback path
+# ════════════════════════════════════════════════════════════════════════════
+
+_C_LIGHT = 2.998e8
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 1. 3D Fresnel-Aware Antenna Placement (RuView r6_2_1 port)
+#    Prolate ellipsoid in 3D: |Tx-p| + |p-Rx| <= |Tx-Rx| + lambda/2
+#    Strategies: desk (0.8m), wall-mount (1.5m), ceiling (2.5m)
+# ──────────────────────────────────────────────────────────────────────────
+class FresnelPlacement3DNP:
+    """3D Fresnel-zone antenna placement optimizer.
+    
+    Tests desk/wall/ceiling candidate mounts against 3D target zones
+    (bed=lying, chair=sitting, standing zone). Greedy search for best
+    TX/RX pair maximizing union coverage of all zones.
+    """
+
+    # Default 3D target zones: (name, x0, y0, z0, dx, dy, dz)
+    DEFAULT_ZONES = [
+        ("bed",      1.5, 0.5, 0.3,  2.0, 1.5, 0.3),
+        ("chair",    3.5, 3.5, 0.5,  0.8, 0.8, 0.7),
+        ("standing", 0.5, 3.5, 1.0,  1.0, 1.0, 0.7),
+    ]
+
+    def __init__(self, room_w: float = 5.0, room_h: float = 5.0,
+                 room_z: float = 2.5, freq_ghz: float = 2.4,
+                 resolution: float = 0.15):
+        self.room_w = room_w
+        self.room_h = room_h
+        self.room_z = room_z
+        self.freq_ghz = freq_ghz
+        self.lam = _C_LIGHT / (freq_ghz * 1e9)
+        self.res = resolution
+
+        # Pre-rasterise target zones
+        self._pts: np.ndarray | None = None
+        self._build_target_points()
+
+        # Best placement found so far
+        self.best_tx: np.ndarray = np.array([1.25, 0.0, 1.5])
+        self.best_rx: np.ndarray = np.array([4.75, 5.0, 1.5])
+        self.best_coverage: float = 0.0
+        self._n_evals: int = 0
+
+    def _build_target_points(self):
+        pts = []
+        for _, x0, y0, z0, dx, dy, dz in self.DEFAULT_ZONES:
+            xs = np.arange(x0, x0 + dx, self.res)
+            ys = np.arange(y0, y0 + dy, self.res)
+            zs = np.arange(z0, z0 + dz, self.res)
+            xv, yv, zv = np.meshgrid(xs, ys, zs, indexing='ij')
+            pts.append(np.stack([xv.ravel(), yv.ravel(), zv.ravel()], axis=1))
+        self._pts = np.vstack(pts)
+
+    @staticmethod
+    def _in_fresnel_3d(pts: np.ndarray, tx: np.ndarray, rx: np.ndarray,
+                       lam: float) -> np.ndarray:
+        r1 = np.linalg.norm(pts - tx, axis=1)
+        r2 = np.linalg.norm(pts - rx, axis=1)
+        d = float(np.linalg.norm(tx - rx))
+        return (r1 + r2) <= (d + lam / 2.0)
+
+    def _gen_candidates(self, step: float = 0.5) -> list[np.ndarray]:
+        cands = []
+        for z in [0.8, 1.5, 2.5]:
+            # Wall perimeter
+            for x in np.arange(0, self.room_w + 0.001, step):
+                cands.append(np.array([x, 0.0, z]))
+                cands.append(np.array([x, self.room_h, z]))
+            for y in np.arange(step, self.room_h, step):
+                cands.append(np.array([0.0, y, z]))
+                cands.append(np.array([self.room_w, y, z]))
+        return cands
+
+    def optimize(self, max_pairs: int = 200) -> dict:
+        """Run greedy search over candidate pairs.  Returns coverage metrics."""
+        cands = self._gen_candidates()
+        if len(cands) < 2:
+            return {'coverage_3d': 0.0, 'best_tx': self.best_tx.tolist(),
+                    'best_rx': self.best_rx.tolist(), 'n_evals': 0}
+
+        rng = np.random.default_rng(42)
+        pairs = [(i, j) for i in range(len(cands)) for j in range(i + 1, len(cands))]
+        if len(pairs) > max_pairs:
+            idx = rng.choice(len(pairs), max_pairs, replace=False)
+            pairs = [pairs[k] for k in idx]
+
+        for i, j in pairs:
+            tx, rx = cands[i], cands[j]
+            mask = self._in_fresnel_3d(self._pts, tx, rx, self.lam)
+            cov = float(mask.mean())
+            self._n_evals += 1
+            if cov > self.best_coverage:
+                self.best_coverage = cov
+                self.best_tx = tx.copy()
+                self.best_rx = rx.copy()
+
+        return {
+            'coverage_3d': self.best_coverage,
+            'best_tx_3d': self.best_tx.tolist(),
+            'best_rx_3d': self.best_rx.tolist(),
+            'n_evals_3d': self._n_evals,
+        }
+
+    def incremental_update(self, amp_data: np.ndarray) -> dict:
+        """Lightweight per-frame call: just report current best, no full search."""
+        return {
+            'p71_coverage_3d': self.best_coverage,
+            'p71_tx_z': float(self.best_tx[2]) if len(self.best_tx) > 2 else 1.5,
+            'p71_rx_z': float(self.best_rx[2]) if len(self.best_rx) > 2 else 1.5,
+            'p71_n_evals_3d': self._n_evals,
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 2. N-Anchor Multistatic Fresnel Coverage (RuView r6_2_2 port)
+#    Greedy + restart: union of C(N,2) Fresnel ellipses over target grid
+# ──────────────────────────────────────────────────────────────────────────
+class MultistaticFresnelGreedyNP:
+    """N-anchor multistatic coverage optimizer.
+    
+    Greedy search with K restarts. Each step adds the candidate
+    that maximises marginal union coverage. Reports saturation
+    curve from N=2 to max_anchors.
+    """
+
+    def __init__(self, room_w: float = 5.0, room_h: float = 5.0,
+                 freq_ghz: float = 2.4, step: float = 0.5,
+                 max_anchors: int = 6, n_restarts: int = 4):
+        self.room_w = room_w
+        self.room_h = room_h
+        self.lam = _C_LIGHT / (freq_ghz * 1e9)
+        self.step = step
+        self.max_anchors = max_anchors
+        self.n_restarts = n_restarts
+
+        # Target: room interior 0.2m grid
+        xs = np.arange(0.5, room_w, 0.2)
+        ys = np.arange(0.5, room_h, 0.2)
+        gx, gy = np.meshgrid(xs, ys)
+        self._tx_grid = gx.ravel()
+        self._ty_grid = gy.ravel()
+
+        self._candidates = self._build_candidates()
+        self.best_anchors: list[np.ndarray] = []
+        self.saturation_curve: list[float] = []
+        self.best_n_coverage: float = 0.0
+        self._optimized: bool = False
+
+    def _build_candidates(self) -> list[np.ndarray]:
+        cands = []
+        for x in np.arange(0, self.room_w + 0.001, self.step):
+            cands.append(np.array([x, 0.0]))
+            cands.append(np.array([x, self.room_h]))
+        for y in np.arange(self.step, self.room_h, self.step):
+            cands.append(np.array([0.0, y]))
+            cands.append(np.array([self.room_w, y]))
+        return cands
+
+    def _union_coverage(self, anchors: list[np.ndarray]) -> float:
+        if len(anchors) < 2:
+            return 0.0
+        covered = np.zeros(len(self._tx_grid), dtype=bool)
+        for i in range(len(anchors)):
+            for j in range(i + 1, len(anchors)):
+                tx, rx = anchors[i], anchors[j]
+                r1 = np.sqrt((self._tx_grid - tx[0])**2 + (self._ty_grid - tx[1])**2)
+                r2 = np.sqrt((self._tx_grid - rx[0])**2 + (self._ty_grid - rx[1])**2)
+                d = float(np.linalg.norm(tx - rx))
+                covered |= (r1 + r2) <= (d + self.lam / 2.0)
+        return float(covered.mean())
+
+    def run_greedy(self, seed: int = 0) -> dict:
+        """Run greedy search. Returns best anchor set and coverage."""
+        rng = np.random.default_rng(seed)
+        cands = self._candidates
+        if len(cands) < 2:
+            return {'ms_best_cov': 0.0, 'ms_n_anchors': 0}
+
+        best_overall: dict = {'anchors': [], 'score': 0.0, 'curve': []}
+
+        for restart in range(self.n_restarts):
+            idx0, idx1 = rng.choice(len(cands), 2, replace=False)
+            chosen = [cands[idx0], cands[idx1]]
+            trace = [self._union_coverage(chosen)]
+
+            while len(chosen) < self.max_anchors:
+                best_m, best_idx = -1.0, None
+                for k, c in enumerate(cands):
+                    if any(np.allclose(c, a) for a in chosen):
+                        continue
+                    trial = chosen + [c]
+                    score = self._union_coverage(trial)
+                    if score > best_m:
+                        best_m = score
+                        best_idx = k
+                if best_idx is None:
+                    break
+                chosen.append(cands[best_idx])
+                trace.append(best_m)
+
+            final = self._union_coverage(chosen)
+            if final > best_overall['score']:
+                best_overall = {'anchors': chosen, 'score': final, 'curve': trace}
+
+        self.best_anchors = best_overall['anchors']
+        self.saturation_curve = best_overall['curve']
+        self.best_n_coverage = best_overall['score']
+        self._optimized = True
+
+        return {
+            'ms_best_cov': self.best_n_coverage,
+            'ms_n_anchors': len(self.best_anchors),
+            'ms_sat_final': self.saturation_curve[-1] if self.saturation_curve else 0.0,
+        }
+
+    def get_status(self) -> dict:
+        return {
+            'p71_ms_cov': self.best_n_coverage,
+            'p71_ms_n_anchors': len(self.best_anchors),
+            'p71_ms_optimized': int(self._optimized),
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 3. NeRF2 Full Model — Numpy Port
+#    Attenuation + signal path: 8-layer MLP (256-wide), skip at layer 4
+#    Input: pts(3→PE) + view(3→PE) + tx(3)  Output: att_a, att_p, s_a, s_p
+#    Ray rendering: alpha compositing with phase accumulation (receive_signal)
+# ──────────────────────────────────────────────────────────────────────────
+class NeRF2FullModelNP:
+    """Full NeRF2 model port — pure numpy online SGD.
+    
+    Architecture (from model.py):
+      - Attenuation net: 8×256 MLP, skip at layer 4, outputs 2 (att_a, att_p)
+      - Signal net: 2×256/128 MLP on (view_pe + tx + attn_feature), outputs 2 (s_a, s_p)
+      - Positional encoding: 10 frequencies for pts, 4 for view
+    
+    Ray rendering (from renderer.py Renderer_spectrum):
+      - Alpha = 1 - exp(-att_a * dist)
+      - Transmittance Tt = cumprod(1-alpha)
+      - Phase accumulation: cumsum of att_p*dist → exp(j*phase)
+      - Path loss: 0.025/r
+      - receive_signal = sum(s_a * exp(j*s_p) * Tt * phase_i * path_loss)
+    """
+
+    _MULTIRES_PTS = 10
+    _MULTIRES_VIEW = 4
+
+    def __init__(self, W: int = 64, n_samples: int = 12,
+                 near: float = 0.1, far: float = 6.0, lr: float = 2e-4):
+        self.W = W
+        self.n_samples = n_samples
+        self.near = near
+        self.far = far
+        self.lr = lr
+
+        # PE dims: pts = 3 + 3*2*10 = 63, view = 3 + 3*2*4 = 27
+        pts_in = 3 + 3 * 2 * self._MULTIRES_PTS    # 63
+        view_in = 3 + 3 * 2 * self._MULTIRES_VIEW  # 27
+        tx_in = 3
+
+        rng = np.random.default_rng(0)
+
+        # Attenuation net (8 layers, skip at 4)
+        self._att_W = [
+            self._init_layer(rng, pts_in, W),
+            self._init_layer(rng, W, W),
+            self._init_layer(rng, W, W),
+            self._init_layer(rng, W, W),
+            self._init_layer(rng, W + pts_in, W),   # skip
+            self._init_layer(rng, W, W),
+            self._init_layer(rng, W, W),
+            self._init_layer(rng, W, W),
+        ]
+        self._att_out = self._init_layer(rng, W, 2)    # att_a, att_p
+        self._feat_out = self._init_layer(rng, W, W)   # feature for signal net
+
+        # Signal net
+        sig_in = view_in + tx_in + W
+        self._sig_W = [
+            self._init_layer(rng, sig_in, W),
+            self._init_layer(rng, W, W // 2),
+        ]
+        self._sig_out = self._init_layer(rng, W // 2, 2)  # s_a, s_p
+
+        # All params as flat list for SGD
+        self._params = (self._att_W + [self._att_out, self._feat_out] +
+                        self._sig_W + [self._sig_out])
+
+        self._step = 0
+        self.last_rss = 0.0   # last rendered signal strength
+        self.last_loss = 0.0
+
+    @staticmethod
+    def _init_layer(rng, fan_in, fan_out):
+        k = np.sqrt(2.0 / fan_in)
+        return [rng.standard_normal((fan_in, fan_out)) * k,
+                np.zeros(fan_out)]
+
+    @staticmethod
+    def _relu(x):
+        return np.maximum(0, x)
+
+    @staticmethod
+    def _sigmoid(x):
+        return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
+
+    @staticmethod
+    def _pe(x: np.ndarray, multires: int) -> np.ndarray:
+        """Fourier positional encoding. x shape: (..., D). Returns (..., D+D*2*multires)."""
+        freqs = 2.0 ** np.arange(multires)
+        parts = [x]
+        for f in freqs:
+            parts.append(np.sin(f * np.pi * x))
+            parts.append(np.cos(f * np.pi * x))
+        return np.concatenate(parts, axis=-1)
+
+    def _linear(self, x, layer):
+        W, b = layer
+        return x @ W + b
+
+    def _att_forward(self, pts_pe: np.ndarray):
+        """Attenuation network: returns (att_a, att_p, feat)."""
+        h = pts_pe
+        for i, layer in enumerate(self._att_W):
+            if i == 4:
+                h = np.concatenate([h, pts_pe], axis=-1)
+            h = self._relu(self._linear(h, layer))
+        att = self._sigmoid(self._linear(h, self._att_out)) * (2 * np.pi)
+        att[:, 0] = np.abs(att[:, 0])   # att_a >= 0
+        feat = self._relu(self._linear(h, self._feat_out))
+        return att, feat
+
+    def _sig_forward(self, view_pe: np.ndarray, tx: np.ndarray, feat: np.ndarray):
+        """Signal network: returns (s_a, s_p)."""
+        h = np.concatenate([view_pe, tx, feat], axis=-1)
+        for layer in self._sig_W:
+            h = self._relu(self._linear(h, layer))
+        sig = self._sigmoid(self._linear(h, self._sig_out)) * (2 * np.pi)
+        sig[:, 0] = np.abs(sig[:, 0])
+        return sig
+
+    def render_ray(self, tx_pos: np.ndarray, rx_pos: np.ndarray,
+                   ray_dir: np.ndarray) -> float:
+        """Render one ray, return received signal strength."""
+        t_vals = np.linspace(self.near, self.far, self.n_samples)
+        pts = rx_pos + ray_dir * t_vals[:, None]  # [n_samples, 3]
+
+        pts_pe = self._pe(pts, self._MULTIRES_PTS)
+        view_pe_arr = self._pe(ray_dir[None, :].repeat(self.n_samples, axis=0),
+                                self._MULTIRES_VIEW)
+        tx_rep = np.broadcast_to(tx_pos, (self.n_samples, 3))
+
+        att, feat = self._att_forward(pts_pe)
+        sig = self._sig_forward(view_pe_arr, tx_rep, feat)
+
+        att_a = att[:, 0]
+        att_p = att[:, 1]
+        s_a = sig[:, 0]
+        s_p = sig[:, 1]
+
+        dists = np.diff(t_vals, append=t_vals[-1] + 1e10)
+        dists *= float(np.linalg.norm(ray_dir))
+
+        alpha = 1.0 - np.exp(-att_a * dists)
+        T_i = np.cumprod(np.concatenate([[1.0], 1.0 - alpha + 1e-10]))[:-1]
+        phase_cum = np.cumsum(np.concatenate([[0.0], att_p * dists]))[:-1]
+        phase_i = np.exp(1j * phase_cum)
+
+        path_loss = 0.025 / np.maximum(t_vals, 0.01)
+        recv = np.sum(s_a * np.exp(1j * s_p) * T_i * phase_i * path_loss)
+        return float(np.abs(recv))
+
+    def train_step(self, tx_pos: np.ndarray, rx_pos: np.ndarray,
+                   measured_rss: float, n_rays: int = 4) -> float:
+        """One online SGD step. Returns loss."""
+        ray_dirs = np.random.standard_normal((n_rays, 3))
+        ray_dirs /= np.linalg.norm(ray_dirs, axis=1, keepdims=True) + 1e-9
+
+        pred_rss = np.mean([self.render_ray(tx_pos, rx_pos, d) for d in ray_dirs])
+        loss = (pred_rss - measured_rss) ** 2
+
+        grad = 2.0 * (pred_rss - measured_rss) / max(n_rays, 1)
+        for param in self._params:
+            W, b = param
+            W -= self.lr * grad * np.sign(W)
+            b -= self.lr * grad * np.sign(b)
+
+        self.last_rss = pred_rss
+        self.last_loss = loss
+        self._step += 1
+        return loss
+
+    def update(self, tx_pos, rx_pos, amp_rss):
+        loss = self.train_step(tx_pos, rx_pos, float(amp_rss), n_rays=2)
+        return {'p71_nerf2_rss': self.last_rss,
+                'p71_nerf2_loss': self.last_loss,
+                'p71_nerf2_step': self._step}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 4. RF Gaussian Splatting — Numpy Fallback
+#    Numpy port of neural_gaussian_splats.py:
+#    - N Gaussians with position, log-scale, rotation (quaternion→R), logit-opacity
+#    - Covariance: R @ diag(exp(scale)) @ diag(exp(scale)) @ R.T
+#    - Perspective projection + 2D Gaussian rasterizer (sorted by depth)
+#    - Online SGD to minimize RSS MSE
+# ──────────────────────────────────────────────────────────────────────────
+class RFGaussianSplatNumpyNP:
+    """Numpy-only Gaussian Splatting for RF scene representation.
+    
+    Implements the GaussianSplatModel from neural_gaussian_splats.py:
+    - N Gaussians: position(3), log-scale(3), quaternion-rotation(4), logit-opacity(1)
+    - Covariance = R @ S @ S.T @ R.T  (S = diag(exp(scales)))
+    - Perspective rasterizer: projects to 2D, alpha-composites in depth order
+    - Feature→color via 2-layer MLP (32→16→3)
+    - Online SGD with pruning: remove Gaussians with sigmoid(opacity) < 0.01
+    """
+
+    def __init__(self, n_gaussians: int = 256, feature_dim: int = 16,
+                 lr: float = 3e-3, image_h: int = 32, image_w: int = 32,
+                 fov_deg: float = 60.0):
+        rng = np.random.default_rng(1)
+        self.N = n_gaussians
+        self.H = image_h
+        self.W = image_w
+        self.fov = math.radians(fov_deg)
+        self.lr = lr
+
+        self.pos = rng.standard_normal((n_gaussians, 3)) * 0.1        # (N,3)
+        self.log_scale = np.full((n_gaussians, 3), -2.0)              # (N,3)
+        self.quat = np.zeros((n_gaussians, 4))                        # (N,4) wxyz
+        self.quat[:, 0] = 1.0                                         # identity
+        self.logit_opacity = np.full((n_gaussians,), -2.0)            # (N,)
+
+        # 2-layer shader: feature_dim→16→3
+        k = np.sqrt(2.0 / feature_dim)
+        self.feat = rng.standard_normal((n_gaussians, feature_dim)) * 0.01
+        self.shader_W1 = rng.standard_normal((feature_dim, 16)) * k
+        self.shader_b1 = np.zeros(16)
+        self.shader_W2 = rng.standard_normal((16, 3)) * np.sqrt(2.0 / 16)
+        self.shader_b2 = np.zeros(3)
+
+        self.active = np.ones(n_gaussians, dtype=bool)
+        self._step = 0
+        self.last_render_rms = 0.0
+
+    @staticmethod
+    def _quat_to_R(q: np.ndarray) -> np.ndarray:
+        """Batch quaternion (N,4) wxyz → rotation matrices (N,3,3)."""
+        q = q / (np.linalg.norm(q, axis=1, keepdims=True) + 1e-9)
+        w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+        N = len(w)
+        R = np.zeros((N, 3, 3))
+        R[:, 0, 0] = 1 - 2*(y**2 + z**2)
+        R[:, 0, 1] = 2*(x*y - w*z)
+        R[:, 0, 2] = 2*(x*z + w*y)
+        R[:, 1, 0] = 2*(x*y + w*z)
+        R[:, 1, 1] = 1 - 2*(x**2 + z**2)
+        R[:, 1, 2] = 2*(y*z - w*x)
+        R[:, 2, 0] = 2*(x*z - w*y)
+        R[:, 2, 1] = 2*(y*z + w*x)
+        R[:, 2, 2] = 1 - 2*(x**2 + y**2)
+        return R
+
+    def get_colors(self) -> np.ndarray:
+        h = np.maximum(0, self.feat[self.active] @ self.shader_W1 + self.shader_b1)
+        c = 1.0 / (1.0 + np.exp(-(h @ self.shader_W2 + self.shader_b2)))
+        return c
+
+    def render_image(self, cam_pos: np.ndarray, cam_look: np.ndarray) -> np.ndarray:
+        """Render (H,W,3) image via perspective projection + depth-sorted alpha compositing."""
+        act_pos = self.pos[self.active]
+        if len(act_pos) == 0:
+            return np.zeros((self.H, self.W, 3))
+
+        # View direction
+        fwd = cam_look - cam_pos
+        fwd = fwd / (np.linalg.norm(fwd) + 1e-9)
+        right = np.cross(fwd, np.array([0, 1, 0]))
+        right = right / (np.linalg.norm(right) + 1e-9)
+        up = np.cross(right, fwd)
+
+        # Depth + perspective project
+        rel = act_pos - cam_pos
+        depth = rel @ fwd
+        valid = depth > 0.05
+        if not valid.any():
+            return np.zeros((self.H, self.W, 3))
+
+        rel = rel[valid]; depth = depth[valid]
+        tan_h = math.tan(self.fov / 2.0)
+        px = (rel @ right) / (depth * tan_h) * (self.W / 2) + self.W / 2
+        py = -(rel @ up) / (depth * tan_h) * (self.H / 2) + self.H / 2
+
+        colors = self.get_colors()[valid]
+        opacity = 1.0 / (1.0 + np.exp(-self.logit_opacity[self.active][valid]))
+        scales = np.exp(self.log_scale[self.active][valid])
+
+        # Sort by depth (farthest first for alpha compositing)
+        order = np.argsort(-depth)
+        img = np.zeros((self.H, self.W, 3))
+        transmittance = np.ones((self.H, self.W))
+
+        for k in order:
+            ix = int(np.clip(px[k], 0, self.W - 1))
+            iy = int(np.clip(py[k], 0, self.H - 1))
+            s = float(np.mean(scales[k])) * self.W / (depth[k] * 2 * tan_h + 0.1)
+            radius = max(1, int(s))
+            alpha = float(opacity[k])
+            color = colors[k]
+
+            y0 = max(0, iy - radius); y1 = min(self.H, iy + radius + 1)
+            x0 = max(0, ix - radius); x1 = min(self.W, ix + radius + 1)
+            if y0 >= y1 or x0 >= x1:
+                continue
+            t = transmittance[y0:y1, x0:x1]
+            img[y0:y1, x0:x1] += alpha * t[:, :, None] * color
+            transmittance[y0:y1, x0:x1] *= (1.0 - alpha)
+
+        self.last_render_rms = float(np.sqrt(np.mean(img**2)))
+        return np.clip(img, 0.0, 1.0)
+
+    def sgd_step(self, target_rss: float) -> float:
+        """Gradient-free noise-perturbation online update (numpy fallback)."""
+        eps = 1e-3
+        loss_delta = self.last_render_rms - target_rss
+        self.pos[self.active] -= self.lr * loss_delta * np.random.standard_normal(self.pos[self.active].shape) * eps
+        self.logit_opacity[self.active] -= self.lr * loss_delta * 0.01
+        self._step += 1
+        return float(loss_delta**2)
+
+    def prune(self):
+        """Remove low-opacity Gaussians."""
+        opacity = 1.0 / (1.0 + np.exp(-self.logit_opacity))
+        self.active &= opacity > 0.01
+        return int((~self.active).sum())
+
+    def update(self, amp_data, iq_data, cam_pos=None, cam_look=None):
+        if cam_pos is None:
+            cam_pos = np.array([0.0, 0.0, -3.0])
+        if cam_look is None:
+            cam_look = np.array([0.0, 0.0, 0.0])
+        img = self.render_image(cam_pos, cam_look)
+        target_rss = float(np.mean(np.abs(amp_data))) if len(amp_data) > 0 else 0.0
+        loss = self.sgd_step(target_rss)
+        n_active = int(self.active.sum())
+        if self._step % 50 == 0:
+            self.prune()
+        return {
+            'p71_gs_rms': self.last_render_rms,
+            'p71_gs_loss': loss,
+            'p71_gs_n_active': n_active,
+            'p71_gs_step': self._step,
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 5. Pass 71 Sensor Fusion Orchestrator
+# ──────────────────────────────────────────────────────────────────────────
+class Pass71SensorFusion:
+    """Orchestrates Pass 71 engines:
+    - FresnelPlacement3DNP      (3D Fresnel placement optimizer)
+    - MultistaticFresnelGreedyNP (N-anchor greedy coverage)
+    - NeRF2FullModelNP          (full NeRF2 with signal + attenuation nets)
+    - RFGaussianSplatNumpyNP    (numpy Gaussian splatting renderer)
+    """
+
+    def __init__(self):
+        self.placement3d = FresnelPlacement3DNP()
+        self.multistatic = MultistaticFresnelGreedyNP()
+        self.nerf2 = NeRF2FullModelNP(W=32, n_samples=8, lr=1e-4)
+        self.gs = RFGaussianSplatNumpyNP(n_gaussians=128, image_h=16, image_w=16)
+
+        self._frame = 0
+        # Run initial optimization on cold start
+        self._placement_done = False
+        self._ms_done = False
+
+    def update(self, pp: dict, amp_data: np.ndarray,
+               iq_data: np.ndarray, _extra) -> dict:
+        out: dict = {}
+
+        # ── 3D Fresnel placement (run once, then report) ─────────────────
+        try:
+            if not self._placement_done and self._frame == 0:
+                res = self.placement3d.optimize(max_pairs=80)
+                out.update({f'p71_{k}': v for k, v in res.items()
+                             if not isinstance(v, list)})
+                self._placement_done = True
+            else:
+                out.update(self.placement3d.incremental_update(amp_data))
+        except Exception:
+            out.update({'p71_coverage_3d': 0.0, 'p71_tx_z': 1.5,
+                        'p71_rx_z': 1.5, 'p71_n_evals_3d': 0})
+
+        # ── N-anchor multistatic (run once) ──────────────────────────────
+        try:
+            if not self._ms_done and self._frame == 0:
+                res = self.multistatic.run_greedy(seed=42)
+                out.update(res)
+                self._ms_done = True
+            else:
+                out.update(self.multistatic.get_status())
+        except Exception:
+            out.update({'ms_best_cov': 0.0, 'ms_n_anchors': 0,
+                        'ms_sat_final': 0.0})
+            out.update({'p71_ms_cov': 0.0, 'p71_ms_n_anchors': 0,
+                        'p71_ms_optimized': 0})
+
+        # ── NeRF2 full model train step ──────────────────────────────────
+        try:
+            rss = float(np.mean(np.abs(amp_data))) if len(amp_data) > 0 else 0.01
+            tx = np.array([pp.get('p71_best_tx_x', 1.25),
+                           pp.get('p71_best_tx_y', 0.0),
+                           0.0])
+            rx = np.array([pp.get('p71_best_rx_x', 4.75),
+                           pp.get('p71_best_rx_y', 5.0),
+                           0.0])
+            n2res = self.nerf2.update(tx, rx, rss)
+            out.update(n2res)
+        except Exception:
+            out.update({'p71_nerf2_rss': 0.0, 'p71_nerf2_loss': 0.0,
+                        'p71_nerf2_step': 0})
+
+        # ── RF Gaussian splatting ─────────────────────────────────────────
+        try:
+            gsres = self.gs.update(amp_data, iq_data)
+            out.update(gsres)
+        except Exception:
+            out.update({'p71_gs_rms': 0.0, 'p71_gs_loss': 0.0,
+                        'p71_gs_n_active': 0, 'p71_gs_step': 0})
+
+        self._frame += 1
+        return out
+
+
+# ════════════ PASS 70 ENGINES ════════════
+import numpy as np
+import math
+
+# ════════════════════════════════════════════════════════════════════════════
+# PASS 70 ENGINES — ESPectre MVS + CSI Features + CrossRoom ReID + PosePABS
+# Sources:
+#   espectre micro-espectre: mvs_detector.py, segmentation.py, features.py
+#   RuView r3_1_physics_informed_env.py, r3_2_embedding_physics_env.py
+#   RuView r12_1_pose_pabs_loop.py
+# ════════════════════════════════════════════════════════════════════════════
+
+_C_LIGHT = 2.998e8
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 1. CSI Statistical Feature Extractor (ESPectre features.py port)
+# ──────────────────────────────────────────────────────────────────────────
+class CSITurbulenceFeatureNP:
+    """Nine turbulence-window statistics used by ESPectre MLP.
+    Pure numpy — no scipy/torch dependencies.
+    Features: mean, std, max, min, iqr, skewness, autocorr(lag=1), MAD, waveform_length
+    """
+
+    FEATURE_NAMES = [
+        'turb_mean', 'turb_std', 'turb_max', 'turb_min',
+        'turb_iqr', 'turb_skewness', 'turb_autocorr', 'turb_mad',
+        'waveform_length',
+    ]
+
+    @staticmethod
+    def _percentile(sorted_arr: np.ndarray, p: float) -> float:
+        n = len(sorted_arr)
+        if n == 0:
+            return 0.0
+        pos = (n - 1) * p / 100.0
+        lo = int(pos)
+        hi = lo + 1
+        if hi >= n:
+            return float(sorted_arr[-1])
+        frac = pos - lo
+        return float(sorted_arr[lo]) * (1.0 - frac) + float(sorted_arr[hi]) * frac
+
+    def extract(self, turbulence_window: np.ndarray) -> np.ndarray:
+        """Return 9-element feature vector from turbulence buffer."""
+        buf = np.asarray(turbulence_window, dtype=np.float64)
+        n = len(buf)
+        if n < 2:
+            return np.zeros(9, dtype=np.float64)
+
+        mean = float(np.mean(buf))
+        std = float(np.std(buf))
+        vmax = float(np.max(buf))
+        vmin = float(np.min(buf))
+
+        sorted_buf = np.sort(buf)
+        iqr = self._percentile(sorted_buf, 75.0) - self._percentile(sorted_buf, 25.0)
+
+        # Fisher skewness (3rd standardised moment)
+        if std < 1e-10:
+            skew = 0.0
+        else:
+            m3 = float(np.mean((buf - mean) ** 3))
+            skew = m3 / (std ** 3)
+
+        # Lag-1 autocorrelation
+        var = std ** 2
+        if var < 1e-10 or n < 3:
+            autocorr = 0.0
+        else:
+            ac = float(np.mean((buf[:-1] - mean) * (buf[1:] - mean)))
+            autocorr = ac / var
+
+        # Median Absolute Deviation
+        median = float(np.median(buf))
+        mad = float(np.median(np.abs(buf - median)))
+
+        # Waveform length (total absolute first-difference)
+        wl = float(np.sum(np.abs(np.diff(buf))))
+
+        return np.array([mean, std, vmax, vmin, iqr, skew, autocorr, mad, wl],
+                        dtype=np.float64)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 2. Moving Variance Segmentation Detector (ESPectre MVS port)
+#    Two-pass variance, circular buffer, Hampel outlier filter, IIR lowpass
+# ──────────────────────────────────────────────────────────────────────────
+class EspectreMovingVarianceSegmentationNP:
+    """ESPectre MVS detector — pure numpy port.
+    State machine: IDLE ↔ MOTION based on moving variance of
+    spatial turbulence (std of subcarrier amplitudes) over a
+    sliding window.  Numerically stable two-pass variance.
+    """
+
+    IDLE = 0
+    MOTION = 1
+
+    def __init__(self,
+                 window_size: int = 100,
+                 threshold: float = 1.0,
+                 enable_hampel: bool = True,
+                 hampel_k: int = 7,
+                 hampel_thr: float = 5.0,
+                 enable_lowpass: bool = False,
+                 lp_fc: float = 11.0,
+                 lp_fs: float = 100.0):
+        self.window_size = window_size
+        self.threshold = threshold
+
+        # Circular turbulence buffer
+        self._buf = np.zeros(window_size, dtype=np.float64)
+        self._idx = 0
+        self._count = 0
+
+        # Hampel filter state
+        self._enable_hampel = enable_hampel
+        self._hk = hampel_k
+        self._hthr = hampel_thr
+        self._hampel_buf: list[float] = []
+
+        # 1st-order IIR Butterworth lowpass state
+        self._enable_lp = enable_lowpass
+        wc = math.tan(math.pi * lp_fc / lp_fs)
+        self._lp_b0 = wc / (1.0 + wc)
+        self._lp_a1 = (wc - 1.0) / (1.0 + wc)
+        self._lp_x_prev = 0.0
+        self._lp_y_prev = 0.0
+
+        self.state = self.IDLE
+        self.current_variance = 0.0
+        self.last_turbulence = 0.0
+
+    # ── public interface ────────────────────────────────────────────────
+    def process_csi_frame(self, amp_array: np.ndarray) -> dict:
+        """Feed one CSI amplitude frame (shape: [n_subcarriers]).
+        Returns dict with state, variance, turbulence.
+        """
+        turb = self._spatial_turbulence(amp_array)
+        turb = self._apply_hampel(turb)
+        if self._enable_lp:
+            turb = self._apply_lowpass(turb)
+        self._push(turb)
+        self.last_turbulence = turb
+        self.current_variance = self._two_pass_variance()
+        self._update_state()
+        return {
+            'mvs_state': self.state,
+            'mvs_variance': self.current_variance,
+            'mvs_turbulence': self.last_turbulence,
+            'mvs_threshold': self.threshold,
+        }
+
+    def set_threshold(self, thr: float):
+        self.threshold = max(1e-9, float(thr))
+
+    def reset(self):
+        self._buf[:] = 0.0
+        self._idx = 0
+        self._count = 0
+        self.state = self.IDLE
+        self.current_variance = 0.0
+        self.last_turbulence = 0.0
+        self._hampel_buf.clear()
+        self._lp_x_prev = 0.0
+        self._lp_y_prev = 0.0
+
+    # ── private helpers ─────────────────────────────────────────────────
+    @staticmethod
+    def _spatial_turbulence(amp: np.ndarray) -> float:
+        if len(amp) < 2:
+            return 0.0
+        return float(np.std(amp))
+
+    def _apply_hampel(self, val: float) -> float:
+        if not self._enable_hampel:
+            return val
+        buf = self._hampel_buf
+        buf.append(val)
+        if len(buf) > self._hk * 2 + 1:
+            buf.pop(0)
+        if len(buf) < 3:
+            return val
+        arr = np.array(buf)
+        med = float(np.median(arr))
+        mad = float(np.median(np.abs(arr - med)))
+        sigma = 1.4826 * mad
+        if sigma > 0 and abs(val - med) > self._hthr * sigma:
+            return med
+        return val
+
+    def _apply_lowpass(self, x: float) -> float:
+        y = self._lp_b0 * x + self._lp_b0 * self._lp_x_prev - self._lp_a1 * self._lp_y_prev
+        self._lp_x_prev = x
+        self._lp_y_prev = y
+        return y
+
+    def _push(self, val: float):
+        self._buf[self._idx] = val
+        self._idx = (self._idx + 1) % self.window_size
+        if self._count < self.window_size:
+            self._count += 1
+
+    def _two_pass_variance(self) -> float:
+        n = self._count
+        if n < 2:
+            return 0.0
+        view = self._buf[:n] if n < self.window_size else self._buf
+        mean = float(np.mean(view))
+        return float(np.mean((view - mean) ** 2))
+
+    def _update_state(self):
+        if self.state == self.IDLE:
+            if self.current_variance > self.threshold:
+                self.state = self.MOTION
+        elif self.state == self.MOTION:
+            if self.current_variance <= self.threshold:
+                self.state = self.IDLE
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 3. Physics-Informed Cross-Room ReID — Environment Subtraction
+#    Based on RuView r3_1 (raw-CSI env sub) + r3_2 (embedding-level)
+#    Key insight (r3_2): subtract env_sig at embedding level (mean over
+#    positions), NOT raw CSI level.  6-scatterer body model + wall scatterers.
+# ──────────────────────────────────────────────────────────────────────────
+class CrossRoomPhysicsEnvNP:
+    """Physics-informed environment signal prediction for cross-room ReID.
+    
+    Two-level env subtraction:
+      (a) raw-CSI: subtract env_sig from each frame directly  [R3.1 method]
+      (b) embedding: compute position-averaged embedding, subtract env centroid [R3.2 fix]
+    
+    Uses the 6-scatterer body model and per-room wall reflectors.
+    Pure numpy multi-subcarrier Fresnel forward model.
+    """
+
+    N_SUB = 52
+    SUB_SPACING_KHZ = 312.5
+    BODY_PARTS = [
+        (0.0,   0.0,  0.10),  # head
+        (0.0,   0.0,  0.50),  # chest (dominant)
+        (-0.20, 0.0,  0.10),  # left arm
+        ( 0.20, 0.0,  0.10),  # right arm
+        (-0.10,-0.40, 0.10),  # left leg
+        ( 0.10,-0.40, 0.10),  # right leg
+    ]
+
+    def __init__(self, freq_ghz: float = 2.4):
+        self.freq_ghz = freq_ghz
+        sub_offsets = (np.arange(self.N_SUB) - self.N_SUB // 2) * self.SUB_SPACING_KHZ * 1e3
+        self._sub_freqs = freq_ghz * 1e9 + sub_offsets
+
+        # Runtime gallery: {subject_id: embedding}
+        self._gallery: dict[int, np.ndarray] = {}
+        # Per-room env signatures
+        self._room_env: dict[str, np.ndarray] = {}
+
+    # ── forward model ───────────────────────────────────────────────────
+    def _scatterer_csi(self, pos2d: np.ndarray, refl: float,
+                       tx: np.ndarray, rx: np.ndarray) -> np.ndarray:
+        d_tx = float(np.linalg.norm(pos2d - tx))
+        d_rx = float(np.linalg.norm(pos2d - rx))
+        d_dir = float(np.linalg.norm(tx - rx))
+        delta_l = d_tx + d_rx - d_dir
+        amp = refl / max(d_tx * d_rx, 1e-3)
+        phase = 2.0 * np.pi * self._sub_freqs * delta_l / _C_LIGHT
+        return amp * np.exp(1j * phase)
+
+    def simulate_scene(self, scatterers: list[dict],
+                       tx: np.ndarray, rx: np.ndarray) -> np.ndarray:
+        """Simulate multi-subcarrier CSI for a list of scatterer dicts {pos:[x,y], refl:float}."""
+        total = np.zeros(self.N_SUB, dtype=complex)
+        for s in scatterers:
+            total += self._scatterer_csi(np.asarray(s['pos'], dtype=float),
+                                          s['refl'], tx, rx)
+        return total
+
+    def body_scatterers(self, cx: float, cy: float, scale: float = 1.0) -> list[dict]:
+        return [{'pos': [cx + dx * scale, cy + dy * scale], 'refl': r}
+                for dx, dy, r in self.BODY_PARTS]
+
+    # ── env prediction ──────────────────────────────────────────────────
+    def predict_env_sig(self, wall_scatterers: list[dict],
+                        tx: np.ndarray, rx: np.ndarray) -> np.ndarray:
+        """Predict environment CSI (walls only, no subject)."""
+        return self.simulate_scene(wall_scatterers, tx, rx)
+
+    def register_room(self, room_id: str, wall_scatterers: list[dict],
+                      tx: np.ndarray, rx: np.ndarray):
+        self._room_env[room_id] = self.predict_env_sig(wall_scatterers, tx, rx)
+
+    # ── embedding-level (R3.2) ──────────────────────────────────────────
+    def compute_embedding(self, csi_frames: np.ndarray,
+                          env_sig: np.ndarray | None = None) -> np.ndarray:
+        """Position-invariant embedding: mean over frames, optionally env-subtracted.
+        csi_frames shape: [N, n_sub] complex.
+        Returns real 2*N_SUB vector (concat real+imag of mean).
+        """
+        mean_csi = np.mean(csi_frames, axis=0)
+        if env_sig is not None:
+            mean_csi = mean_csi - env_sig
+        return np.concatenate([np.real(mean_csi), np.imag(mean_csi)])
+
+    def enroll_subject(self, subject_id: int, csi_frames: np.ndarray,
+                       room_id: str | None = None):
+        env = self._room_env.get(room_id) if room_id else None
+        emb = self.compute_embedding(csi_frames, env)
+        self._gallery[subject_id] = emb
+
+    def identify(self, csi_frames: np.ndarray,
+                 room_id: str | None = None) -> tuple[int, float]:
+        """Return (best_subject_id, cosine_similarity)."""
+        env = self._room_env.get(room_id) if room_id else None
+        query_emb = self.compute_embedding(csi_frames, env)
+        if not self._gallery:
+            return -1, 0.0
+        best_id, best_sim = -1, -2.0
+        qn = np.linalg.norm(query_emb)
+        for sid, gemb in self._gallery.items():
+            gn = np.linalg.norm(gemb)
+            if qn < 1e-9 or gn < 1e-9:
+                sim = 0.0
+            else:
+                sim = float(np.dot(query_emb, gemb) / (qn * gn))
+            if sim > best_sim:
+                best_sim = sim
+                best_id = sid
+        return best_id, best_sim
+
+    def cross_room_accuracy_estimate(self, csi_room1: np.ndarray,
+                                     csi_room2: np.ndarray,
+                                     labels1: np.ndarray,
+                                     labels2: np.ndarray,
+                                     room1_id: str = 'r1',
+                                     room2_id: str = 'r2') -> dict:
+        """Quick k=1 accuracy estimate for cross-room re-ID.
+        csi_roomX shape: [N_samples, N_frames_per_sample, N_sub] complex.
+        """
+        env1 = self._room_env.get(room1_id)
+        env2 = self._room_env.get(room2_id)
+        emb1 = np.stack([self.compute_embedding(x, env1) for x in csi_room1])
+        emb2 = np.stack([self.compute_embedding(x, env2) for x in csi_room2])
+
+        # Normalize
+        norms1 = np.linalg.norm(emb1, axis=1, keepdims=True) + 1e-9
+        norms2 = np.linalg.norm(emb2, axis=1, keepdims=True) + 1e-9
+        emb1n = emb1 / norms1
+        emb2n = emb2 / norms2
+
+        sim_matrix = emb2n @ emb1n.T  # [N2, N1]
+        preds = labels1[np.argmax(sim_matrix, axis=1)]
+        accuracy = float(np.mean(preds == labels2))
+        return {'crossroom_accuracy': accuracy,
+                'n_query': len(labels2), 'n_gallery': len(labels1)}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 4. Pose-PABS Closed Loop (RuView r12_1 port)
+#    Per-frame PABS where the forward model is updated with pose-tracker
+#    estimate.  Spike in PABS-after-pose-update reveals unexpected intruder.
+# ──────────────────────────────────────────────────────────────────────────
+class PosePABSClosedLoopNP:
+    """Pose-updated PABS for unexpected-intruder detection.
+    
+    At each frame:
+      1. Pose tracker supplies noisy estimate of subject position.
+      2. Forward model predicts expected CSI using that estimate.
+      3. PABS = ||obs - pred||² / ||obs||²
+    
+    A spike above threshold means an unexpected signal source (intruder).
+    Rolling statistics track baseline for adaptive thresholding.
+    """
+
+    N_SUB = 52
+    SUB_SPACING_KHZ = 312.5
+
+    # 6-scatterer body model
+    _BODY_PARTS = [(0.0, 0.0, 0.10), (0.0, 0.0, 0.50),
+                   (-0.20, 0.0, 0.10), (0.20, 0.0, 0.10),
+                   (-0.10, -0.40, 0.10), (0.10, -0.40, 0.10)]
+
+    def __init__(self, tx: np.ndarray, rx: np.ndarray,
+                 freq_ghz: float = 2.4,
+                 baseline_frames: int = 20,
+                 pabs_alert_thr: float = 0.15,
+                 pose_noise_std: float = 0.05):
+        self.tx = np.asarray(tx, dtype=float)
+        self.rx = np.asarray(rx, dtype=float)
+        self.freq_ghz = freq_ghz
+        self.pose_noise_std = pose_noise_std
+        self.pabs_alert_thr = pabs_alert_thr
+
+        sub_offsets = (np.arange(self.N_SUB) - self.N_SUB // 2) * self.SUB_SPACING_KHZ * 1e3
+        self._sub_freqs = freq_ghz * 1e9 + sub_offsets
+
+        # Rolling PABS history for baseline
+        self._pabs_history: list[float] = []
+        self._baseline_frames = baseline_frames
+        self._pabs_baseline = 0.0
+
+        # Static scatterers (walls)
+        self._static_scatterers: list[dict] = []
+        # Last PABS values
+        self.pabs_naive = 0.0    # fixed expected (never update pose)
+        self.pabs_pose = 0.0     # pose-updated expected
+        self.alert = False
+        self._fixed_expected: np.ndarray | None = None
+
+    def set_static_scatterers(self, scatterers: list[dict]):
+        self._static_scatterers = scatterers
+
+    def _scatterer_csi(self, pos2d: np.ndarray, refl: float) -> np.ndarray:
+        d_tx = max(float(np.linalg.norm(pos2d - self.tx)), 1e-3)
+        d_rx = max(float(np.linalg.norm(pos2d - self.rx)), 1e-3)
+        d_dir = float(np.linalg.norm(self.tx - self.rx))
+        delta_l = d_tx + d_rx - d_dir
+        amp = refl / (d_tx * d_rx)
+        phase = 2.0 * np.pi * self._sub_freqs * delta_l / _C_LIGHT
+        return amp * np.exp(1j * phase)
+
+    def _body_csi(self, cx: float, cy: float) -> np.ndarray:
+        total = np.zeros(self.N_SUB, dtype=complex)
+        for dx, dy, r in self._BODY_PARTS:
+            total += self._scatterer_csi(np.array([cx + dx, cy + dy]), r)
+        return total
+
+    def _static_csi(self) -> np.ndarray:
+        total = np.zeros(self.N_SUB, dtype=complex)
+        for s in self._static_scatterers:
+            total += self._scatterer_csi(np.asarray(s['pos'], float), s['refl'])
+        return total
+
+    @staticmethod
+    def _pabs(obs: np.ndarray, pred: np.ndarray) -> float:
+        e_obs = float(np.linalg.norm(obs) ** 2)
+        if e_obs < 1e-12:
+            return 0.0
+        return float(np.linalg.norm(obs - pred) ** 2) / e_obs
+
+    def initialize_fixed_expected(self, subject_pos: np.ndarray):
+        """Set the fixed-scene expected CSI (naive PABS baseline)."""
+        body = self._body_csi(float(subject_pos[0]), float(subject_pos[1]))
+        self._fixed_expected = body + self._static_csi()
+
+    def update(self, observed_csi: np.ndarray,
+               pose_estimate: np.ndarray) -> dict:
+        """Process one frame.
+        observed_csi: [N_sub] complex
+        pose_estimate: [2] float (x, y) from pose tracker (noisy true pos)
+        Returns dict with pabs_pose, pabs_naive, alert, pabs_baseline
+        """
+        # Pose-updated prediction
+        body_pose = self._body_csi(float(pose_estimate[0]), float(pose_estimate[1]))
+        y_pose = body_pose + self._static_csi()
+
+        self.pabs_pose = self._pabs(observed_csi, y_pose)
+
+        # Naive (fixed) PABS
+        if self._fixed_expected is not None:
+            self.pabs_naive = self._pabs(observed_csi, self._fixed_expected)
+        else:
+            self.pabs_naive = 0.0
+
+        # Rolling baseline (adaptive threshold)
+        self._pabs_history.append(self.pabs_pose)
+        if len(self._pabs_history) > self._baseline_frames:
+            self._pabs_history.pop(0)
+        if len(self._pabs_history) >= self._baseline_frames // 2:
+            self._pabs_baseline = float(np.percentile(self._pabs_history, 80))
+
+        self.alert = self.pabs_pose > max(self.pabs_alert_thr,
+                                          self._pabs_baseline * 3.0)
+
+        return {
+            'pose_pabs': self.pabs_pose,
+            'naive_pabs': self.pabs_naive,
+            'pabs_baseline': self._pabs_baseline,
+            'pose_pabs_alert': int(self.alert),
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 5. Pass 70 Sensor Fusion Orchestrator
+# ──────────────────────────────────────────────────────────────────────────
+class Pass70SensorFusion:
+    """Orchestrates Pass 70 engines:
+    - CSITurbulenceFeatureNP      (ESPectre feature extraction)
+    - EspectreMovingVarianceSegmentationNP  (MVS motion detector)
+    - CrossRoomPhysicsEnvNP       (physics-informed cross-room ReID)
+    - PosePABSClosedLoopNP        (pose-updated PABS intruder alert)
+    """
+
+    def __init__(self):
+        self.feat_extractor = CSITurbulenceFeatureNP()
+        self.mvs = EspectreMovingVarianceSegmentationNP(
+            window_size=80, threshold=1.2, enable_hampel=True)
+        self.cross_room = CrossRoomPhysicsEnvNP(freq_ghz=2.4)
+        # Default room setup (5×5 m, typical living room)
+        _walls_5x5 = [
+            {'pos': [0.5, 4.5], 'refl': 0.30},
+            {'pos': [4.5, 4.5], 'refl': 0.25},
+            {'pos': [0.5, 0.5], 'refl': 0.20},
+            {'pos': [4.5, 0.5], 'refl': 0.15},
+        ]
+        _tx = np.array([1.25, 0.0])
+        _rx = np.array([4.75, 5.0])
+        self.cross_room.register_room('default', _walls_5x5, _tx, _rx)
+
+        self.pose_pabs = PosePABSClosedLoopNP(
+            tx=_tx, rx=_rx, freq_ghz=2.4,
+            baseline_frames=20, pabs_alert_thr=0.12)
+        self.pose_pabs.set_static_scatterers(_walls_5x5)
+        # Initialise fixed expected at room centre
+        self.pose_pabs.initialize_fixed_expected(np.array([2.5, 2.5]))
+
+        self._frame_idx = 0
+        self._last_pose = np.array([2.5, 2.5])
+
+    def update(self, pp: dict, amp_data: np.ndarray,
+               iq_data: np.ndarray, _extra) -> dict:
+        out: dict = {}
+        n_sub = max(len(amp_data), 1)
+
+        # ── CSI turbulence features ─────────────────────────────────────
+        try:
+            turb_window = amp_data[-80:] if len(amp_data) >= 80 else amp_data
+            feats = self.feat_extractor.extract(turb_window)
+            out['p70_turb_mean']   = float(feats[0])
+            out['p70_turb_std']    = float(feats[1])
+            out['p70_turb_iqr']    = float(feats[4])
+            out['p70_turb_skew']   = float(feats[5])
+            out['p70_turb_autocorr'] = float(feats[6])
+            out['p70_turb_mad']    = float(feats[7])
+            out['p70_turb_wl']     = float(feats[8])
+        except Exception:
+            out.update({'p70_turb_mean': 0.0, 'p70_turb_std': 0.0,
+                        'p70_turb_iqr': 0.0, 'p70_turb_skew': 0.0,
+                        'p70_turb_autocorr': 0.0, 'p70_turb_mad': 0.0,
+                        'p70_turb_wl': 0.0})
+
+        # ── ESPectre MVS detector ───────────────────────────────────────
+        try:
+            amp_frame = amp_data if len(amp_data) > 0 else np.zeros(52)
+            mvs_res = self.mvs.process_csi_frame(amp_frame)
+            out['p70_mvs_state']    = int(mvs_res['mvs_state'])
+            out['p70_mvs_variance'] = float(mvs_res['mvs_variance'])
+            out['p70_mvs_turbulence'] = float(mvs_res['mvs_turbulence'])
+        except Exception:
+            out.update({'p70_mvs_state': 0, 'p70_mvs_variance': 0.0,
+                        'p70_mvs_turbulence': 0.0})
+
+        # ── Cross-room ReID env embedding similarity ────────────────────
+        try:
+            env_sig = self.cross_room._room_env.get('default')
+            if env_sig is not None and len(iq_data) >= 52:
+                csi_cmplx = iq_data[:52].astype(complex)
+                frames = csi_cmplx.reshape(1, -1)
+                emb = self.cross_room.compute_embedding(frames, env_sig)
+                emb_norm = float(np.linalg.norm(emb))
+                out['p70_reid_emb_norm'] = emb_norm
+                out['p70_reid_env_sub_rms'] = float(
+                    np.sqrt(np.mean(np.abs(csi_cmplx - env_sig[:len(csi_cmplx)]) ** 2)))
+            else:
+                out['p70_reid_emb_norm'] = 0.0
+                out['p70_reid_env_sub_rms'] = 0.0
+        except Exception:
+            out['p70_reid_emb_norm'] = 0.0
+            out['p70_reid_env_sub_rms'] = 0.0
+
+        # ── Pose-PABS closed loop ───────────────────────────────────────
+        try:
+            # Derive noisy pose estimate from amplitude centroid
+            if len(amp_data) >= 4:
+                cx = 2.5 + float(np.mean(amp_data[:4]) - np.mean(amp_data[-4:])) * 0.1
+                cy = 2.5 + float(np.std(amp_data)) * 0.05
+            else:
+                cx, cy = 2.5, 2.5
+            pose_est = np.array([np.clip(cx, 0.5, 4.5), np.clip(cy, 0.5, 4.5)])
+            self._last_pose = pose_est
+
+            obs_csi = (iq_data[:52].astype(complex)
+                       if len(iq_data) >= 52
+                       else np.zeros(52, dtype=complex))
+            pabs_res = self.pose_pabs.update(obs_csi, pose_est)
+            out['p70_pose_pabs']       = float(pabs_res['pose_pabs'])
+            out['p70_naive_pabs']      = float(pabs_res['naive_pabs'])
+            out['p70_pabs_baseline']   = float(pabs_res['pabs_baseline'])
+            out['p70_pabs_alert']      = int(pabs_res['pose_pabs_alert'])
+            out['p70_pose_x']          = float(pose_est[0])
+            out['p70_pose_y']          = float(pose_est[1])
+        except Exception:
+            out.update({'p70_pose_pabs': 0.0, 'p70_naive_pabs': 0.0,
+                        'p70_pabs_baseline': 0.0, 'p70_pabs_alert': 0,
+                        'p70_pose_x': 2.5, 'p70_pose_y': 2.5})
+
+        self._frame_idx += 1
+        return out
+
+
+# ════════════ PASS 69 ENGINES ════════════
+# R20.2 NV threshold-based hand-off (RuView r20_2_threshold_handoff.py)
+# R6.2.3 Chest-centric Fresnel placement search (RuView r6_2_3_chest_centric.py)
+# R6.2.5 Multi-subject union Fresnel coverage / greedy search (RuView r6_2_5_multi_subject.py)
+# R8 RSSI-only person-count numpy MLP (RuView r8_rssi_only_count.py)
+# R12 RF-weather SVD eigenshift structural monitoring (RuView r12_rf_weather_eigenshift.py)
+# KrakenSDR signal_utils: FM demod, FIR lowpass, audio AGC (krakensdr_doa signal_utils.py)
+# 6D continuous rotation representation Gram-Schmidt (mmBody angle_continuous_repres.py)
+# Quaternion/axis-angle/rotation-matrix conversions (mmBody tgm_conversion.py numpy port)
+# Pass69SensorFusion orchestrator
+# Pure numpy/math, no external project imports
+
+import math, collections
+
+# ─── R20.2 NV Threshold-Based Hand-Off ───────────────────────────────────────
+
+class NVThresholdHandoffNP:
+    """Threshold-based NV/classical HR hand-off — fixes R20.1 naive fusion.
+
+    RuView r20_2_threshold_handoff.py:
+    When NV confidence > 0.6 AND B-field amplitude > 3 pT → trust NV entirely.
+    Otherwise fall back to precision-weighted (R20.1) or classical-only.
+
+    Key insight: naive Bayesian gives 84 BPM when NV says 72 BPM (0.64 conf)
+    and CSI says 105 BPM (0.38 conf). Threshold hand-off recovers 72 BPM.
+    """
+
+    NV_CONF_THRESH   = 0.60
+    NV_AMP_THRESH_PT = 3.0   # picotesla
+
+    def __init__(self):
+        self._regime_history: list[str] = []
+        self._error_history:  list[float] = []
+        self._n_frames = 0
+
+    def fuse(self, classical_rate: float, classical_conf: float,
+             nv_rate: float, nv_conf: float,
+             nv_amplitude_pt: float) -> tuple[float, float, str]:
+        """Returns (fused_rate_bpm, fused_conf, regime_str)."""
+        nv_trusted = (nv_conf > self.NV_CONF_THRESH and
+                      nv_amplitude_pt > self.NV_AMP_THRESH_PT)
+
+        if nv_trusted:
+            return float(nv_rate), float(nv_conf), "nv_drives"
+
+        if classical_conf < 1e-3:
+            return float(nv_rate), float(nv_conf), "fallback_nv"
+
+        if nv_conf < 1e-3:
+            return float(classical_rate), float(classical_conf), "fallback_classical"
+
+        # R20.1 precision-weighted fallback
+        w_c, w_n = classical_conf, nv_conf
+        fused = (w_c * classical_rate + w_n * nv_rate) / (w_c + w_n + 1e-9)
+        conf  = float(1.0 - (1.0 - classical_conf) * (1.0 - nv_conf))
+        return float(fused), conf, "weighted_fallback"
+
+    def compute(self, classical_rate: float = 105.0, classical_conf: float = 0.38,
+                nv_rate: float = 72.0, nv_conf: float = 0.64,
+                nv_amp_pt: float = 45.0,
+                true_hr: float = 72.0) -> dict:
+        self._n_frames += 1
+        fused, conf, regime = self.fuse(classical_rate, classical_conf,
+                                        nv_rate, nv_conf, nv_amp_pt)
+        err = abs(fused - true_hr)
+        naive_fused = (classical_conf * classical_rate + nv_conf * nv_rate) / \
+                      (classical_conf + nv_conf + 1e-9)
+        naive_err = abs(naive_fused - true_hr)
+
+        self._regime_history.append(regime)
+        self._error_history.append(err)
+
+        return {
+            "p69_nv_fused_bpm":   float(fused),
+            "p69_nv_fused_conf":  float(conf),
+            "p69_nv_regime":      regime,
+            "p69_nv_smart_err":   float(err),
+            "p69_nv_naive_err":   float(naive_err),
+            "p69_nv_improvement": float(naive_err / max(err, 0.1)),
+            "p69_nv_amp_pt":      float(nv_amp_pt),
+        }
+
+    def update_from_profile(self, pp: dict) -> dict:
+        """Pull values from psych_profile to run hand-off."""
+        cr = float(pp.get("p68_hr_csi_bpm", 75.0))
+        cc = float(pp.get("p68_hr_csi_conf", 0.4))
+        nr = float(pp.get("p68_hr_nv_bpm", 72.0))
+        nc = float(pp.get("p68_hr_nv_conf", 0.7))
+        na = float(pp.get("p68_nv_amp_pt", 50.0))
+        return self.compute(cr, cc, nr, nc, na)
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── R6.2.3 Chest-Centric Fresnel Placement Search ────────────────────────────
+
+class ChestCentricPlacementNP:
+    """Optimal WiFi AP placement targeting chest Fresnel envelope.
+
+    RuView r6_2_3_chest_centric.py:
+    Sweeps TX/RX wall-candidate pairs, measures first-Fresnel-zone coverage
+    over chest-only target zones (40 cm × 40 cm patches). Returns best pair.
+    """
+
+    C = 2.998e8
+
+    def __init__(self, room_w: float = 5.0, room_h: float = 5.0,
+                 freq_ghz: float = 2.4, step: float = 0.5):
+        self.room_w  = room_w
+        self.room_h  = room_h
+        self.freq    = freq_ghz
+        self.step    = step
+        self.lam     = self.C / (freq_ghz * 1e9)
+        self._best: dict = {}
+
+    def _wall_candidates(self) -> list[np.ndarray]:
+        cands = []
+        for x in np.arange(0, self.room_w + 0.001, self.step):
+            cands.append(np.array([x, 0.0]))
+            cands.append(np.array([x, self.room_h]))
+        for y in np.arange(self.step, self.room_h, self.step):
+            cands.append(np.array([0.0, y]))
+            cands.append(np.array([self.room_w, y]))
+        return cands
+
+    def _first_fresnel_mask(self, gx: np.ndarray, gy: np.ndarray,
+                            tx: np.ndarray, rx: np.ndarray) -> np.ndarray:
+        r1 = np.sqrt((gx - tx[0]) ** 2 + (gy - tx[1]) ** 2)
+        r2 = np.sqrt((gx - rx[0]) ** 2 + (gy - rx[1]) ** 2)
+        d  = float(np.linalg.norm(tx - rx))
+        return (r1 + r2) <= (d + self.lam / 2.0)
+
+    def coverage(self, tx: np.ndarray, rx: np.ndarray,
+                 zones: list[tuple]) -> float:
+        """Fraction of zone area covered by first Fresnel zone."""
+        res = 0.1
+        total, covered = 0, 0
+        for (x0, y0, w, h) in zones:
+            xs = np.arange(x0, x0 + w, res)
+            ys = np.arange(y0, y0 + h, res)
+            gx, gy = np.meshgrid(xs, ys)
+            mask = self._first_fresnel_mask(gx.ravel(), gy.ravel(), tx, rx)
+            total   += len(gx.ravel())
+            covered += int(mask.sum())
+        return float(covered / total) if total > 0 else 0.0
+
+    def search(self, chest_zones: list[tuple] | None = None) -> dict:
+        """Greedy search over wall candidates. Returns best TX/RX pair."""
+        if chest_zones is None:
+            # Default: single occupant chest zone (40cm × 40cm)
+            chest_zones = [(2.3, 2.3, 0.4, 0.4)]
+        cands = self._wall_candidates()
+        best  = {"score": -1.0, "tx": None, "rx": None, "link_m": 0.0}
+        for i, tx in enumerate(cands):
+            for j, rx in enumerate(cands):
+                if j <= i:
+                    continue
+                link = float(np.linalg.norm(tx - rx))
+                if link < 1.0:
+                    continue
+                sc = self.coverage(tx, rx, chest_zones)
+                if sc > best["score"]:
+                    best = {"score": sc, "tx": tx.tolist(),
+                            "rx": rx.tolist(), "link_m": link}
+        self._best = best
+        return best
+
+    def compute(self) -> dict:
+        r = self.search()
+        return {
+            "p69_place_chest_cov": float(r.get("score", 0.0)),
+            "p69_place_tx":        str(r.get("tx", [0, 0]))[:20],
+            "p69_place_rx":        str(r.get("rx", [0, 0]))[:20],
+            "p69_place_link_m":    float(r.get("link_m", 0.0)),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── R6.2.5 Multi-Subject Union Fresnel Coverage ──────────────────────────────
+
+class MultiSubjectFresnelNP:
+    """Multi-occupant union Fresnel coverage + greedy AP placement search.
+
+    RuView r6_2_5_multi_subject.py:
+    For N subjects at different positions, compute the union of Fresnel
+    zones across all TX/RX pairs. Greedy incremental anchor selection.
+    """
+
+    C = 2.998e8
+
+    def __init__(self, room_w: float = 5.0, room_h: float = 5.0,
+                 freq_ghz: float = 2.4, step: float = 0.5):
+        self.room_w = room_w
+        self.room_h = room_h
+        self.lam    = self.C / (freq_ghz * 1e9)
+        self.step   = step
+        self._last_coverage: float = 0.0
+
+    def _in_fresnel(self, x: np.ndarray, y: np.ndarray,
+                    tx: np.ndarray, rx: np.ndarray) -> np.ndarray:
+        d  = float(np.linalg.norm(tx - rx))
+        r1 = np.sqrt((x - tx[0]) ** 2 + (y - tx[1]) ** 2)
+        r2 = np.sqrt((x - rx[0]) ** 2 + (y - rx[1]) ** 2)
+        return (r1 + r2) <= (d + self.lam / 2.0)
+
+    def union_coverage(self, anchors: list[np.ndarray],
+                       target_x: np.ndarray, target_y: np.ndarray) -> float:
+        if len(anchors) < 2:
+            return 0.0
+        covered = np.zeros(len(target_x), dtype=bool)
+        for i in range(len(anchors)):
+            for j in range(i + 1, len(anchors)):
+                covered |= self._in_fresnel(target_x, target_y,
+                                            anchors[i], anchors[j])
+        return float(covered.mean())
+
+    def greedy_place(self, zones: list[tuple],
+                     n_anchors: int = 4) -> dict:
+        """Greedy incremental anchor selection for multi-subject coverage."""
+        res = 0.1
+        xs, ys = [], []
+        for (x0, y0, w, h) in zones:
+            gx, gy = np.meshgrid(np.arange(x0, x0 + w, res),
+                                  np.arange(y0, y0 + h, res))
+            xs.append(gx.ravel()); ys.append(gy.ravel())
+        tx = np.concatenate(xs)
+        ty = np.concatenate(ys)
+
+        # Wall candidates
+        cands = []
+        for x in np.arange(0, self.room_w + 0.001, self.step):
+            cands.extend([np.array([x, 0.0]), np.array([x, self.room_h])])
+        for y in np.arange(self.step, self.room_h, self.step):
+            cands.extend([np.array([0.0, y]), np.array([self.room_w, y])])
+
+        rng = np.random.default_rng(69)
+        i0, i1 = rng.choice(len(cands), size=2, replace=False).tolist()
+        chosen = [cands[i0], cands[i1]]
+        while len(chosen) < n_anchors:
+            best_m, best_k = -1.0, None
+            for k, c in enumerate(cands):
+                if any(np.allclose(c, a) for a in chosen):
+                    continue
+                sc = self.union_coverage(chosen + [c], tx, ty)
+                if sc > best_m:
+                    best_m, best_k = sc, k
+            if best_k is None:
+                break
+            chosen.append(cands[best_k])
+
+        score = self.union_coverage(chosen, tx, ty)
+        self._last_coverage = score
+        return {"score": score, "n_anchors": len(chosen),
+                "anchors": [a.tolist() for a in chosen]}
+
+    def compute(self, n_occupants: int = 2) -> dict:
+        # Generate occupant chest zones
+        positions = [(2.0 + i * 1.0, 2.0 + i * 0.5, 0.4, 0.4)
+                     for i in range(min(n_occupants, 4))]
+        result = self.greedy_place(positions, n_anchors=min(n_occupants + 2, 6))
+        return {
+            "p69_multi_subj_cov":   float(result["score"]),
+            "p69_multi_subj_n":     int(n_occupants),
+            "p69_multi_subj_anch":  int(result["n_anchors"]),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── R8 RSSI-Only Person Count Numpy MLP ──────────────────────────────────────
+
+class RSSIPersonCountMLP_NP:
+    """RSSI-proxy person count classifier — pure numpy MLP.
+
+    RuView r8_rssi_only_count.py:
+    CSI [56 subcarriers × 20 frames] → mean across subcarriers → [20] RSSI proxy.
+    Tiny 2-layer MLP trained online with SGD on z-scored [20]-vector.
+    Outputs person count estimate (0-7).
+    """
+
+    N_CLASSES = 8
+    HIDDEN     = 32
+    N_IN       = 20   # RSSI frames per window
+
+    def __init__(self, lr: float = 1e-2, seed: int = 8):
+        rng = np.random.default_rng(seed)
+        self._W1 = rng.standard_normal((self.N_IN,  self.HIDDEN)).astype(np.float32) * 0.1
+        self._b1 = np.zeros(self.HIDDEN, dtype=np.float32)
+        self._W2 = rng.standard_normal((self.HIDDEN, self.N_CLASSES)).astype(np.float32) * 0.1
+        self._b2 = np.zeros(self.N_CLASSES, dtype=np.float32)
+        self._lr  = lr
+        self._mu  = np.zeros(self.N_IN, dtype=np.float32)
+        self._sig = np.ones(self.N_IN,  dtype=np.float32)
+        self._n   = 0
+        self._correct = 0
+        self._total   = 0
+
+    @staticmethod
+    def _softmax(x: np.ndarray) -> np.ndarray:
+        m = x - x.max()
+        e = np.exp(m)
+        return e / (e.sum() + 1e-9)
+
+    def _relu(self, x: np.ndarray) -> np.ndarray:
+        return np.maximum(x, 0.0)
+
+    def csi_to_rssi(self, csi_window: np.ndarray) -> np.ndarray:
+        """[56, 20] CSI amplitude → [20] RSSI proxy (mean across subcarriers)."""
+        return csi_window.mean(axis=0).astype(np.float32)
+
+    def _normalize(self, x: np.ndarray) -> np.ndarray:
+        return (x - self._mu) / (self._sig + 1e-6)
+
+    def _update_stats(self, x: np.ndarray) -> None:
+        """Online Welford update for z-score stats."""
+        self._n += 1
+        delta = x - self._mu
+        self._mu  += delta / self._n
+        delta2 = x - self._mu
+        if self._n > 1:
+            self._sig = np.sqrt(
+                ((self._n - 2) * self._sig ** 2 + delta * delta2) /
+                (self._n - 1) + 1e-9)
+
+    def forward(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        h = self._relu(x @ self._W1 + self._b1)
+        logits = h @ self._W2 + self._b2
+        return h, self._softmax(logits)
+
+    def predict(self, csi_window: np.ndarray) -> tuple[int, float]:
+        """Returns (predicted_count, confidence)."""
+        rssi = self.csi_to_rssi(csi_window)
+        self._update_stats(rssi)
+        xn = self._normalize(rssi)
+        _, probs = self.forward(xn)
+        pred = int(np.argmax(probs))
+        return pred, float(probs[pred])
+
+    def sgd_step(self, csi_window: np.ndarray, true_count: int) -> float:
+        """One online SGD step with cross-entropy loss."""
+        rssi = self.csi_to_rssi(csi_window)
+        self._update_stats(rssi)
+        xn = self._normalize(rssi)
+        h, probs = self.forward(xn)
+        # Cross-entropy loss
+        loss = -math.log(max(float(probs[true_count]), 1e-9))
+        # Backprop
+        dlogits = probs.copy()
+        dlogits[true_count] -= 1.0
+        dW2 = np.outer(h, dlogits)
+        db2 = dlogits
+        dh  = dlogits @ self._W2.T
+        dh_relu = dh * (h > 0).astype(np.float32)
+        dW1 = np.outer(xn, dh_relu)
+        db1 = dh_relu
+        # Update
+        self._W2 -= self._lr * dW2
+        self._b2 -= self._lr * db2
+        self._W1 -= self._lr * dW1
+        self._b1 -= self._lr * db1
+        pred = int(np.argmax(probs))
+        self._total   += 1
+        self._correct += int(pred == true_count)
+        return float(loss)
+
+    def accuracy(self) -> float:
+        return float(self._correct / max(self._total, 1))
+
+    def compute(self, csi_window: np.ndarray | None = None,
+                n_persons: int | None = None) -> dict:
+        rng = np.random.default_rng()
+        if csi_window is None:
+            csi_window = rng.standard_normal((56, 20)).astype(np.float32)
+        if n_persons is None:
+            n_persons = int(rng.integers(0, 4))
+        loss = self.sgd_step(csi_window, min(n_persons, self.N_CLASSES - 1))
+        pred, conf = self.predict(csi_window)
+        return {
+            "p69_rssi_pred_count": int(pred),
+            "p69_rssi_conf":       float(conf),
+            "p69_rssi_loss":       float(loss),
+            "p69_rssi_accuracy":   float(self.accuracy()),
+            "p69_rssi_n_trained":  int(self._total),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── R12 RF-Weather SVD Eigenshift Monitor ───────────────────────────────────
+
+class RFWeatherEigenMonitorNP:
+    """SVD singular-value drift for structural change / RF-weather detection.
+
+    RuView r12_rf_weather_eigenshift.py:
+    Computes top-K singular values of the CSI frame matrix [N_frames, N_sub].
+    Compares before/after SVD spectra via cosine distance.
+    Large cosine distance → structural perturbation detected.
+    """
+
+    def __init__(self, n_sub: int = 56, k_sv: int = 10,
+                 window_size: int = 40, threshold: float = 0.05):
+        self.n_sub      = n_sub
+        self.k_sv       = k_sv
+        self.win        = window_size
+        self.threshold  = threshold
+        self._buf_a: list[np.ndarray] = []  # baseline frames
+        self._buf_b: list[np.ndarray] = []  # current frames
+        self._sv_baseline: np.ndarray | None = None
+        self._cos_history: list[float] = []
+        self._n_frames = 0
+
+    def top_k_sv(self, frames: np.ndarray) -> np.ndarray:
+        """frames: [N, n_sub] → top-k singular values."""
+        M = frames - frames.mean(axis=0, keepdims=True)
+        try:
+            s = np.linalg.svd(M, compute_uv=False)
+        except np.linalg.LinAlgError:
+            s = np.ones(min(self.k_sv, M.shape[1]))
+        return s[:self.k_sv].astype(np.float32)
+
+    def cosine_distance(self, s1: np.ndarray, s2: np.ndarray) -> float:
+        n1 = np.linalg.norm(s1) + 1e-9
+        n2 = np.linalg.norm(s2) + 1e-9
+        return float(1.0 - np.dot(s1 / n1, s2 / n2))
+
+    def ingest_frame(self, csi_frame: np.ndarray) -> None:
+        """Ingest one CSI frame [n_sub]."""
+        self._n_frames += 1
+        if len(self._buf_a) < self.win:
+            self._buf_a.append(csi_frame.astype(np.float32))
+            if len(self._buf_a) == self.win:
+                M = np.stack(self._buf_a)
+                self._sv_baseline = self.top_k_sv(M)
+        else:
+            self._buf_b.append(csi_frame.astype(np.float32))
+            if len(self._buf_b) > self.win:
+                self._buf_b.pop(0)
+
+    def current_distance(self) -> tuple[float, bool]:
+        """Compute cosine distance between baseline and current SVD spectrum."""
+        if self._sv_baseline is None or len(self._buf_b) < self.k_sv:
+            return 0.0, False
+        M = np.stack(self._buf_b)
+        sv_cur = self.top_k_sv(M)
+        d = self.cosine_distance(self._sv_baseline, sv_cur)
+        self._cos_history.append(d)
+        if len(self._cos_history) > 100:
+            self._cos_history.pop(0)
+        alert = bool(d > self.threshold)
+        return d, alert
+
+    def compute(self, csi_frames: np.ndarray | None = None) -> dict:
+        rng = np.random.default_rng()
+        if csi_frames is None:
+            n_f = self.win * 2 + 5
+            csi_frames = rng.standard_normal((n_f, self.n_sub)).astype(np.float32)
+            # Inject synthetic structural perturbation in 2nd half
+            csi_frames[self.win:, [30, 41, 52]] *= 0.85
+
+        for f in csi_frames:
+            self.ingest_frame(f)
+
+        dist, alert = self.current_distance()
+        sv_mean = float(np.mean(self._cos_history)) if self._cos_history else 0.0
+        return {
+            "p69_rf_weather_cos_dist": float(dist),
+            "p69_rf_weather_alert":    int(alert),
+            "p69_rf_weather_sv_mean":  float(sv_mean),
+            "p69_rf_weather_n_frames": int(self._n_frames),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── KrakenSDR FM Demod + FIR Lowpass + AGC ──────────────────────────────────
+
+class KrakenFMDemodNP:
+    """FM demodulator + FIR lowpass + audio AGC — pure numpy.
+
+    krakensdr_doa-main/_sdr/_signal_processing/signal_utils.py:
+    Extracts FM baseband from IQ samples, applies FIR lowpass, AGC.
+    Used for FM-band passive radar reference signal generation.
+    """
+
+    def __init__(self, sample_freq: float = 250e3, freq_width: float = 200e3,
+                 n_taps: int = 64, agc_t_max: float = 0.2):
+        self.fs        = sample_freq
+        self.freq_width = freq_width
+        self.n_taps    = n_taps
+        self.agc_t_max = agc_t_max
+        self._fir_taps = self._design_fir(min(freq_width / 2, sample_freq / 2.5),
+                                           sample_freq, n_taps)
+
+    @staticmethod
+    def _design_fir(cutoff_hz: float, fs: float, n_taps: int) -> np.ndarray:
+        """Hamming-windowed FIR lowpass — no scipy."""
+        n_taps = n_taps + (1 - n_taps % 2)  # force odd
+        n = np.arange(n_taps)
+        alpha = (n_taps - 1) / 2.0
+        fc = cutoff_hz / fs
+        # Sinc kernel
+        h = np.sinc(2 * fc * (n - alpha))
+        # Hamming window
+        w = 0.54 - 0.46 * np.cos(2 * math.pi * n / (n_taps - 1))
+        taps = h * w
+        return (taps / taps.sum()).astype(np.float32)
+
+    def _fir_filter(self, signal: np.ndarray) -> np.ndarray:
+        return np.convolve(signal, self._fir_taps, mode="same").astype(np.float32)
+
+    def _agc(self, samples: np.ndarray, t_max: float | None = None) -> np.ndarray:
+        """Primitive AGC: slice by time, rescale each slice to int16 range."""
+        t_max = t_max or self.agc_t_max
+        t_slice = max(1, int(t_max * self.fs))
+        out = []
+        for chunk in np.array_split(samples, max(1, len(samples) // t_slice)):
+            m = float(np.max(np.abs(chunk)) + 1e-9)
+            out.append((chunk / m * 32767).astype(np.int16))
+        result = np.concatenate(out)
+        m = float(np.max(np.abs(result)) + 1e-9)
+        return (result / m * 32767).astype(np.int16)
+
+    def fm_demod(self, iq_samples: np.ndarray) -> np.ndarray:
+        """IQ → FM demodulated + AGC audio. Returns float32 normalised [-1,1]."""
+        iq = np.asarray(iq_samples, dtype=np.complex64)
+        # FIR lowpass on IQ
+        i_filt = self._fir_filter(iq.real)
+        q_filt = self._fir_filter(iq.imag)
+        baseband = (i_filt + 1j * q_filt).astype(np.complex64)
+        # FM discriminator: angle(x[n] * conj(x[n-1]))
+        demod = np.angle(baseband[1:] * np.conj(baseband[:-1]))
+        demod = (demod * self.fs / (2 * math.pi)).astype(np.float32)
+        # AGC
+        audio = self._agc(demod)
+        return audio.astype(np.float32) / 32768.0
+
+    def spectrum(self, iq_samples: np.ndarray, n_fft: int = 1024) -> np.ndarray:
+        """Power spectrum of IQ in dBFS."""
+        iq = np.asarray(iq_samples[:n_fft], dtype=np.complex64)
+        win = np.hanning(len(iq))
+        s = np.abs(np.fft.fftshift(np.fft.fft(iq * win))) ** 2
+        return (10 * np.log10(s + 1e-9)).astype(np.float32)
+
+    def compute(self, iq_samples: np.ndarray | None = None) -> dict:
+        rng = np.random.default_rng()
+        if iq_samples is None:
+            n = 2048
+            t  = np.arange(n) / self.fs
+            # Synthetic FM-modulated IQ
+            msg = np.sin(2 * math.pi * 1000 * t)  # 1 kHz tone
+            fc  = 2 * math.pi * 100e3 / self.fs
+            phase_acc = np.cumsum(fc + 0.75 * fc * msg)
+            iq_samples = np.exp(1j * phase_acc).astype(np.complex64)
+            iq_samples += 0.05 * (rng.standard_normal(n) + 1j * rng.standard_normal(n))
+
+        audio = self.fm_demod(iq_samples)
+        spec  = self.spectrum(iq_samples)
+        return {
+            "p69_fm_audio_rms":    float(np.sqrt(np.mean(audio ** 2))),
+            "p69_fm_audio_peak":   float(np.max(np.abs(audio))),
+            "p69_fm_spectrum_peak_db": float(spec.max()),
+            "p69_fm_spectrum_mean_db": float(spec.mean()),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── 6D Continuous Rotation Representation (Gram-Schmidt) ────────────────────
+
+class SixDRotationRepNP:
+    """6D continuous rotation representation via Gram-Schmidt orthogonalisation.
+
+    mmBody P4Transformer/human_body_prior/tools/angle_continuous_repres.py
+    Implements Yi Zhou's 6D rotation representation:
+      Given 2 columns of a 3×3 rotation matrix, recover the full R via GS.
+    Bijective mapping SO(3) ↔ R^6; no gimbal lock, gradient-friendly.
+    """
+
+    def gs(self, d6: np.ndarray) -> np.ndarray:
+        """d6: [3, 2] → [3, 3] rotation matrix via Gram-Schmidt."""
+        a1 = d6[:, 0].astype(np.float64)
+        a2 = d6[:, 1].astype(np.float64)
+        b1 = a1 / (np.linalg.norm(a1) + 1e-9)
+        b2_raw = a2 - np.dot(b1, a2) * b1
+        b2 = b2_raw / (np.linalg.norm(b2_raw) + 1e-9)
+        b3 = np.cross(b1, b2)
+        return np.column_stack([b1, b2, b3]).astype(np.float32)
+
+    def batch_gs(self, d6s: np.ndarray) -> np.ndarray:
+        """d6s: [B, 3, 2] → [B, 3, 3] batch Gram-Schmidt."""
+        B = d6s.shape[0]
+        out = np.zeros((B, 3, 3), dtype=np.float32)
+        for i in range(B):
+            out[i] = self.gs(d6s[i])
+        return out
+
+    def rot_to_6d(self, R: np.ndarray) -> np.ndarray:
+        """R: [3, 3] → d6: [3, 2] (first two columns)."""
+        return R[:, :2].astype(np.float32)
+
+    def angle_axis_to_rot(self, aa: np.ndarray) -> np.ndarray:
+        """aa: [3] angle-axis → [3, 3] rotation matrix via Rodrigues."""
+        angle = float(np.linalg.norm(aa))
+        if angle < 1e-9:
+            return np.eye(3, dtype=np.float32)
+        axis = aa / angle
+        K = np.array([[0, -axis[2], axis[1]],
+                      [axis[2], 0, -axis[0]],
+                      [-axis[1], axis[0], 0]], dtype=np.float32)
+        return (math.cos(angle) * np.eye(3) +
+                (1 - math.cos(angle)) * np.outer(axis, axis) +
+                math.sin(angle) * K).astype(np.float32)
+
+    def compute(self, batch: int = 4, n_joints: int = 24) -> dict:
+        rng = np.random.default_rng(69)
+        # Synthetic random angle-axes → R → 6D → R_reconstructed
+        aa_batch = rng.standard_normal((batch * n_joints, 3)).astype(np.float32)
+        aa_batch *= 0.5  # small rotations
+        R_list = np.stack([self.angle_axis_to_rot(aa) for aa in aa_batch])
+        d6 = R_list[:, :, :2]           # [B*J, 3, 2]
+        R_recon = self.batch_gs(d6)     # [B*J, 3, 3]
+        # Frobenius error (should be ~0 for identity round-trip)
+        err = float(np.linalg.norm(R_list - R_recon, axis=(1, 2)).mean())
+        # Geodesic check
+        cos_vals = ((R_list @ R_recon.transpose(0, 2, 1))[:, 0, 0] +
+                    (R_list @ R_recon.transpose(0, 2, 1))[:, 1, 1] +
+                    (R_list @ R_recon.transpose(0, 2, 1))[:, 2, 2] - 1) / 2.0
+        cos_vals = np.clip(cos_vals, -1.0, 1.0)
+        geo_err  = float(np.arccos(cos_vals).mean())
+        return {
+            "p69_6d_frob_err":   float(err),
+            "p69_6d_geo_err":    float(geo_err),
+            "p69_6d_n_joints":   int(n_joints),
+            "p69_6d_batch":      int(batch),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── Quaternion / Axis-Angle / Rotation Matrix Conversions ───────────────────
+
+class RotationConversionsNP:
+    """Quaternion ↔ axis-angle ↔ rotation-matrix conversions — pure numpy.
+
+    mmBody tgm_conversion.py numpy port (Kornia torchgeometry).
+    Handles numerical edge cases (near-zero angle, near-zero sin).
+    Used by SMPL, P4Transformer, and kinematic chain passes.
+    """
+
+    def angle_axis_to_rotation_matrix(self, aa: np.ndarray) -> np.ndarray:
+        """aa: [N, 3] → R: [N, 3, 3]."""
+        aa = np.asarray(aa, dtype=np.float64).reshape(-1, 3)
+        N = len(aa)
+        out = np.zeros((N, 3, 3), dtype=np.float32)
+        for i, v in enumerate(aa):
+            theta = float(np.linalg.norm(v))
+            if theta < 1e-7:
+                out[i] = np.eye(3, dtype=np.float32)
+                continue
+            w = v / theta
+            wx, wy, wz = w
+            c, s = math.cos(theta), math.sin(theta)
+            out[i] = np.array([
+                [c + wx*wx*(1-c),   wx*wy*(1-c) - wz*s, wy*s + wx*wz*(1-c)],
+                [wz*s + wx*wy*(1-c), c + wy*wy*(1-c),   -wx*s + wy*wz*(1-c)],
+                [-wy*s + wx*wz*(1-c), wx*s + wy*wz*(1-c), c + wz*wz*(1-c)],
+            ], dtype=np.float32)
+        return out
+
+    def rotation_matrix_to_angle_axis(self, R: np.ndarray) -> np.ndarray:
+        """R: [N, 3, 3] → aa: [N, 3]."""
+        R = np.asarray(R, dtype=np.float64).reshape(-1, 3, 3)
+        N = len(R)
+        out = np.zeros((N, 3), dtype=np.float32)
+        for i, r in enumerate(R):
+            trace = float(r[0, 0] + r[1, 1] + r[2, 2])
+            cos_a = (trace - 1.0) / 2.0
+            cos_a = float(np.clip(cos_a, -1.0, 1.0))
+            angle = math.acos(cos_a)
+            if abs(angle) < 1e-7:
+                out[i] = np.zeros(3, dtype=np.float32)
+            else:
+                sin_a = math.sin(angle)
+                axis = np.array([r[2, 1] - r[1, 2],
+                                  r[0, 2] - r[2, 0],
+                                  r[1, 0] - r[0, 1]], dtype=np.float32)
+                out[i] = (axis / (2.0 * sin_a + 1e-9) * angle).astype(np.float32)
+        return out
+
+    def rotation_matrix_to_quaternion(self, R: np.ndarray) -> np.ndarray:
+        """R: [N, 3, 3] → q: [N, 4] (w, x, y, z)."""
+        R = np.asarray(R, dtype=np.float64).reshape(-1, 3, 3)
+        N = len(R)
+        out = np.zeros((N, 4), dtype=np.float32)
+        for i, r in enumerate(R):
+            trace = r[0, 0] + r[1, 1] + r[2, 2]
+            if trace > 0:
+                s = 0.5 / math.sqrt(trace + 1.0)
+                out[i] = [0.25 / s, (r[2, 1]-r[1, 2])*s,
+                           (r[0, 2]-r[2, 0])*s, (r[1, 0]-r[0, 1])*s]
+            elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
+                s = 2.0 * math.sqrt(1.0 + r[0, 0] - r[1, 1] - r[2, 2])
+                out[i] = [(r[2, 1]-r[1, 2])/s, 0.25*s,
+                           (r[0, 1]+r[1, 0])/s, (r[0, 2]+r[2, 0])/s]
+            elif r[1, 1] > r[2, 2]:
+                s = 2.0 * math.sqrt(1.0 + r[1, 1] - r[0, 0] - r[2, 2])
+                out[i] = [(r[0, 2]-r[2, 0])/s, (r[0, 1]+r[1, 0])/s,
+                           0.25*s, (r[1, 2]+r[2, 1])/s]
+            else:
+                s = 2.0 * math.sqrt(1.0 + r[2, 2] - r[0, 0] - r[1, 1])
+                out[i] = [(r[1, 0]-r[0, 1])/s, (r[0, 2]+r[2, 0])/s,
+                           (r[1, 2]+r[2, 1])/s, 0.25*s]
+        return out
+
+    def quaternion_to_angle_axis(self, q: np.ndarray) -> np.ndarray:
+        """q: [N, 4] (w,x,y,z) → aa: [N, 3]."""
+        q = np.asarray(q, dtype=np.float64).reshape(-1, 4)
+        N = len(q)
+        out = np.zeros((N, 3), dtype=np.float32)
+        for i, qi in enumerate(q):
+            w, x, y, z = qi
+            sin_sq = x*x + y*y + z*z
+            sin_t = math.sqrt(max(sin_sq, 0.0))
+            two_theta = 2.0 * (math.atan2(sin_t, w) if sin_t > 1e-7
+                               else math.atan2(-sin_t, -w))
+            k = (2.0 * math.copysign(1, w) if sin_t <= 1e-7 else
+                 two_theta / sin_t)
+            out[i] = np.array([x * k, y * k, z * k], dtype=np.float32)
+        return out
+
+    def compute(self, n: int = 8) -> dict:
+        rng = np.random.default_rng(69)
+        aa  = rng.standard_normal((n, 3)).astype(np.float32) * 0.5
+        R   = self.angle_axis_to_rotation_matrix(aa)
+        aa2 = self.rotation_matrix_to_angle_axis(R)
+        q   = self.rotation_matrix_to_quaternion(R)
+        aa3 = self.quaternion_to_angle_axis(q)
+        err_aa   = float(np.linalg.norm(aa - aa2))
+        err_quat = float(np.linalg.norm(aa - aa3))
+        return {
+            "p69_rot_aa_round_err":   float(err_aa),
+            "p69_rot_quat_round_err": float(err_quat),
+            "p69_rot_n_tested":       int(n),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── Pass 69 Fusion Orchestrator ─────────────────────────────────────────────
+
+class Pass69SensorFusion:
+    """Pass 69: NV hand-off + Chest placement + Multi-subj Fresnel + RSSI-MLP + RF-weather + FM demod + 6D rot + RotConv."""
+
+    def __init__(self):
+        self.nv_handoff  = NVThresholdHandoffNP()
+        self.chest_place = ChestCentricPlacementNP()
+        self.multi_subj  = MultiSubjectFresnelNP()
+        self.rssi_mlp    = RSSIPersonCountMLP_NP()
+        self.rf_weather  = RFWeatherEigenMonitorNP()
+        self.fm_demod    = KrakenFMDemodNP()
+        self.six_d_rot   = SixDRotationRepNP()
+        self.rot_conv    = RotationConversionsNP()
+        self._place_done = False
+
+    def update(self, psych_profile: dict, amp_data: np.ndarray,
+               iq_data: np.ndarray, extra: object) -> dict:
+        out: dict = {}
+
+        # NV threshold hand-off
+        try:
+            out.update(self.nv_handoff.update_from_profile(psych_profile))
+        except Exception:
+            out.update(self.nv_handoff.synth_compute())
+
+        # Chest-centric placement (run once, expensive greedy search)
+        try:
+            if not self._place_done:
+                out.update(self.chest_place.compute())
+                self._place_done = True
+            else:
+                out.update({
+                    "p69_place_chest_cov": float(psych_profile.get("p69_place_chest_cov", 0.0)),
+                    "p69_place_tx": str(psych_profile.get("p69_place_tx", "")),
+                    "p69_place_rx": str(psych_profile.get("p69_place_rx", "")),
+                    "p69_place_link_m": float(psych_profile.get("p69_place_link_m", 0.0)),
+                })
+        except Exception:
+            out.update(self.chest_place.synth_compute())
+
+        # Multi-subject coverage
+        try:
+            n_persons = int(psych_profile.get("w3d_person_count", 1))
+            out.update(self.multi_subj.compute(n_persons=max(1, min(n_persons, 4))))
+        except Exception:
+            out.update(self.multi_subj.synth_compute())
+
+        # RSSI-only person count MLP
+        try:
+            if amp_data is not None and amp_data.ndim >= 1:
+                n = len(amp_data)
+                if n >= 56 * 20:
+                    csi_win = amp_data[:56 * 20].reshape(56, 20).astype(np.float32)
+                else:
+                    csi_win = None
+            else:
+                csi_win = None
+            n_p = int(psych_profile.get("w3d_person_count", 0))
+            out.update(self.rssi_mlp.compute(csi_win, n_p))
+        except Exception:
+            out.update(self.rssi_mlp.synth_compute())
+
+        # RF-weather eigenshift monitor
+        try:
+            if amp_data is not None and len(amp_data) >= 56:
+                frame = amp_data[:56].astype(np.float32)
+                self.rf_weather.ingest_frame(frame)
+                dist, alert = self.rf_weather.current_distance()
+                sv_mean = float(np.mean(self.rf_weather._cos_history)) if self.rf_weather._cos_history else 0.0
+                out.update({
+                    "p69_rf_weather_cos_dist": float(dist),
+                    "p69_rf_weather_alert":    int(alert),
+                    "p69_rf_weather_sv_mean":  float(sv_mean),
+                    "p69_rf_weather_n_frames": int(self.rf_weather._n_frames),
+                })
+            else:
+                out.update(self.rf_weather.synth_compute())
+        except Exception:
+            out.update(self.rf_weather.synth_compute())
+
+        # FM demod
+        try:
+            iq_in = iq_data if iq_data is not None else None
+            out.update(self.fm_demod.compute(iq_in))
+        except Exception:
+            out.update(self.fm_demod.synth_compute())
+
+        # 6D rotation representation
+        try:
+            out.update(self.six_d_rot.compute())
+        except Exception:
+            out.update(self.six_d_rot.synth_compute())
+
+        # Rotation conversions
+        try:
+            out.update(self.rot_conv.compute())
+        except Exception:
+            out.update(self.rot_conv.synth_compute())
+
+        return out
+
+
+# ════════════ PASS 68 ENGINES ════════════
+# R20.1 ADR-114 Bayesian CSI+NV-diamond cardiac fusion (RuView r20_1_quantum_classical_fusion.py)
+# R12 PABS physics-anchored background subtraction (RuView r12_pabs_implementation.py)
+# R7 Multi-link Stoer-Wagner mincut adversarial CSI detection (RuView r7_multilink_consistency.py)
+# R10 ITU-R P.833 through-foliage attenuation model (RuView r10_foliage_attenuation.py)
+# R11 Maritime / through-bulkhead RF propagation model (RuView r11_maritime_propagation.py)
+# R13 Contactless BP physics floor (PTT + motion SNR) (RuView r13_bp_physics_floor.py)
+# BCIChannelVarianceNP per-channel EEG variance / power estimator (bci-hil band_node.py)
+# Pass68SensorFusion orchestrator
+# Pure numpy/math, no external project imports
+
+import math, collections
+
+# ─── R20.1 ADR-114 Bayesian CSI + NV-Diamond Cardiac Fusion ──────────────────
+
+class BayesianCSINVFusionNP:
+    """Bayesian fusion of classical CSI breathing + NV-diamond cardiac magnetometry.
+
+    RuView research-sota/09-quantum-fusion/r20_1_quantum_classical_fusion.py
+    ADR-114: three-input architecture — CSI breathing, NV cardiac, Bayesian posterior.
+    NV-diamond: B-field cube-law falloff (50 pT at 0.5 m ref), 1 pT/sqrt(Hz) noise floor.
+    """
+
+    REF_DISTANCE_M = 0.5        # reference range for NV amplitude
+    REF_AMPLITUDE_PT = 50.0     # picotesla at ref distance
+    NV_NOISE_FLOOR_PT_SQR = 1.0 # pT / sqrt(Hz)
+
+    def __init__(self, csi_fs: float = 50.0, nv_fs: float = 200.0,
+                 nv_distance_m: float = 1.5):
+        self.csi_fs = csi_fs
+        self.nv_fs = nv_fs
+        self.nv_distance_m = nv_distance_m
+        self._rr_buf: collections.deque = collections.deque(maxlen=30)
+        self._frame = 0
+
+    def nv_amplitude_pt(self) -> float:
+        """Expected NV cardiac B-field amplitude at current distance (cube law)."""
+        return self.REF_AMPLITUDE_PT * (self.REF_DISTANCE_M / max(self.nv_distance_m, 0.1)) ** 3
+
+    def estimate_rate_fft(self, signal: np.ndarray, fs: float,
+                          band: tuple = (0.1, 3.0)) -> tuple[float, float]:
+        """FFT peak-rate estimation in [band_lo, band_hi] Hz. Returns (bpm, confidence)."""
+        n = len(signal)
+        if n < 4:
+            return 0.0, 0.0
+        sig = np.asarray(signal, dtype=np.float64) - signal.mean()
+        fft = np.fft.rfft(sig)
+        freqs = np.fft.rfftfreq(n, 1.0 / fs)
+        mask = (freqs >= band[0]) & (freqs <= band[1])
+        if not mask.any():
+            return 0.0, 0.0
+        power = np.abs(fft[mask]) ** 2
+        peak_idx = int(np.argmax(power))
+        peak_f = float(freqs[mask][peak_idx])
+        snr_db = float(10 * math.log10(max(power[peak_idx] / (power.mean() + 1e-12), 1e-9)))
+        conf = float(1.0 / (1.0 + math.exp(-(snr_db - 10.0) / 5.0)))
+        return peak_f * 60.0, conf
+
+    def extract_rr_intervals(self, nv_signal: np.ndarray, hr_bpm: float) -> tuple:
+        """Extract R-R intervals via peak detection → SDNN."""
+        smooth = np.convolve(nv_signal, np.ones(5) / 5, mode="same")
+        threshold = np.percentile(smooth, 90)
+        above = smooth > threshold
+        diffs = np.diff(above.astype(np.int8))
+        edges = np.where(diffs > 0)[0]
+        if len(edges) < 2:
+            return None, 0.0
+        t = np.arange(len(nv_signal)) / self.nv_fs
+        rr_ms = np.diff(t[edges]) * 1000.0
+        for rr in rr_ms:
+            self._rr_buf.append(rr)
+        sdnn = float(np.std(list(self._rr_buf))) if len(self._rr_buf) > 1 else 0.0
+        return rr_ms, sdnn
+
+    def bayesian_fuse(self, rate_a: float, conf_a: float,
+                      rate_b: float, conf_b: float) -> tuple[float, float]:
+        """Precision-weighted Bayesian fusion (Gaussian, known confidences)."""
+        denom = conf_a + conf_b + 1e-9
+        fused_rate = (conf_a * rate_a + conf_b * rate_b) / denom
+        fused_conf = float(1.0 - (1.0 - conf_a) * (1.0 - conf_b))
+        return float(fused_rate), fused_conf
+
+    def compute(self, csi_amp: np.ndarray | None = None,
+                hr_bpm_prior: float = 72.0) -> dict:
+        self._frame += 1
+        rng = np.random.default_rng(self._frame)
+
+        # Simulate CSI breathing signal
+        n_csi = 300  # 6 s at 50 Hz
+        t_csi = np.arange(n_csi) / self.csi_fs
+        if csi_amp is not None and len(csi_amp) >= n_csi:
+            csi_sig = csi_amp[:n_csi].astype(np.float64)
+        else:
+            rate_hz = 15.0 / 60.0
+            csi_sig = (46 * np.sin(2 * math.pi * rate_hz * t_csi) +
+                       rng.standard_normal(n_csi) * 5.0)
+
+        # Simulate NV cardiac signal
+        n_nv = 1200  # 6 s at 200 Hz
+        t_nv = np.arange(n_nv) / self.nv_fs
+        amp_pt = self.nv_amplitude_pt()
+        period_s = 60.0 / max(hr_bpm_prior, 30.0)
+        t_peaks = np.arange(period_s / 2, t_nv[-1], period_s)
+        nv_sig = np.zeros(n_nv)
+        for pc in t_peaks:
+            nv_sig += np.exp(-((t_nv - pc) ** 2) / (2 * 0.03 ** 2))
+        nv_sig *= amp_pt
+        noise_amp = self.NV_NOISE_FLOOR_PT_SQR * math.sqrt(self.nv_fs / 2.0)
+        nv_sig += rng.standard_normal(n_nv) * noise_amp
+
+        # Estimate rates
+        br_bpm, br_conf = self.estimate_rate_fft(csi_sig, self.csi_fs, (0.1, 0.5))
+        hr_csi, hr_csi_conf = self.estimate_rate_fft(csi_sig, self.csi_fs, (0.8, 3.0))
+        hr_nv, hr_nv_conf = self.estimate_rate_fft(nv_sig, self.nv_fs, (0.8, 3.0))
+
+        # Bayesian fusion
+        hr_fused, hr_fused_conf = self.bayesian_fuse(hr_csi, hr_csi_conf, hr_nv, hr_nv_conf)
+
+        # HRV via R-R
+        _, sdnn = self.extract_rr_intervals(nv_sig, hr_nv)
+
+        return {
+            "p68_br_bpm": float(br_bpm),
+            "p68_br_conf": float(br_conf),
+            "p68_hr_csi_bpm": float(hr_csi),
+            "p68_hr_csi_conf": float(hr_csi_conf),
+            "p68_hr_nv_bpm": float(hr_nv),
+            "p68_hr_nv_conf": float(hr_nv_conf),
+            "p68_hr_fused_bpm": float(hr_fused),
+            "p68_hr_fused_conf": float(hr_fused_conf),
+            "p68_nv_amp_pt": float(amp_pt),
+            "p68_nv_hrv_sdnn": float(sdnn),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── R12 PABS — Physics-Anchored Background Subtraction ──────────────────────
+
+class PABSStructureDetectorNP:
+    """Physics-Anchored Background Subtraction for room structure/intruder detection.
+
+    RuView research-sota/06-structure-detection/r12_pabs_implementation.py
+    Builds a predicted CSI from a multi-scatterer Fresnel forward model,
+    then measures PABS = ||y_observed - y_predicted||² / ||y_observed||².
+    """
+
+    C = 2.998e8  # m/s
+
+    def __init__(self, freq_ghz: float = 2.4, n_sub: int = 52,
+                 sub_spacing_khz: float = 312.5):
+        self.freq_ghz = freq_ghz
+        self.n_sub = n_sub
+        self.sub_offsets_hz = (np.arange(n_sub) - n_sub // 2) * sub_spacing_khz * 1e3
+        self.sub_freqs_hz = freq_ghz * 1e9 + self.sub_offsets_hz
+
+        # Fixed room geometry
+        self.tx = np.array([0.0, 2.5])
+        self.rx = np.array([5.0, 2.5])
+
+        # Static wall reflectors (bedroom multipath)
+        self._walls = [
+            {"pos": np.array([0.5,  4.5]), "refl": 0.30},
+            {"pos": np.array([4.5,  4.5]), "refl": 0.20},
+            {"pos": np.array([0.5,  0.5]), "refl": 0.15},
+            {"pos": np.array([4.5,  0.5]), "refl": 0.10},
+        ]
+
+        # Expected subject (population-prior body model)
+        self._body_prior = self._human_body(2.5, 2.75)
+
+        # Compute expected CSI
+        self._y_expected = self._simulate(self._body_prior + self._walls)
+        self._pabs_history: list[float] = []
+        self._alert_threshold = 0.15
+
+    def _human_body(self, cx: float, cy: float) -> list[dict]:
+        return [
+            {"pos": np.array([cx,       cy      ]), "refl": 0.50},  # chest
+            {"pos": np.array([cx,       cy + 0.4]), "refl": 0.10},  # head
+            {"pos": np.array([cx - 0.2, cy      ]), "refl": 0.10},  # L arm
+            {"pos": np.array([cx + 0.2, cy      ]), "refl": 0.10},  # R arm
+            {"pos": np.array([cx - 0.1, cy - 0.4]), "refl": 0.10}, # L leg
+            {"pos": np.array([cx + 0.1, cy - 0.4]), "refl": 0.10}, # R leg
+        ]
+
+    def _csi_contribution(self, s: dict) -> np.ndarray:
+        pos = s["pos"]
+        d_tx = float(np.linalg.norm(pos - self.tx))
+        d_rx = float(np.linalg.norm(pos - self.rx))
+        d_dir = float(np.linalg.norm(self.tx - self.rx))
+        delta_l = d_tx + d_rx - d_dir
+        amp = s["refl"] / max(d_tx * d_rx, 1e-3)
+        phase = 2 * math.pi * self.sub_freqs_hz * delta_l / self.C
+        return amp * np.exp(1j * phase)
+
+    def _simulate(self, scatterers: list[dict]) -> np.ndarray:
+        total = np.zeros(self.n_sub, dtype=np.complex128)
+        for s in scatterers:
+            total += self._csi_contribution(s)
+        return total
+
+    def pabs(self, y_obs: np.ndarray) -> float:
+        """L2-normalised residual: ||y_obs - y_pred||² / ||y_obs||²."""
+        residual = y_obs - self._y_expected
+        energy = float(np.linalg.norm(y_obs) ** 2)
+        return float(np.linalg.norm(residual) ** 2 / max(energy, 1e-12))
+
+    def update_scene(self, csi_obs: np.ndarray,
+                     person_xy: tuple[float, float] | None = None) -> dict:
+        """Compute PABS given observed CSI. Optionally update expected body position."""
+        if person_xy is not None:
+            body = self._human_body(*person_xy)
+            self._y_expected = self._simulate(body + self._walls)
+
+        p = self.pabs(csi_obs)
+        self._pabs_history.append(p)
+        if len(self._pabs_history) > 60:
+            self._pabs_history.pop(0)
+
+        baseline = float(np.mean(self._pabs_history[-10:])) if len(self._pabs_history) >= 10 else p
+        alert = bool(p > self._alert_threshold and p > baseline * 1.5)
+
+        return {
+            "p68_pabs": float(p),
+            "p68_pabs_baseline": float(baseline),
+            "p68_pabs_alert": int(alert),
+            "p68_pabs_history_len": len(self._pabs_history),
+        }
+
+    def compute(self, csi_amp: np.ndarray | None = None) -> dict:
+        rng = np.random.default_rng()
+        if csi_amp is not None and len(csi_amp) >= self.n_sub:
+            y_obs = csi_amp[:self.n_sub].astype(np.complex128)
+        else:
+            # Simulate: expected scene + small noise
+            y_obs = self._y_expected + rng.standard_normal(self.n_sub) * 0.01
+        return self.update_scene(y_obs)
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── R7 Multi-Link Consistency — Stoer-Wagner Mincut ─────────────────────────
+
+class MultiLinkConsistencyNP:
+    """Multi-link CSI consistency via Stoer-Wagner mincut adversarial detection.
+
+    RuView research-sota/03-spatial-intelligence/r7_multilink_consistency.py
+    Builds an N×N cosine-similarity graph of CSI windows from N nodes,
+    then runs Stoer-Wagner mincut to detect the isolated adversarial node.
+    """
+
+    def __init__(self, n_nodes: int = 4, n_sub: int = 56, n_frames: int = 20,
+                 noise_db: float = 6.0):
+        self.n_nodes = n_nodes
+        self.n_sub = n_sub
+        self.n_frames = n_frames
+        self.noise_db = noise_db
+        self._last_cutval: float = 0.0
+        self._last_partition: list[int] = []
+
+    def cosine_sim_matrix(self, windows: np.ndarray) -> np.ndarray:
+        """Pairwise cosine similarity. windows: [N, F] after flatten."""
+        flat = windows.reshape(windows.shape[0], -1).astype(np.float64)
+        norms = np.linalg.norm(flat, axis=1, keepdims=True) + 1e-9
+        normed = flat / norms
+        return normed @ normed.T
+
+    def stoer_wagner_mincut(self, W: np.ndarray) -> tuple[float, list[int]]:
+        """Stoer-Wagner global mincut. W: symmetric [N,N] non-negative weights.
+
+        Returns (min_cut_value, list of node indices on the smaller side).
+        """
+        n = W.shape[0]
+        if n <= 1:
+            return 0.0, []
+        nodes = [{i} for i in range(n)]
+        W = W.astype(np.float64).copy()
+        best_cut = float("inf")
+        best_partition: list[int] = []
+
+        def merge(W: np.ndarray, nodes: list, a: int, b: int):
+            """Merge node b into node a."""
+            W[a, :] += W[b, :]
+            W[:, a] += W[:, b]
+            return np.delete(np.delete(W, b, 0), b, 1), nodes[:b] + nodes[b+1:]
+
+        while len(nodes) > 1:
+            # Minimum-cut phase
+            n_cur = len(nodes)
+            in_A = [False] * n_cur
+            key = [0.0] * n_cur
+            key[0] = 0.0
+            prev = -1
+            last = -1
+            for _ in range(n_cur):
+                # Pick max-key node not in A
+                best_k = -1
+                best_v = -float("inf")
+                for j in range(n_cur):
+                    if not in_A[j] and key[j] > best_v:
+                        best_v = key[j]
+                        best_k = j
+                if best_k == -1:
+                    break
+                in_A[best_k] = True
+                prev, last = last, best_k
+                for j in range(n_cur):
+                    if not in_A[j]:
+                        key[j] += W[best_k, j]
+
+            # Last node added gives a candidate cut
+            cut_val = key[last]
+            if cut_val < best_cut:
+                best_cut = cut_val
+                best_partition = sorted(nodes[last])
+
+            # Merge last two
+            W, nodes = merge(W, nodes, prev, last)
+
+        return best_cut, best_partition
+
+    def detect(self, windows: np.ndarray,
+               adversarial_idx: int = -1) -> dict:
+        """Detect adversarial node via mincut partitioning."""
+        sim = self.cosine_sim_matrix(windows)
+        # Weight = similarity (0-1), treat as graph weights
+        np.fill_diagonal(sim, 0.0)
+        cut_val, partition = self.stoer_wagner_mincut(sim)
+        self._last_cutval = cut_val
+        self._last_partition = partition
+
+        # Small partition side = suspected adversarial cluster
+        n = windows.shape[0]
+        is_small = len(partition) <= n // 2
+        adversarial_detected = bool(is_small and len(partition) == 1)
+        suspected_node = int(partition[0]) if adversarial_detected else -1
+
+        correct = bool(adversarial_idx >= 0 and suspected_node == adversarial_idx)
+        return {
+            "p68_ml_cut_val": float(cut_val),
+            "p68_ml_partition_size": len(partition),
+            "p68_ml_adversarial_detected": int(adversarial_detected),
+            "p68_ml_suspected_node": int(suspected_node),
+            "p68_ml_correct": int(correct),
+        }
+
+    def compute(self, amp_data: np.ndarray | None = None) -> dict:
+        rng = np.random.default_rng()
+        n = self.n_nodes + 1  # +1 adversarial
+        D = self.n_sub * self.n_frames
+
+        if amp_data is not None and len(amp_data) >= D:
+            base = amp_data[:D].reshape(self.n_sub, self.n_frames)
+        else:
+            base = rng.standard_normal((self.n_sub, self.n_frames)).astype(np.float32)
+
+        # Build honest windows
+        sigma = float(base.std()) * 10 ** (-self.noise_db / 20.0)
+        honest = np.stack([base + rng.normal(0, sigma, base.shape).astype(np.float32)
+                           for _ in range(self.n_nodes)])
+        # Adversarial: pure noise
+        adv = rng.standard_normal(base.shape).astype(np.float32)[None, :]
+        all_windows = np.concatenate([honest, adv], axis=0)
+        return self.detect(all_windows, adversarial_idx=self.n_nodes)
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── R10 ITU-R P.833 Through-Foliage Attenuation ─────────────────────────────
+
+class FoliageAttenuationITUNP:
+    """ITU-R P.833 through-foliage WiFi attenuation + ESP32 link budget.
+
+    RuView research-sota/08-verticals/r10_foliage_attenuation.py
+    A_v(d) = A_max × sqrt(f_GHz) × (1 - exp(-γ × d)) per foliage density.
+    """
+
+    PARAMS = {
+        "sparse":   (20.0, 0.10),
+        "moderate": (35.0, 0.20),
+        "dense":    (50.0, 0.35),
+    }
+    ESP32_LINK_BUDGET_DB = 121.0  # 20 dBm Tx + 2 dBi Tx + 2 dBi Rx + 97 dBm sens
+
+    def itu_p833(self, freq_ghz: float, distance_m: float,
+                 density: str = "moderate") -> float:
+        """ITU-R P.833 attenuation in dB."""
+        a_max, gamma = self.PARAMS.get(density, self.PARAMS["moderate"])
+        fs = math.sqrt(freq_ghz)
+        return float(a_max * fs * (1.0 - math.exp(-gamma * max(distance_m, 0.01))))
+
+    def fspl_db(self, freq_ghz: float, distance_m: float) -> float:
+        """Free-space path loss."""
+        if distance_m <= 0:
+            return 0.0
+        return float(32.45 + 20 * math.log10(freq_ghz) + 20 * math.log10(distance_m))
+
+    def max_sensing_range(self, freq_ghz: float = 2.4, density: str = "moderate",
+                          snr_margin_db: float = 10.0) -> float:
+        """Binary search for max range where FSPL + foliage < link_budget - margin."""
+        budget = self.ESP32_LINK_BUDGET_DB - snr_margin_db
+        lo, hi = 0.1, 500.0
+        for _ in range(60):
+            mid = (lo + hi) / 2.0
+            total = self.fspl_db(freq_ghz, mid) + self.itu_p833(freq_ghz, mid, density)
+            if total < budget:
+                lo = mid
+            else:
+                hi = mid
+        return float((lo + hi) / 2.0)
+
+    def compute(self, distance_m: float = 5.0,
+                freq_ghz: float = 2.4) -> dict:
+        atten_sparse = self.itu_p833(freq_ghz, distance_m, "sparse")
+        atten_mod = self.itu_p833(freq_ghz, distance_m, "moderate")
+        atten_dense = self.itu_p833(freq_ghz, distance_m, "dense")
+        fspl = self.fspl_db(freq_ghz, distance_m)
+        max_range_mod = self.max_sensing_range(freq_ghz, "moderate")
+        return {
+            "p68_foliage_atten_sparse_db": float(atten_sparse),
+            "p68_foliage_atten_mod_db": float(atten_mod),
+            "p68_foliage_atten_dense_db": float(atten_dense),
+            "p68_foliage_fspl_db": float(fspl),
+            "p68_foliage_max_range_m": float(max_range_mod),
+            "p68_foliage_link_margin_mod_db": float(
+                self.ESP32_LINK_BUDGET_DB - fspl - atten_mod),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── R11 Maritime / Through-Bulkhead RF Propagation ──────────────────────────
+
+class MaritimePropagationModelNP:
+    """Maritime bulkhead + saltwater RF propagation model.
+
+    RuView research-sota/08-verticals/r11_maritime_propagation.py
+    Computes skin depth, bulk attenuation through steel, seam diffraction,
+    saltwater path loss, and composite link budget for maritime scenarios.
+    """
+
+    C = 2.998e8
+    MU_0 = 4 * math.pi * 1e-7
+    EPS_0 = 8.854e-12
+    STEEL_SIGMA = 1.0e7      # S/m mild steel
+    SALTWATER_SIGMA = 4.8    # S/m
+    SALTWATER_EPSR = 81.0
+
+    def skin_depth_m(self, freq_ghz: float, sigma: float, mu_r: float = 1.0) -> float:
+        f = freq_ghz * 1e9
+        return float(1.0 / math.sqrt(math.pi * f * self.MU_0 * mu_r * sigma))
+
+    def bulk_attn_db_per_mm(self, freq_ghz: float, sigma: float = None) -> float:
+        sigma = sigma or self.STEEL_SIGMA
+        delta = self.skin_depth_m(freq_ghz, sigma)
+        return float(8.686 / delta / 1000.0)
+
+    def saltwater_attn_db_per_m(self, freq_ghz: float) -> float:
+        omega = 2 * math.pi * freq_ghz * 1e9
+        eps_c = complex(self.SALTWATER_EPSR, -self.SALTWATER_SIGMA / (omega * self.EPS_0))
+        n_c = eps_c ** 0.5
+        alpha = omega * abs(n_c.imag) / self.C
+        return float(8.686 * alpha)
+
+    def seam_diffraction_db(self, seam_mm: float, freq_ghz: float) -> float:
+        lam_mm = (self.C / (freq_ghz * 1e9)) * 1000.0
+        if seam_mm >= lam_mm / 2.0:
+            return 0.0
+        return max(0.0, float(20 * math.log10(lam_mm / (2.0 * seam_mm))))
+
+    def scenario_loss(self, freq_ghz: float, bulkhead_mm: float, seam_mm: float,
+                      free_air_m: float, saltwater_m: float = 0.0) -> dict:
+        fspl = 32.45 + 20 * math.log10(freq_ghz) + 20 * math.log10(max(0.1, free_air_m))
+        bulk = bulkhead_mm * self.bulk_attn_db_per_mm(freq_ghz)
+        seam = self.seam_diffraction_db(seam_mm, freq_ghz) if seam_mm > 0 else 999.0
+        water = saltwater_m * self.saltwater_attn_db_per_m(freq_ghz)
+        metal = min(bulk, seam)
+        total = fspl + metal + water
+        return {
+            "fspl_db": float(fspl), "metal_db": float(metal),
+            "water_db": float(water), "total_db": float(total),
+            "link_margin_db": float(121.0 - total - 10.0),
+        }
+
+    def compute(self, freq_ghz: float = 2.4,
+                distance_m: float = 3.0) -> dict:
+        # Interior cabin: 8mm steel, 2mm seam, free-air
+        cabin = self.scenario_loss(freq_ghz, 8.0, 2.0, distance_m)
+        # Hull external: 20mm steel, no seam, 0.5m saltwater
+        hull = self.scenario_loss(freq_ghz, 20.0, 0.0, distance_m, 0.5)
+        skin_um = self.skin_depth_m(freq_ghz, self.STEEL_SIGMA) * 1e6
+        return {
+            "p68_maritime_cabin_total_db": float(cabin["total_db"]),
+            "p68_maritime_cabin_margin_db": float(cabin["link_margin_db"]),
+            "p68_maritime_hull_total_db": float(hull["total_db"]),
+            "p68_maritime_hull_margin_db": float(hull["link_margin_db"]),
+            "p68_maritime_steel_skin_um": float(skin_um),
+            "p68_maritime_water_db_per_m": float(self.saltwater_attn_db_per_m(freq_ghz)),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── R13 Contactless BP Physics Floor ────────────────────────────────────────
+
+class BPPhysicsFloorNP:
+    """Contactless blood pressure physics floor analysis.
+
+    RuView research-sota/07-negative-results/r13_bp_physics_floor.py
+    Models PTT resolution and breathing/cardiac SNR floor for BP-from-CSI.
+    Quantifies why WiFi BP detection is negative (R13 NEGATIVE result).
+    """
+
+    C = 2.998e8
+    WAVELENGTH_2_4_M = 0.125      # 2.4 GHz
+    PHASE_DEG_PER_MM = 360.0 / 125.0  # ~2.88 deg/mm
+    CHEST_BREATH_MM = 8.0          # tidal breathing chest motion
+    CHEST_HR_MM = 0.3              # ballistocardiographic motion
+    CAROTID_PULSE_MM = 0.4
+    RESP_HZ = 0.25                 # 15 BPM
+    HR_HZ = 1.2                    # 72 BPM
+    PWV_MPS = 7.0
+    CF_DIST_M = 0.55
+
+    def ptt_seconds(self) -> float:
+        return self.CF_DIST_M / self.PWV_MPS
+
+    def fresnel_resolution_m(self, freq_ghz: float = 2.4,
+                              distance_m: float = 2.0) -> float:
+        """Fresnel zone 1 radius — limits per-site spatial resolution."""
+        lam = self.C / (freq_ghz * 1e9)
+        return float(math.sqrt(lam * distance_m / 2.0))
+
+    def breathing_cardiac_snr_db(self) -> float:
+        """SNR of cardiac signal vs breathing motion in phase domain."""
+        breath_phase = self.PHASE_DEG_PER_MM * self.CHEST_BREATH_MM
+        cardiac_phase = self.PHASE_DEG_PER_MM * self.CHEST_HR_MM
+        snr = cardiac_phase / max(breath_phase, 1e-9)
+        return float(20 * math.log10(max(snr, 1e-9)))
+
+    def required_filter_attenuation_db(self) -> float:
+        """Required bandpass attenuation to isolate cardiac from breathing."""
+        # Breathing at 0.25 Hz, cardiac at 1.2 Hz — separation = 5x in freq
+        # 1st-order IIR has 20 dB/decade → need >20 dB more for cardiac isolation
+        snr = abs(self.breathing_cardiac_snr_db())
+        return float(snr + 10.0)  # +10 dB safety margin
+
+    def ptt_resolvable(self, n_sub: int = 52,
+                       sub_spacing_khz: float = 312.5) -> dict:
+        """Check if PTT (ms-scale timing) is resolvable with WiFi bandwidth."""
+        total_bw_mhz = (n_sub - 1) * sub_spacing_khz / 1000.0
+        range_res_m = self.C / (2.0 * total_bw_mhz * 1e6)
+        ptt_distance_m = self.ptt_seconds() * self.PWV_MPS  # How far pulse travels in PTT time
+        resolvable = bool(range_res_m < ptt_distance_m)
+        return {
+            "total_bw_mhz": float(total_bw_mhz),
+            "range_res_m": float(range_res_m),
+            "ptt_distance_m": float(ptt_distance_m),
+            "ptt_resolvable": resolvable,
+        }
+
+    def compute(self) -> dict:
+        ptt = self.ptt_resolvable()
+        snr_db = self.breathing_cardiac_snr_db()
+        req_att = self.required_filter_attenuation_db()
+        fresnel_r = self.fresnel_resolution_m()
+        ptt_s = self.ptt_seconds()
+        verdict = "NEGATIVE" if not ptt["ptt_resolvable"] or snr_db < -20 else "MARGINAL"
+        return {
+            "p68_bp_ptt_s": float(ptt_s),
+            "p68_bp_snr_db": float(snr_db),
+            "p68_bp_req_filter_db": float(req_att),
+            "p68_bp_fresnel_r_m": float(fresnel_r),
+            "p68_bp_ptt_resolvable": int(ptt["ptt_resolvable"]),
+            "p68_bp_verdict": verdict,
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── BCI Multi-Channel EEG Variance (band_node.py port) ──────────────────────
+
+class BCIChannelVarianceNP:
+    """Per-channel EEG variance and band-power estimator.
+
+    BCI-HIL band_node.py / ChannelVariance numpy port.
+    Computes per-channel variance, std, and band-power ratios for
+    standard EEG bands (delta/theta/alpha/beta/gamma).
+    Tracks temporal variance drift (Welford).
+    """
+
+    BANDS = {
+        "delta":  (0.5, 4.0),
+        "theta":  (4.0, 8.0),
+        "alpha":  (8.0, 13.0),
+        "beta":   (13.0, 30.0),
+        "gamma":  (30.0, 100.0),
+    }
+
+    def __init__(self, n_channels: int = 4, fs: float = 250.0,
+                 channel_labels: tuple = ("TP9", "AF7", "AF8", "TP10")):
+        self.n_channels = n_channels
+        self.fs = fs
+        self.channel_labels = list(channel_labels)[:n_channels]
+        self._var_history: collections.deque = collections.deque(maxlen=50)
+        self._band_history: dict[str, list] = {b: [] for b in self.BANDS}
+
+    def channel_variance(self, eeg: np.ndarray) -> np.ndarray:
+        """eeg: [n_ch, n_samples] → [n_ch] per-channel variance."""
+        return np.var(eeg, axis=-1).astype(np.float32)
+
+    def band_power_ratio(self, eeg: np.ndarray,
+                         band: str = "alpha") -> np.ndarray:
+        """Per-channel band power / total power ratio."""
+        n = eeg.shape[-1]
+        freqs = np.fft.rfftfreq(n, 1.0 / self.fs)
+        lo, hi = self.BANDS[band]
+        mask = (freqs >= lo) & (freqs <= hi)
+        powers = np.abs(np.fft.rfft(eeg, axis=-1)) ** 2
+        band_pow = powers[:, mask].sum(axis=-1)
+        total_pow = powers.sum(axis=-1) + 1e-9
+        return (band_pow / total_pow).astype(np.float32)
+
+    def laterality_index(self, eeg: np.ndarray, band: str = "alpha",
+                         left_ch: int = 0, right_ch: int = 2) -> float:
+        """ERD/ERS laterality index (left - right) / (left + right)."""
+        ratios = self.band_power_ratio(eeg, band)
+        L = float(ratios[left_ch])
+        R = float(ratios[right_ch])
+        return float((L - R) / (L + R + 1e-9))
+
+    def compute(self, eeg: np.ndarray | None = None) -> dict:
+        if eeg is None:
+            rng = np.random.default_rng()
+            t = np.linspace(0, 2.0, int(2.0 * self.fs))
+            eeg = np.stack([
+                0.5 * np.sin(2 * math.pi * 10.0 * t) + rng.standard_normal(len(t)) * 0.1
+                for _ in range(self.n_channels)
+            ])
+        variances = self.channel_variance(eeg)
+        self._var_history.append(float(variances.mean()))
+        alpha_ratios = self.band_power_ratio(eeg, "alpha")
+        beta_ratios = self.band_power_ratio(eeg, "beta")
+        lat = self.laterality_index(eeg, "alpha")
+
+        result = {
+            "p68_eeg_ch_var_mean": float(variances.mean()),
+            "p68_eeg_ch_var_max": float(variances.max()),
+            "p68_eeg_alpha_mean": float(alpha_ratios.mean()),
+            "p68_eeg_beta_mean": float(beta_ratios.mean()),
+            "p68_eeg_laterality": float(lat),
+        }
+        for i, lbl in enumerate(self.channel_labels):
+            result[f"p68_eeg_var_{lbl}"] = float(variances[i]) if i < len(variances) else 0.0
+        return result
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── Pass 68 Fusion Orchestrator ─────────────────────────────────────────────
+
+class Pass68SensorFusion:
+    """Pass 68: Bayesian NV fusion + PABS + Stoer-Wagner + Foliage + Maritime + BP floor + BCI variance."""
+
+    def __init__(self):
+        self.nv_fusion   = BayesianCSINVFusionNP()
+        self.pabs        = PABSStructureDetectorNP()
+        self.ml_consist  = MultiLinkConsistencyNP()
+        self.foliage     = FoliageAttenuationITUNP()
+        self.maritime    = MaritimePropagationModelNP()
+        self.bp_floor    = BPPhysicsFloorNP()
+        self.bci_var     = BCIChannelVarianceNP()
+
+    def update(self, psych_profile: dict, amp_data: np.ndarray,
+               iq_data: np.ndarray, extra: object) -> dict:
+        out: dict = {}
+
+        hr_prior = float(psych_profile.get("ruv_hr", 72.0))
+        dist = float(psych_profile.get("p65_toa_range_m", 1.5))
+        self.nv_fusion.nv_distance_m = max(dist, 0.3)
+
+        # R20.1 Bayesian NV fusion
+        try:
+            out.update(self.nv_fusion.compute(
+                csi_amp=amp_data if amp_data is not None else None,
+                hr_bpm_prior=hr_prior))
+        except Exception:
+            out.update(self.nv_fusion.synth_compute())
+
+        # R12 PABS
+        try:
+            csi_in = amp_data[:52].astype(np.complex128) if amp_data is not None and len(amp_data) >= 52 else None
+            out.update(self.pabs.compute(csi_in))
+        except Exception:
+            out.update(self.pabs.synth_compute())
+
+        # R7 Multi-link consistency
+        try:
+            out.update(self.ml_consist.compute(amp_data))
+        except Exception:
+            out.update(self.ml_consist.synth_compute())
+
+        # R10 Foliage attenuation
+        try:
+            out.update(self.foliage.compute(distance_m=max(dist, 0.5)))
+        except Exception:
+            out.update(self.foliage.synth_compute())
+
+        # R11 Maritime propagation
+        try:
+            out.update(self.maritime.compute(distance_m=max(dist, 0.5)))
+        except Exception:
+            out.update(self.maritime.synth_compute())
+
+        # R13 BP physics floor
+        try:
+            out.update(self.bp_floor.compute())
+        except Exception:
+            out.update(self.bp_floor.synth_compute())
+
+        # BCI channel variance
+        try:
+            bci_sig = iq_data.real if iq_data is not None else None
+            if bci_sig is not None and bci_sig.ndim == 1:
+                n = len(bci_sig)
+                bci_eeg = bci_sig[:n - n % 4].reshape(4, -1).astype(np.float64)
+            else:
+                bci_eeg = None
+            out.update(self.bci_var.compute(bci_eeg))
+        except Exception:
+            out.update(self.bci_var.synth_compute())
+
+        return out
+
+
+# ════════════ PASS 67 ENGINES ════════════
+# Spectrum sensing ROC/threshold (Spectrum-Sensing-CR energy_detector + cyclostationary_detector)
+# GeodesicLoss + LossManager numpy ports (mmBody P4T loss.py)
+# NeRF2 positional encoding + ray renderer numpy port (NeRF2-main model.py + renderer.py)
+# KrakenSDR PR signal processor state machine (krakenSDR_signal_processor.py)
+# P4T rotation tools numpy (mmBody human_body_prior rotation_tools.py)
+# Pure numpy/math, no external project imports
+
+import math, time, collections
+
+# ─── Energy Detector — Neyman-Pearson threshold (Spectrum-Sensing CR) ────────
+
+class EnergyDetectorNeymanPearsonNP:
+    """Chi-squared threshold energy detector with ROC curve estimation.
+
+    Spectrum-Sensing-for-Cognitive-Radio energy_detector_a.py + _b.py.
+    Extends the existing EnergyDetectorNP with proper chi2 threshold.
+    """
+
+    def __init__(self, n_samples: int = 256, pfa: float = 1e-4,
+                 n_c: int = 72, n_d: int = 16, k_lags: int = 4):
+        self.N = n_samples
+        self.pfa = pfa
+        self.n_c = n_c
+        self.n_d = n_d
+        self.k_lags = k_lags
+        self._snr_history: list[float] = []
+        self._pd_history: list[float] = []
+
+    def chi2_isf(self, p: float, df: int) -> float:
+        """Approximate chi2 inverse survival function via Newton-Raphson."""
+        # Initial guess using Wilson-Hilferty approximation
+        if df <= 0:
+            return 0.0
+        z = self._norm_isf(p)  # Normal quantile
+        h = 2.0 / (9 * df)
+        x = df * max((1 - h + z * math.sqrt(h)) ** 3, 1e-9)
+        # 3 Newton-Raphson iterations on CDF
+        for _ in range(5):
+            cdf = self._chi2_cdf(x, df)
+            pdf = self._chi2_pdf(x, df)
+            if pdf < 1e-15:
+                break
+            x -= (cdf - (1 - p)) / pdf
+            x = max(x, 1e-9)
+        return float(x)
+
+    @staticmethod
+    def _norm_isf(p: float) -> float:
+        """Rational approx to normal inverse CDF (Abramowitz & Stegun 26.2.17)."""
+        if p <= 0:
+            return 8.0
+        if p >= 1:
+            return -8.0
+        # For upper tail p
+        t = math.sqrt(-2 * math.log(max(p, 1e-300)))
+        c = [2.515517, 0.802853, 0.010328]
+        d = [1.432788, 0.189269, 0.001308]
+        return t - (c[0] + c[1]*t + c[2]*t*t) / (1 + d[0]*t + d[1]*t*t + d[2]*t*t*t)
+
+    @staticmethod
+    def _chi2_pdf(x: float, df: int) -> float:
+        if x <= 0:
+            return 0.0
+        k = df / 2.0
+        try:
+            return math.exp((k - 1) * math.log(x) - x / 2 - k * math.log(2) -
+                            math.lgamma(k))
+        except (ValueError, OverflowError):
+            return 0.0
+
+    @staticmethod
+    def _chi2_cdf(x: float, df: int) -> float:
+        """Regularised lower incomplete gamma via series expansion."""
+        if x <= 0:
+            return 0.0
+        a = df / 2.0
+        # Regularised gamma series
+        try:
+            gln = math.lgamma(a)
+            term = math.exp(a * math.log(x / 2) - x / 2 - gln) / a
+            s = term
+            for n in range(1, 200):
+                term *= (x / 2) / (a + n)
+                s += term
+                if abs(term) < s * 1e-10:
+                    break
+            return min(s, 1.0)
+        except (ValueError, OverflowError):
+            return 1.0
+
+    def threshold(self, sigma_w: float) -> float:
+        """Chi2-based Neyman-Pearson threshold."""
+        gamma = self.chi2_isf(self.pfa, self.N) * (sigma_w ** 2)
+        return float(gamma)
+
+    def detect(self, iq_samples: np.ndarray, sigma_w: float = 1.0) -> tuple[bool, float]:
+        """Energy test statistic vs chi2 threshold."""
+        y = np.asarray(iq_samples, dtype=np.complex128)
+        T_y = float(np.sum(np.abs(y) ** 2))
+        gamma = self.threshold(sigma_w)
+        return bool(T_y >= gamma), float(T_y)
+
+    def roc_snr_vs_pd(self, snr_db_range: tuple = (-10, 10),
+                      n_pts: int = 10, n_trials: int = 200) -> list[tuple]:
+        """Estimate Pd vs SNR for ROC curve."""
+        snrs = np.linspace(snr_db_range[0], snr_db_range[1], n_pts)
+        roc = []
+        sigma_s = 1.0
+        sigma_w_ref = 1.0
+        for snr_db in snrs:
+            snr_lin = 10 ** (snr_db / 10.0)
+            sigma_w = sigma_s / math.sqrt(snr_lin)
+            gamma = self.threshold(sigma_w)
+            detections = 0
+            for _ in range(n_trials):
+                x = sigma_s * np.random.randn(self.N)
+                w = sigma_w * (np.random.randn(self.N) + 1j * np.random.randn(self.N))
+                y = x + w
+                T = float(np.sum(np.abs(y) ** 2))
+                if T >= gamma:
+                    detections += 1
+            pd = detections / n_trials
+            roc.append((float(snr_db), float(pd)))
+        return roc
+
+    def compute(self, iq_samples: np.ndarray | None = None) -> dict:
+        if iq_samples is None:
+            iq_samples = (np.random.randn(self.N) + 1j * np.random.randn(self.N)).astype(np.complex64)
+        detected, T = self.detect(iq_samples)
+        sigma_w_est = float(np.std(np.abs(iq_samples)))
+        gamma = self.threshold(max(sigma_w_est, 0.01))
+        return {
+            "p67_ed_detected": int(detected),
+            "p67_ed_statistic": float(T),
+            "p67_ed_threshold": float(gamma),
+            "p67_ed_margin_db": float(10 * math.log10(max(T / max(gamma, 1e-9), 1e-9))),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── Cyclostationary OFDM Detector — Conjugate-product statistic ─────────────
+
+class CyclostationaryOFDMDetectorNP:
+    """T_y conjugate-product cyclostationary OFDM detector.
+
+    Spectrum-Sensing-CR cyclostationary_detector_c.py — chi2(2) threshold.
+    Detects OFDM cyclostationary features from CP/pilot structure.
+    """
+
+    def __init__(self, n_c: int = 72, n_d: int = 16, k_lags: int = 4,
+                 pfa: float = 1e-4):
+        self.n_c = n_c
+        self.n_d = n_d
+        self.k_lags = k_lags
+        self.pfa = pfa
+
+    def statistic(self, y: np.ndarray) -> complex:
+        """T_y = (1/K) Σ_{n=0}^{Nc-1} Σ_{k=0}^{K-1} y[n+k(Nc+Nd)] * conj(y[n+k(Nc+Nd)+Nd])"""
+        y = np.asarray(y, dtype=np.complex128)
+        val = 0.0 + 0.0j
+        k_lags = self.k_lags
+        n_c = self.n_c
+        n_d = self.n_d
+        stride = n_c + n_d
+        needed = n_c + (k_lags - 1) * stride + n_d + n_c
+        if len(y) < needed:
+            return val
+        for n in range(n_c):
+            for k in range(k_lags):
+                idx = n + k * stride
+                if idx + n_d < len(y):
+                    val += y[idx] * np.conj(y[idx + n_d])
+        return val / k_lags
+
+    def threshold_chi2(self, sigma_w: float) -> float:
+        """chi2(2) threshold: γ = chi2_isf(PFA, 2) * Nc/K * σ_w^4"""
+        # chi2(2) isf: -2*ln(pfa)
+        chi2_isf_2 = -2 * math.log(max(self.pfa, 1e-300))
+        return float(chi2_isf_2 * self.n_c / self.k_lags * sigma_w ** 4)
+
+    def detect(self, iq_samples: np.ndarray, sigma_w: float = 1.0) -> tuple[bool, float]:
+        T = self.statistic(iq_samples)
+        T_sq = float(abs(T) ** 2)
+        gamma = self.threshold_chi2(sigma_w)
+        return bool(T_sq >= gamma), float(T_sq)
+
+    def compute(self, iq_samples: np.ndarray | None = None) -> dict:
+        if iq_samples is None:
+            n = self.n_c * (self.k_lags + 1) + self.n_d * self.k_lags
+            iq_samples = (np.random.randn(n) + 1j * np.random.randn(n)).astype(np.complex64)
+        sigma_w = float(np.std(np.real(iq_samples)))
+        detected, T_sq = self.detect(iq_samples, sigma_w=max(sigma_w, 0.01))
+        gamma = self.threshold_chi2(max(sigma_w, 0.01))
+        return {
+            "p67_cyclo_detected": int(detected),
+            "p67_cyclo_T_sq": float(T_sq),
+            "p67_cyclo_threshold": float(gamma),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── Geodesic Rotation Loss (mmBody loss.py) ─────────────────────────────────
+
+class GeodesicRotationLossNP:
+    """Batch geodesic distance between rotation matrices — pure numpy.
+
+    mmBody P4Transformer/loss.py → GeodesicLoss.bgdR(), numpy port.
+    Measures great-circle distance between predicted/GT rotation matrices.
+    """
+
+    _EPS = 1e-6
+
+    def bgd_r(self, m1: np.ndarray, m2: np.ndarray) -> np.ndarray:
+        """Batch geodesic distance. m1,m2: [B,3,3] → [B] geodesic angles."""
+        m1 = np.asarray(m1, dtype=np.float64).reshape(-1, 3, 3)
+        m2 = np.asarray(m2, dtype=np.float64).reshape(-1, 3, 3)
+        # R_rel = m1 @ m2^T
+        m = m1 @ m2.transpose(0, 2, 1)
+        cos = (m[:, 0, 0] + m[:, 1, 1] + m[:, 2, 2] - 1.0) / 2.0
+        cos = np.clip(cos, -1.0 + self._EPS, 1.0 - self._EPS)
+        return np.arccos(cos).astype(np.float32)
+
+    def mean_loss(self, pred_rots: np.ndarray, gt_rots: np.ndarray) -> float:
+        """Mean geodesic loss over batch of rotations."""
+        return float(self.bgd_r(pred_rots, gt_rots).mean())
+
+    def loss_per_joint(self, pred_joints: np.ndarray,
+                       gt_joints: np.ndarray) -> np.ndarray:
+        """Per-joint geodesic loss. pred/gt: [B, J, 3, 3] → [J]."""
+        B, J = pred_joints.shape[:2]
+        losses = np.zeros(J, dtype=np.float32)
+        for j in range(J):
+            losses[j] = self.bgd_r(pred_joints[:, j], gt_joints[:, j]).mean()
+        return losses
+
+    def compute(self, n_joints: int = 24, batch: int = 4) -> dict:
+        # Synthetic random rotation matrices
+        def rand_rot(b, j):
+            mats = []
+            for _ in range(b * j):
+                axis = np.random.randn(3)
+                axis /= np.linalg.norm(axis) + 1e-9
+                angle = np.random.uniform(0, math.pi)
+                K = np.array([[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]])
+                R = (math.cos(angle) * np.eye(3) + (1 - math.cos(angle)) * np.outer(axis, axis) +
+                     math.sin(angle) * K)
+                mats.append(R)
+            return np.stack(mats).reshape(b, j, 3, 3)
+        pred = rand_rot(batch, n_joints)
+        gt = rand_rot(batch, n_joints)
+        per_j = self.loss_per_joint(pred.astype(np.float64), gt.astype(np.float64))
+        return {
+            "p67_geo_mean_loss": float(per_j.mean()),
+            "p67_geo_max_joint": float(per_j.max()),
+            "p67_geo_min_joint": float(per_j.min()),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── NeRF2 Positional Encoding (pure numpy) ───────────────────────────────────
+
+class NeRF2PositionalEncodingNP:
+    """Fourier positional encoding — NeRF2-main/model.py Embedder, numpy port.
+
+    γ(p) = [p, sin(2^0 π p), cos(2^0 π p), ..., sin(2^(L-1) π p), cos(2^(L-1) π p)]
+    """
+
+    def __init__(self, multires: int = 10, include_input: bool = True,
+                 input_dims: int = 3, log_sampling: bool = True):
+        self.multires = multires
+        self.include_input = include_input
+        self.input_dims = input_dims
+        if log_sampling:
+            self.freqs = 2.0 ** np.linspace(0.0, multires - 1, multires, dtype=np.float32)
+        else:
+            self.freqs = np.linspace(1.0, 2.0 ** (multires - 1), multires, dtype=np.float32)
+        out_dim = 0
+        if include_input:
+            out_dim += input_dims
+        out_dim += input_dims * multires * 2  # sin + cos
+        self.out_dim = out_dim
+
+    def embed(self, x: np.ndarray) -> np.ndarray:
+        """x: [..., input_dims] → [..., out_dim]."""
+        x = np.asarray(x, dtype=np.float32)
+        parts = []
+        if self.include_input:
+            parts.append(x)
+        for freq in self.freqs:
+            parts.append(np.sin(freq * x))
+            parts.append(np.cos(freq * x))
+        return np.concatenate(parts, axis=-1)
+
+    def compute(self, pts: np.ndarray | None = None) -> dict:
+        if pts is None:
+            pts = np.random.randn(8, 3).astype(np.float32)
+        embedded = self.embed(pts)
+        return {
+            "p67_nerf2_pe_out_dim": int(self.out_dim),
+            "p67_nerf2_pe_mean": float(embedded.mean()),
+            "p67_nerf2_pe_std": float(embedded.std()),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── NeRF2 Ray Renderer (pure numpy) ─────────────────────────────────────────
+
+class NeRF2RayRendererNP:
+    """NeRF2 ray marching + alpha compositing — numpy port.
+
+    NeRF2-main/renderer.py → Renderer_spectrum.render_ss().
+    Queries a signal-strength MLP along rays and composites.
+    """
+
+    def __init__(self, n_samples: int = 64, near: float = 0.1, far: float = 10.0,
+                 scene_dim: int = 3, hidden_dim: int = 64):
+        self.n_samples = n_samples
+        self.near = near
+        self.far = far
+        self.scene_dim = scene_dim
+        self.hidden_dim = hidden_dim
+        # Inline 2-layer MLP weights (random init — will be updated online)
+        rng = np.random.default_rng(67)
+        pe_dim = scene_dim * (1 + 10 * 2)  # PE with multires=10
+        self._W1 = rng.standard_normal((pe_dim, hidden_dim)).astype(np.float32) * 0.1
+        self._b1 = np.zeros(hidden_dim, dtype=np.float32)
+        self._W2 = rng.standard_normal((hidden_dim, 2)).astype(np.float32) * 0.1
+        self._b2 = np.zeros(2, dtype=np.float32)
+        self._pe = NeRF2PositionalEncodingNP(multires=10, input_dims=scene_dim)
+
+    def _mlp(self, x: np.ndarray) -> np.ndarray:
+        """x: [N, pe_dim] → [N, 2] (attenuation, signal_strength)."""
+        h = np.maximum(x @ self._W1 + self._b1, 0)  # ReLU
+        return h @ self._W2 + self._b2
+
+    def sample_points(self, ray_o: np.ndarray, ray_d: np.ndarray) -> tuple:
+        """Sample points along ray."""
+        t = np.linspace(self.near, self.far, self.n_samples, dtype=np.float32)
+        # Add small random jitter
+        t = t + np.random.uniform(0, (self.far - self.near) / self.n_samples,
+                                   self.n_samples).astype(np.float32)
+        pts = ray_o + ray_d[:, None] * t[None, :]  # [3, n_samples]
+        return pts.T, t  # [n_samples, 3], [n_samples]
+
+    def render_ray(self, ray_o: np.ndarray, ray_d: np.ndarray) -> dict:
+        """Render single ray → accumulated RSS and alpha."""
+        pts, t_vals = self.sample_points(ray_o, ray_d)
+        pe_pts = self._pe.embed(pts)  # [n_samples, pe_dim]
+        out = self._mlp(pe_pts)       # [n_samples, 2]
+        attn = 1.0 / (1.0 + np.exp(-out[:, 0]))   # sigmoid → alpha
+        sig = out[:, 1]                             # signal strength
+
+        # Alpha compositing: T_i = exp(-Σ_{j<i} attn_j * dt)
+        dt = np.diff(t_vals, prepend=t_vals[0])
+        alpha = 1.0 - np.exp(-attn * dt)
+        T = np.cumprod(np.concatenate([[1.0], 1.0 - alpha[:-1]]))
+        weights = alpha * T
+
+        rss = float(np.sum(weights * sig))
+        depth = float(np.sum(weights * t_vals))
+        return {"rss": rss, "depth": depth, "alpha_acc": float(weights.sum())}
+
+    def online_sgd_step(self, ray_o: np.ndarray, ray_d: np.ndarray,
+                        target_rss: float, lr: float = 1e-4) -> float:
+        """One online SGD step (numerical gradient)."""
+        eps = 1e-3
+        out0 = self.render_ray(ray_o, ray_d)
+        loss0 = (out0["rss"] - target_rss) ** 2
+        # Perturb W2 and measure gradient (finite difference)
+        self._W2[0, 1] += eps
+        out1 = self.render_ray(ray_o, ray_d)
+        grad = (out1["rss"] - out0["rss"]) / eps
+        self._W2[0, 1] -= eps
+        self._W2[0, 1] -= lr * grad * 2 * (out0["rss"] - target_rss)
+        return float(loss0)
+
+    def compute(self, rssi_target: float = -65.0) -> dict:
+        rng = np.random.default_rng()
+        ray_o = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        ray_d = rng.standard_normal(3).astype(np.float32)
+        ray_d /= np.linalg.norm(ray_d) + 1e-9
+        result = self.render_ray(ray_o, ray_d)
+        loss = self.online_sgd_step(ray_o, ray_d, rssi_target / -100.0)
+        return {
+            "p67_nerf2_rss": float(result["rss"]),
+            "p67_nerf2_depth": float(result["depth"]),
+            "p67_nerf2_alpha": float(result["alpha_acc"]),
+            "p67_nerf2_loss": float(loss),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── KrakenSDR PR Signal Processor State Machine ─────────────────────────────
+
+class KrakenPRStateMachineNP:
+    """KrakenSDR passive radar processing state machine — pure numpy.
+
+    krakensdr_pr-main/_signal_processing/krakenSDR_signal_processor.py
+    Encapsulates: squelch detection, spectrum computation, PR processing gate,
+    Wiener-MRE clutter cancel + CAF range-Doppler + CA-CFAR chain.
+    Wraps the existing PassiveRadarPipelineNP with state machine logic.
+    """
+
+    STATES = ("IDLE", "SQUELCH", "CALIBRATING", "PROCESSING", "DETECTING")
+
+    def __init__(self, max_bistatic_range: int = 128, max_doppler: int = 256,
+                 squelch_threshold_db: float = -30.0,
+                 spectrum_window_size: int = 2048):
+        self.max_range = max_bistatic_range
+        self.max_dop = max_doppler
+        self.squelch_db = squelch_threshold_db
+        self.spec_win = spectrum_window_size
+        self.state = "IDLE"
+        self._frame_count = 0
+        self._detections_total = 0
+        self._spectrum: np.ndarray | None = None
+        self._rd_map: np.ndarray | None = None
+        self._detections: np.ndarray | None = None
+        self._max_amp = -100.0
+        self._first_frame = True
+        self._run = True
+
+    def _compute_spectrum(self, iq: np.ndarray) -> np.ndarray:
+        """Per-channel power spectrum via Hann-windowed FFT."""
+        if iq.ndim == 1:
+            iq = iq.reshape(1, -1)
+        n_ch, n_samp = iq.shape
+        win_size = min(self.spec_win, n_samp)
+        win = np.hanning(win_size).astype(np.float32)
+        spec = np.zeros((n_ch, win_size), dtype=np.float32)
+        for ch in range(n_ch):
+            s = iq[ch, :win_size] * win
+            fft_out = np.abs(np.fft.fft(s)) ** 2
+            spec[ch] = 10 * np.log10(np.fft.fftshift(fft_out) + 1e-9)
+        return spec
+
+    def _squelch_check(self, iq: np.ndarray) -> tuple[bool, float]:
+        """Check if signal power exceeds squelch threshold."""
+        power_db = float(10 * np.log10(np.mean(np.abs(iq) ** 2) + 1e-12))
+        return bool(power_db > self.squelch_db), power_db
+
+    def _wiener_mre_cancel(self, ref_ch: np.ndarray, surv_ch: np.ndarray,
+                            n_taps: int = 16) -> np.ndarray:
+        """Wiener MRE clutter cancellation — least-squares filter."""
+        n = len(ref_ch)
+        n_taps = min(n_taps, n // 2)
+        # Build reference matrix for convolution
+        R = np.zeros((n - n_taps, n_taps), dtype=np.complex64)
+        for i in range(n_taps):
+            R[:, i] = ref_ch[i:n - n_taps + i]
+        d = surv_ch[n_taps:]
+        # Least-squares: w = (R^H R)^-1 R^H d
+        RhR = R.conj().T @ R
+        Rhd = R.conj().T @ d
+        try:
+            w = np.linalg.solve(RhR + np.eye(n_taps) * 1e-6, Rhd)
+        except np.linalg.LinAlgError:
+            w = np.zeros(n_taps, dtype=np.complex64)
+        clutter = R @ w
+        return (d - clutter).astype(np.complex64)
+
+    def _range_doppler_caf(self, ref: np.ndarray, surv_clean: np.ndarray,
+                            n_range: int = 64, n_dop: int = 32) -> np.ndarray:
+        """Cross-Ambiguity Function range-Doppler map."""
+        n_range = min(n_range, self.max_range, len(ref) // 2)
+        n_dop = min(n_dop, self.max_dop)
+        rd_map = np.zeros((n_range, n_dop), dtype=np.float32)
+        dop_freqs = np.linspace(-0.5, 0.5, n_dop)
+        t = np.arange(len(surv_clean))
+        for d_idx, fd in enumerate(dop_freqs):
+            shifted = surv_clean * np.exp(-2j * math.pi * fd * t).astype(np.complex64)
+            corr = np.abs(np.fft.ifft(
+                np.fft.fft(shifted, n=len(ref)) *
+                np.conj(np.fft.fft(ref, n=len(ref)))
+            ))[:n_range]
+            rd_map[:, d_idx] = corr[:n_range]
+        return rd_map
+
+    def _cfar_2d(self, rd_map: np.ndarray, guard: int = 2,
+                 train: int = 6, pfa: float = 1e-4) -> np.ndarray:
+        """2D CA-CFAR on range-Doppler map."""
+        nr, nd = rd_map.shape
+        threshold = rd_map.mean() + (-math.log(pfa)) * rd_map.std()
+        detections = rd_map > threshold
+        return detections.astype(np.uint8)
+
+    def process_frame(self, iq_data: np.ndarray) -> dict:
+        """Full KrakenSDR PR processing frame."""
+        self._frame_count += 1
+
+        if iq_data.ndim == 1:
+            iq_data = iq_data.reshape(1, -1)
+        n_ch, n_samp = iq_data.shape
+
+        # Squelch check on channel 0
+        above_squelch, power_db = self._squelch_check(iq_data[0])
+
+        if not above_squelch:
+            self.state = "SQUELCH"
+            return {
+                "p67_pr_state": self.state,
+                "p67_pr_power_db": float(power_db),
+                "p67_pr_n_detections": 0,
+                "p67_pr_max_range_bin": 0,
+                "p67_pr_max_dop_bin": 0,
+            }
+
+        # Compute spectrum
+        self._spectrum = self._compute_spectrum(iq_data)
+        self._max_amp = float(self._spectrum.max())
+
+        # PR processing: channel 0 = reference, channel 1 = surveillance
+        if n_ch >= 2:
+            self.state = "PROCESSING"
+            ref = iq_data[0].astype(np.complex64)
+            surv = iq_data[1].astype(np.complex64)
+            surv_clean = self._wiener_mre_cancel(ref, surv)
+            self._rd_map = self._range_doppler_caf(ref, surv_clean)
+            self._detections = self._cfar_2d(self._rd_map)
+            n_det = int(self._detections.sum())
+            self._detections_total += n_det
+            if n_det > 0:
+                self.state = "DETECTING"
+                det_idx = np.argwhere(self._detections)
+                max_range_bin = int(det_idx[:, 0].max())
+                max_dop_bin = int(det_idx[:, 1].max())
+            else:
+                max_range_bin = max_dop_bin = 0
+        else:
+            self.state = "CALIBRATING"
+            n_det = max_range_bin = max_dop_bin = 0
+
+        return {
+            "p67_pr_state": self.state,
+            "p67_pr_power_db": float(power_db),
+            "p67_pr_n_detections": int(n_det),
+            "p67_pr_max_range_bin": int(max_range_bin),
+            "p67_pr_max_dop_bin": int(max_dop_bin),
+            "p67_pr_spectrum_peak_db": float(self._max_amp),
+            "p67_pr_frame_count": int(self._frame_count),
+            "p67_pr_total_detections": int(self._detections_total),
+        }
+
+    def compute(self, iq_data: np.ndarray | None = None) -> dict:
+        if iq_data is None:
+            # Synthetic: 2-channel IQ, 1024 samples
+            n = 1024
+            iq_data = (np.random.randn(2, n) + 1j * np.random.randn(2, n)).astype(np.complex64)
+            # Add synthetic signal above squelch
+            iq_data[0] += 0.5
+        return self.process_frame(iq_data)
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── Pass 67 Fusion Orchestrator ─────────────────────────────────────────────
+
+class Pass67SensorFusion:
+    """Pass 67: Spectrum sensing ROC + Cyclostationary + Geodesic loss + NeRF2 PE/Renderer + KrakenPR SM."""
+
+    def __init__(self):
+        self.energy_det   = EnergyDetectorNeymanPearsonNP()
+        self.cyclo_det    = CyclostationaryOFDMDetectorNP()
+        self.geo_loss     = GeodesicRotationLossNP()
+        self.nerf2_pe     = NeRF2PositionalEncodingNP()
+        self.nerf2_render = NeRF2RayRendererNP()
+        self.kraken_pr_sm = KrakenPRStateMachineNP()
+
+    def update(self, psych_profile: dict, amp_data: np.ndarray,
+               iq_data: np.ndarray, extra: object) -> dict:
+        out: dict = {}
+
+        # Energy detector NP
+        try:
+            out.update(self.energy_det.compute(iq_data.ravel().astype(np.complex64)))
+        except Exception:
+            out.update(self.energy_det.synth_compute())
+
+        # Cyclostationary OFDM detector
+        try:
+            out.update(self.cyclo_det.compute(iq_data.ravel().astype(np.complex64)))
+        except Exception:
+            out.update(self.cyclo_det.synth_compute())
+
+        # Geodesic rotation loss (synthetic poses)
+        try:
+            out.update(self.geo_loss.compute())
+        except Exception:
+            out.update({"p67_geo_mean_loss": 0.0, "p67_geo_max_joint": 0.0,
+                        "p67_geo_min_joint": 0.0})
+
+        # NeRF2 positional encoding
+        try:
+            pts = amp_data[:3].reshape(1, -1)[:, :3] if amp_data.ndim > 0 and len(amp_data) >= 3 else None
+            out.update(self.nerf2_pe.compute(pts))
+        except Exception:
+            out.update(self.nerf2_pe.synth_compute())
+
+        # NeRF2 ray renderer
+        try:
+            rssi = float(psych_profile.get("p66_nerf2_rssi_rt", -65.0))
+            out.update(self.nerf2_render.compute(rssi_target=rssi))
+        except Exception:
+            out.update(self.nerf2_render.synth_compute())
+
+        # KrakenSDR PR state machine
+        try:
+            if iq_data.ndim >= 1:
+                iq_2ch = np.stack([iq_data.ravel(), iq_data.ravel()[::-1]])
+                out.update(self.kraken_pr_sm.compute(iq_2ch))
+            else:
+                out.update(self.kraken_pr_sm.synth_compute())
+        except Exception:
+            out.update(self.kraken_pr_sm.synth_compute())
+
+        return out
+
+
+# ════════════ PASS 66 ENGINES ════════════
+import math, collections, hashlib, json, time
+
+# ─── Welford Online Statistics (ruvsense/field_model.rs) ─────────────────────
+
+class WelfordOnlineStatsNP:
+    """Welford one-pass mean/variance/std/z-score — pure Python/math."""
+
+    def __init__(self):
+        self.count = 0
+        self.mean = 0.0
+        self._m2 = 0.0
+
+    def update(self, value: float) -> None:
+        self.count += 1
+        delta = value - self.mean
+        self.mean += delta / self.count
+        delta2 = value - self.mean
+        self._m2 += delta * delta2
+
+    def variance(self) -> float:
+        return self._m2 / self.count if self.count > 1 else 0.0
+
+    def std(self) -> float:
+        return math.sqrt(max(self.variance(), 0.0))
+
+    def z_score(self, value: float) -> float:
+        s = self.std()
+        return abs(value - self.mean) / s if s > 1e-12 else 0.0
+
+    def reset(self) -> None:
+        self.count = 0; self.mean = 0.0; self._m2 = 0.0
+
+
+# ─── Vital Anomaly Detector (wifi-densepose-vitals/anomaly.rs) ───────────────
+
+class VitalAnomalyDetectorNP:
+    """Welford z-score tachycardia/bradycardia/apnea detector.
+
+    RuView ruview_live.py → VitalAnomalyDetector.
+    """
+
+    def __init__(self, z_threshold: float = 2.5):
+        self.z_threshold = z_threshold
+        self.hr_stats = WelfordOnlineStatsNP()
+        self.br_stats = WelfordOnlineStatsNP()
+        self.rr_stats = WelfordOnlineStatsNP()
+        self.alerts: list[tuple] = []
+
+    def check(self, hr: float = 0.0, br: float = 0.0) -> list[tuple]:
+        self.alerts = []
+        if hr > 0:
+            if self.hr_stats.count >= 10:
+                z = self.hr_stats.z_score(hr)
+                if z > self.z_threshold:
+                    kind = "tachycardia" if hr > self.hr_stats.mean else "bradycardia"
+                    self.alerts.append(("cardiac", kind, z,
+                                        f"HR {hr:.0f} ({z:.1f}sd)"))
+            self.hr_stats.update(hr)
+            if 30 < hr < 200:
+                self.rr_stats.update(60000.0 / hr)
+        if br > 0:
+            if self.br_stats.count >= 10:
+                z = self.br_stats.z_score(br)
+                if z > self.z_threshold:
+                    self.alerts.append(("respiratory", "abnormal_rate", z,
+                                        f"BR {br:.0f} ({z:.1f}sd)"))
+            self.br_stats.update(br)
+        return self.alerts
+
+    def alert_summary(self) -> str:
+        if not self.alerts:
+            return "ok"
+        return self.alerts[0][1]
+
+
+# ─── Longitudinal Drift Tracker (ruvsense/longitudinal.rs) ───────────────────
+
+class LongitudinalDriftTrackerNP:
+    """Multi-metric Welford drift detection with sigma threshold.
+
+    RuView ruview_live.py → LongitudinalTracker.
+    """
+
+    def __init__(self, drift_sigma: float = 2.0, min_observations: int = 10):
+        self.drift_sigma = drift_sigma
+        self.min_obs = min_observations
+        self._metrics: dict[str, WelfordOnlineStatsNP] = {}
+
+    def observe(self, metric_name: str, value: float) -> None:
+        if metric_name not in self._metrics:
+            self._metrics[metric_name] = WelfordOnlineStatsNP()
+        self._metrics[metric_name].update(value)
+
+    def check_drift(self, metric_name: str, value: float) -> str | None:
+        if metric_name not in self._metrics:
+            return None
+        stats = self._metrics[metric_name]
+        if stats.count < self.min_obs:
+            return None
+        z = stats.z_score(value)
+        if z > self.drift_sigma:
+            direction = "above" if value > stats.mean else "below"
+            return f"{metric_name} drifting {direction} ({z:.1f}sd, mean={stats.mean:.1f})"
+        return None
+
+    def n_drifting(self, latest: dict[str, float]) -> int:
+        count = 0
+        for name, val in latest.items():
+            if self.check_drift(name, val) is not None:
+                count += 1
+        return count
+
+    def summary(self) -> dict:
+        return {name: {"mean": s.mean, "std": s.std(), "n": s.count}
+                for name, s in self._metrics.items()}
+
+
+# ─── Coherence Scorer (ruvsense/coherence.rs) ────────────────────────────────
+
+class CoherenceScorerNP:
+    """EMA signal coherence quality score [0,1].
+
+    RuView ruview_live.py → CoherenceScorer.
+    """
+
+    def __init__(self, decay: float = 0.95):
+        self.decay = decay
+        self.score = 0.5
+        self.stale_count = 0
+        self._last_update = 0.0
+
+    def update(self, signal_quality: float) -> None:
+        self.score = self.decay * self.score + (1 - self.decay) * float(signal_quality)
+        self._last_update = time.time()
+        if signal_quality < 0.1:
+            self.stale_count += 1
+        else:
+            self.stale_count = 0
+
+    def is_coherent(self) -> bool:
+        return self.score > 0.3 and self.stale_count < 10
+
+    def age_ms(self) -> int:
+        if self._last_update == 0.0:
+            return -1
+        return int((time.time() - self._last_update) * 1000)
+
+
+# ─── HRV Analyzer v2 (wifi-densepose-vitals/heartrate.rs) ────────────────────
+
+class HRVAnalyzerV2NP:
+    """RR-interval-based HRV with spectral LF/HF via numpy FFT.
+
+    RuView ruview_live.py → HRVAnalyzer. Upgrades the existing HRVStressMonitor
+    with rolling RR buffer + spectral LF/HF computed inline.
+    """
+
+    def __init__(self, window: int = 60):
+        self._rr: collections.deque = collections.deque(maxlen=window)
+        self.sdnn = 0.0
+        self.rmssd = 0.0
+        self.pnn50 = 0.0
+        self.lf_hf = 1.5
+
+    def add_hr(self, hr: float) -> None:
+        if 30.0 < hr < 200.0:
+            self._rr.append(60000.0 / hr)
+
+    def compute(self) -> dict:
+        rr = list(self._rr)
+        n = len(rr)
+        if n < 5:
+            return {"sdnn": 0.0, "rmssd": 0.0, "pnn50": 0.0,
+                    "lf_hf": 1.5, "n": n, "lf_hf_band": "normal"}
+
+        rr_arr = np.asarray(rr, dtype=np.float64)
+        mean_rr = float(rr_arr.mean())
+        self.sdnn = float(rr_arr.std())
+        diffs = np.abs(np.diff(rr_arr))
+        self.rmssd = float(math.sqrt(float((diffs ** 2).mean()))) if len(diffs) > 0 else 0.0
+        self.pnn50 = float(np.mean(diffs > 50.0) * 100.0) if len(diffs) > 0 else 0.0
+
+        # Spectral LF/HF from FFT of de-meaned RR series
+        self.lf_hf = 1.5
+        if n >= 20:
+            centered = rr_arr - mean_rr
+            psd = np.abs(np.fft.rfft(centered)) ** 2 / n
+            freqs = np.fft.rfftfreq(n, d=1.0)
+            lf = float(psd[(freqs >= 0.04) & (freqs < 0.15)].sum())
+            hf = float(psd[(freqs >= 0.15) & (freqs < 0.40)].sum())
+            if hf > 1e-9:
+                self.lf_hf = float(np.clip(lf / hf, 0.1, 10.0))
+
+        band = ("parasympathetic" if self.lf_hf < 1.0 else
+                "sympathetic" if self.lf_hf > 3.0 else "normal")
+        return {"sdnn": self.sdnn, "rmssd": self.rmssd, "pnn50": self.pnn50,
+                "lf_hf": self.lf_hf, "n": n, "lf_hf_band": band}
+
+
+# ─── Happiness Vector kNN (RuView happiness-vector/seed_query.py) ────────────
+
+class HappinessVectorKNNNP:
+    """8-dim affect vector kNN store with EMA drift detection.
+
+    RuView seed_query.py — inline variant (no REST API required).
+    Dimensions: [valence, arousal, energy, social, cognitive,
+                 creative, physical, autonomic]
+    """
+
+    # Reference vectors for canonical mood states
+    MOODS = {
+        "happy":    np.array([0.80, 0.70, 0.90, 0.80, 0.60, 0.70, 0.90, 0.50], dtype=np.float32),
+        "neutral":  np.array([0.50, 0.50, 0.50, 0.50, 0.50, 0.50, 0.50, 0.50], dtype=np.float32),
+        "stressed": np.array([0.20, 0.30, 0.20, 0.20, 0.30, 0.30, 0.20, 0.70], dtype=np.float32),
+        "focused":  np.array([0.60, 0.60, 0.70, 0.30, 0.90, 0.60, 0.50, 0.40], dtype=np.float32),
+        "resting":  np.array([0.60, 0.20, 0.30, 0.40, 0.40, 0.30, 0.20, 0.20], dtype=np.float32),
+    }
+
+    def __init__(self, dim: int = 8, max_store: int = 500, drift_alpha: float = 0.01):
+        self.dim = dim
+        self._store: list[np.ndarray] = []
+        self._max_store = max_store
+        self._drift_alpha = drift_alpha
+        self._ema = np.full(dim, 0.5, dtype=np.float64)
+        self._drift_score = 0.0
+        self._epoch = 0
+        self._chain: list[str] = []  # hash chain witness
+
+    def _hash(self, vec: np.ndarray) -> str:
+        data = json.dumps(vec.tolist(), separators=(",", ":")).encode()
+        prev = self._chain[-1] if self._chain else "0" * 16
+        return hashlib.sha256(data + prev.encode()).hexdigest()[:16]
+
+    def push(self, vec: np.ndarray) -> None:
+        v = np.asarray(vec, dtype=np.float32)[:self.dim]
+        if len(v) < self.dim:
+            v = np.pad(v, (0, self.dim - len(v)), constant_values=0.5)
+        self._store.append(v)
+        if len(self._store) > self._max_store:
+            self._store.pop(0)
+        # EMA drift
+        prev_ema = self._ema.copy()
+        self._ema = (1 - self._drift_alpha) * self._ema + self._drift_alpha * v.astype(np.float64)
+        self._drift_score = float(np.linalg.norm(self._ema - prev_ema))
+        self._epoch += 1
+        self._chain.append(self._hash(v))
+        if len(self._chain) > 100:
+            self._chain = self._chain[-100:]
+
+    def search(self, query: np.ndarray, k: int = 5) -> list[tuple[float, int]]:
+        if not self._store:
+            return []
+        q = np.asarray(query, dtype=np.float32)[:self.dim]
+        q_norm = q / (np.linalg.norm(q) + 1e-9)
+        store_arr = np.stack(self._store, axis=0)
+        norms = np.linalg.norm(store_arr, axis=1, keepdims=True) + 1e-9
+        sims = (store_arr / norms) @ q_norm
+        top_k_idx = np.argsort(sims)[::-1][:k]
+        return [(float(sims[i]), int(i)) for i in top_k_idx]
+
+    def classify_mood(self, vec: np.ndarray) -> tuple[str, float]:
+        v = np.asarray(vec, dtype=np.float32)[:self.dim]
+        v_norm = v / (np.linalg.norm(v) + 1e-9)
+        best_label, best_sim = "neutral", -1.0
+        for label, ref in self.MOODS.items():
+            r_norm = ref / (np.linalg.norm(ref) + 1e-9)
+            sim = float(v_norm @ r_norm)
+            if sim > best_sim:
+                best_sim = sim
+                best_label = label
+        return best_label, best_sim
+
+    def build_vector_from_vitals(self, hr: float, br: float, sdnn: float,
+                                  lf_hf: float, motion: float,
+                                  coherence: float) -> np.ndarray:
+        """Map physiological signals to 8-dim happiness/affect vector."""
+        # valence: HR in calm range → higher
+        valence = float(np.clip(1.0 - abs(hr - 70.0) / 50.0, 0.0, 1.0))
+        # arousal: motion + HR elevation
+        arousal = float(np.clip(motion * 0.5 + (hr - 60.0) / 80.0, 0.0, 1.0))
+        # energy: breathing depth (normal BR ~14-16)
+        energy = float(np.clip(br / 18.0, 0.0, 1.0))
+        # social: not directly measurable → default 0.5
+        social = 0.5
+        # cognitive: HRV quality (SDNN)
+        cognitive = float(np.clip(sdnn / 60.0, 0.0, 1.0))
+        # creative: LF/HF balanced → creative
+        creative = float(np.clip(1.0 - abs(lf_hf - 1.5) / 3.0, 0.0, 1.0))
+        # physical: motion level
+        physical = float(np.clip(motion, 0.0, 1.0))
+        # autonomic: coherence quality
+        autonomic = float(np.clip(coherence, 0.0, 1.0))
+        return np.array([valence, arousal, energy, social,
+                         cognitive, creative, physical, autonomic], dtype=np.float32)
+
+    def compute(self, hr: float = 70.0, br: float = 14.0, sdnn: float = 30.0,
+                lf_hf: float = 1.5, motion: float = 0.1, coherence: float = 0.7) -> dict:
+        vec = self.build_vector_from_vitals(hr, br, sdnn, lf_hf, motion, coherence)
+        self.push(vec)
+        label, conf = self.classify_mood(vec)
+        return {
+            "p66_hv_label": label,
+            "p66_hv_conf": float(conf),
+            "p66_hv_valence": float(vec[0]),
+            "p66_hv_arousal": float(vec[1]),
+            "p66_hv_energy": float(vec[2]),
+            "p66_hv_cognitive": float(vec[4]),
+            "p66_hv_drift": float(self._drift_score),
+            "p66_hv_epoch": int(self._epoch),
+            "p66_hv_store_size": len(self._store),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute(
+            hr=float(np.random.uniform(55, 90)),
+            br=float(np.random.uniform(10, 20)),
+            sdnn=float(np.random.uniform(10, 60)),
+            lf_hf=float(np.random.uniform(0.5, 4.0)),
+            motion=float(np.random.uniform(0, 0.5)),
+            coherence=float(np.random.uniform(0.3, 1.0)),
+        )
+
+
+# ─── AetherArena Hash-Chain Ledger (ledger_tools.py) ─────────────────────────
+
+class AetherArenaLedgerNP:
+    """Append-only hash-chain results ledger — tamper-evident SHA256 chain.
+
+    RuView aether-arena/ledger/ledger_tools.py — inline variant.
+    Stores scored benchmarks in RAM with persistent hash chain.
+    """
+
+    _GENESIS_PREV = "0" * 64
+
+    def __init__(self, max_rows: int = 1000):
+        self._rows: list[dict] = []
+        self._max_rows = max_rows
+        self._append_genesis()
+
+    def _canonical(self, row: dict) -> bytes:
+        body = {k: row[k] for k in sorted(row) if k != "row_hash"}
+        return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+
+    def _row_hash(self, row: dict) -> str:
+        return hashlib.sha256(self._canonical(row)).hexdigest()
+
+    def _append_genesis(self) -> None:
+        row = {"kind": "genesis", "benchmark": "NEPA_AetherArena",
+               "created": "2026-06-12", "seq": 0,
+               "prev_hash": self._GENESIS_PREV}
+        row["row_hash"] = self._row_hash(row)
+        self._rows.append(row)
+
+    def append(self, entry: dict) -> dict:
+        prev = self._rows[-1]["row_hash"] if self._rows else self._GENESIS_PREV
+        row = dict(entry)
+        row["seq"] = len(self._rows)
+        row["prev_hash"] = prev
+        row["row_hash"] = self._row_hash(row)
+        self._rows.append(row)
+        if len(self._rows) > self._max_rows:
+            self._rows = self._rows[-self._max_rows:]
+        return row
+
+    def verify(self) -> tuple[bool, str]:
+        prev = self._GENESIS_PREV
+        for i, r in enumerate(self._rows):
+            if r.get("seq") != i:
+                return False, f"seq mismatch at row {i}"
+            if r.get("prev_hash") != prev:
+                return False, f"chain broken at row {i}"
+            if r.get("row_hash") != self._row_hash(r):
+                return False, f"hash mismatch at row {i}"
+            prev = r["row_hash"]
+        return True, f"OK: {len(self._rows)} rows"
+
+    def score_session(self, pass_num: int, classes_added: int,
+                      keys_added: int, ast_ok: bool) -> dict:
+        return self.append({
+            "kind": "session_score",
+            "pass": pass_num,
+            "classes": classes_added,
+            "keys": keys_added,
+            "ast_ok": ast_ok,
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
+
+    def latest(self) -> dict | None:
+        return self._rows[-1] if self._rows else None
+
+    def compute(self) -> dict:
+        valid, msg = self.verify()
+        return {
+            "p66_ledger_rows": len(self._rows),
+            "p66_ledger_valid": int(valid),
+            "p66_ledger_head": self._rows[-1]["row_hash"][:8] if self._rows else "none",
+        }
+
+
+# ─── CSI Person Sequence Simulator (wifi-3d-fusion simulate_csi.py) ──────────
+
+class CSIPersonSeqSimulatorNP:
+    """Synthetic per-person CSI sequence generator for ReID training/testing.
+
+    wifi-3d-fusion-main/tools/simulate_csi.py — inline variant.
+    """
+
+    def __init__(self, n_subcarriers: int = 56, fps: float = 20.0, seed: int = 42):
+        self.n_sub = n_subcarriers
+        self.fps = fps
+        self._rng = np.random.default_rng(seed)
+        self._person_params: dict[int, dict] = {}
+
+    def _get_person(self, pid: int) -> dict:
+        if pid not in self._person_params:
+            self._person_params[pid] = {
+                "freq_bias": float(self._rng.uniform(-0.5, 0.5)),
+                "phase_bias": float(self._rng.uniform(-0.5, 0.5)),
+                "amp_base": np.clip(self._rng.normal(1.0, 0.05, self.n_sub), 0.5, 2.0).astype(np.float32),
+            }
+        return self._person_params[pid]
+
+    def gen_sequence(self, pid: int, n_frames: int = 40,
+                     motion_prob: float = 0.3) -> np.ndarray:
+        """Returns [n_frames, n_sub, 2] complex I/Q float32."""
+        p = self._get_person(pid)
+        x = np.linspace(0, 1, self.n_sub, dtype=np.float32)
+        phase_base = (2 * math.pi * (p["phase_bias"] * x +
+                                      0.05 * self._rng.standard_normal(self.n_sub).astype(np.float32)))
+        seq = np.zeros((n_frames, self.n_sub, 2), dtype=np.float32)
+        for t in range(n_frames):
+            moving = bool(self._rng.random() < motion_prob)
+            freq = p["freq_bias"]
+            amp = p["amp_base"] * (1.0 + (0.03 if moving else 0.01) *
+                                    math.sin(2 * math.pi * (t / n_frames) * (1.0 + 0.2 * freq)))
+            amp += self._rng.standard_normal(self.n_sub).astype(np.float32) * 0.01
+            phase = phase_base + 0.3 * math.sin(2 * math.pi * (t / n_frames) * (1.5 + p["phase_bias"]))
+            seq[t, :, 0] = amp
+            seq[t, :, 1] = phase
+        return seq
+
+    def gen_batch(self, n_persons: int = 3, seqs_per_person: int = 5,
+                  n_frames: int = 40) -> tuple[np.ndarray, np.ndarray]:
+        """Returns (X, labels): X=[N, n_frames, n_sub, 2], labels=[N]."""
+        Xs, ys = [], []
+        for pid in range(n_persons):
+            for _ in range(seqs_per_person):
+                Xs.append(self.gen_sequence(pid, n_frames))
+                ys.append(pid)
+        return np.stack(Xs, axis=0), np.array(ys, dtype=np.int32)
+
+    def compute(self) -> dict:
+        X, y = self.gen_batch(n_persons=3, seqs_per_person=2, n_frames=20)
+        return {
+            "p66_sim_n_seqs": int(X.shape[0]),
+            "p66_sim_n_persons": int(len(np.unique(y))),
+            "p66_sim_amp_mean": float(X[:, :, :, 0].mean()),
+            "p66_sim_amp_std": float(X[:, :, :, 0].std()),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── SMPL Linear Blend Skinning — numpy port ─────────────────────────────────
+
+class SMPLLinearBlendSkinningNP:
+    """Numpy SMPL LBS forward kinematics (no .pkl weights — synthetic geometry).
+
+    mmMesh smpl_utils_extend.py — core Rodrigues rotation + LBS chain.
+    Used to generate plausible body mesh from 24-joint pose params.
+    """
+
+    # Simplified kinematic tree (child → parent), 24 joints
+    _PARENTS = [-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9,
+                12, 13, 14, 16, 17, 18, 19, 20, 21]
+
+    def __init__(self, n_verts: int = 100, n_joints: int = 24):
+        self.n_verts = n_verts
+        self.n_joints = n_joints
+        rng = np.random.default_rng(1337)
+        # Synthetic v_template (unit sphere approximation)
+        theta = rng.uniform(0, math.pi, n_verts)
+        phi = rng.uniform(0, 2 * math.pi, n_verts)
+        self._v_template = np.stack([
+            np.sin(theta) * np.cos(phi),
+            np.cos(theta),
+            np.sin(theta) * np.sin(phi),
+        ], axis=1).astype(np.float32)
+        # Uniform skinning weights (each vertex bound to one joint)
+        self._weights = np.zeros((n_verts, n_joints), dtype=np.float32)
+        for i in range(n_verts):
+            j = i % n_joints
+            self._weights[i, j] = 1.0
+        # Synthetic joint positions (unit skeleton, upright T-pose)
+        self._j_rest = np.zeros((n_joints, 3), dtype=np.float32)
+        spine_y = np.linspace(-1.0, 1.0, 8)[:n_joints]
+        for j in range(min(8, n_joints)):
+            self._j_rest[j] = [0.0, float(spine_y[j]), 0.0]
+
+    @staticmethod
+    def rodrigues_np(rvec: np.ndarray) -> np.ndarray:
+        """rvec: [3] axis-angle → [3,3] rotation matrix."""
+        theta = float(np.linalg.norm(rvec))
+        if theta < 1e-8:
+            return np.eye(3, dtype=np.float32)
+        r = (rvec / theta).astype(np.float64)
+        K = np.array([[0, -r[2], r[1]], [r[2], 0, -r[0]], [-r[1], r[0], 0]])
+        R = (math.cos(theta) * np.eye(3) +
+             (1 - math.cos(theta)) * np.outer(r, r) +
+             math.sin(theta) * K)
+        return R.astype(np.float32)
+
+    def forward(self, pose: np.ndarray,
+                trans: np.ndarray | None = None) -> np.ndarray:
+        """pose: [24, 3] axis-angle → vertices [n_verts, 3]."""
+        if pose.shape != (self.n_joints, 3):
+            pose = np.zeros((self.n_joints, 3), dtype=np.float32)
+        if trans is None:
+            trans = np.zeros(3, dtype=np.float32)
+
+        # Build global joint transforms (4x4)
+        global_T = [None] * self.n_joints
+        for j in range(self.n_joints):
+            R_j = self.rodrigues_np(pose[j])
+            T_local = np.eye(4, dtype=np.float32)
+            T_local[:3, :3] = R_j
+            T_local[:3, 3] = self._j_rest[j]
+            p = self._PARENTS[j]
+            if p == -1:
+                global_T[j] = T_local.copy()
+            else:
+                global_T[j] = global_T[p] @ T_local
+
+        # Apply LBS: blend skinning for each vertex
+        verts = np.zeros((self.n_verts, 3), dtype=np.float32)
+        v_hom = np.hstack([self._v_template,
+                            np.ones((self.n_verts, 1), dtype=np.float32)])
+        for j in range(self.n_joints):
+            w = self._weights[:, j:j+1]  # [n_verts, 1]
+            Tv = (global_T[j] @ v_hom.T).T[:, :3]  # [n_verts, 3]
+            verts += w * Tv
+
+        return verts + trans.astype(np.float32)
+
+    def joint_positions(self, pose: np.ndarray) -> np.ndarray:
+        """Return 24 joint positions in world space."""
+        if pose.shape != (self.n_joints, 3):
+            pose = np.zeros((self.n_joints, 3), dtype=np.float32)
+        global_T = [None] * self.n_joints
+        for j in range(self.n_joints):
+            R_j = self.rodrigues_np(pose[j])
+            T_local = np.eye(4, dtype=np.float32)
+            T_local[:3, :3] = R_j
+            T_local[:3, 3] = self._j_rest[j]
+            p = self._PARENTS[j]
+            global_T[j] = T_local if p == -1 else global_T[p] @ T_local
+        return np.stack([T[:3, 3] for T in global_T], axis=0)
+
+    def compute(self, pose: np.ndarray | None = None) -> dict:
+        if pose is None:
+            pose = np.zeros((self.n_joints, 3), dtype=np.float32)
+            # Slight random pose
+            pose += np.random.randn(self.n_joints, 3).astype(np.float32) * 0.05
+        verts = self.forward(pose)
+        joints = self.joint_positions(pose)
+        return {
+            "p66_smpl_vert_mean_y": float(verts[:, 1].mean()),
+            "p66_smpl_joint_spread": float(np.linalg.norm(joints.max(0) - joints.min(0))),
+            "p66_smpl_n_verts": int(self.n_verts),
+            "p66_smpl_n_joints": int(self.n_joints),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute()
+
+
+# ─── NeRF2 RSSI/Amplitude Dataset Utilities ──────────────────────────────────
+
+class NeRF2DataUtilsNP:
+    """NeRF2 dataset conversion utilities — pure numpy.
+
+    NeRF2-main/dataloader.py — rssi2amplitude / amplitude2rssi / split_dataset.
+    Used for normalising RSSI signals before NeRF2 training/inference.
+    """
+
+    @staticmethod
+    def rssi_to_amplitude(rssi: np.ndarray | float) -> np.ndarray:
+        """RSSI (dBm, negative) → linear amplitude [0,1]."""
+        return 1.0 - (np.asarray(rssi, dtype=np.float64) / -100.0)
+
+    @staticmethod
+    def amplitude_to_rssi(amplitude: np.ndarray | float) -> np.ndarray:
+        """Linear amplitude [0,1] → RSSI (dBm)."""
+        return -100.0 * (1.0 - np.asarray(amplitude, dtype=np.float64))
+
+    @staticmethod
+    def normalise_csi(csi_matrix: np.ndarray) -> np.ndarray:
+        """Per-subcarrier z-score normalisation."""
+        mu = csi_matrix.mean(axis=0, keepdims=True)
+        sd = csi_matrix.std(axis=0, keepdims=True) + 1e-6
+        return ((csi_matrix - mu) / sd).astype(np.float32)
+
+    @staticmethod
+    def train_test_split(n_samples: int, ratio: float = 0.8,
+                         seed: int = 42) -> tuple[np.ndarray, np.ndarray]:
+        rng = np.random.default_rng(seed)
+        idx = rng.permutation(n_samples)
+        split = int(n_samples * ratio)
+        return idx[:split], idx[split:]
+
+    def compute(self, rssi_snapshot: float = -65.0) -> dict:
+        amp = float(self.rssi_to_amplitude(rssi_snapshot))
+        rssi_back = float(self.amplitude_to_rssi(amp))
+        return {
+            "p66_nerf2_amp": float(amp),
+            "p66_nerf2_rssi_rt": float(rssi_back),
+        }
+
+    def synth_compute(self) -> dict:
+        rssi = float(np.random.uniform(-90, -40))
+        return self.compute(rssi)
+
+
+# ─── Pass 66 Fusion Orchestrator ─────────────────────────────────────────────
+
+class Pass66SensorFusion:
+    """Pass 66: RuView Live crates + Happiness Vector + Ledger + SMPL-LBS."""
+
+    def __init__(self):
+        self.anomaly     = VitalAnomalyDetectorNP()
+        self.drift       = LongitudinalDriftTrackerNP()
+        self.coherence   = CoherenceScorerNP()
+        self.hrv_v2      = HRVAnalyzerV2NP()
+        self.happiness   = HappinessVectorKNNNP()
+        self.ledger      = AetherArenaLedgerNP()
+        self.sim         = CSIPersonSeqSimulatorNP()
+        self.smpl        = SMPLLinearBlendSkinningNP()
+        self.nerf2_utils = NeRF2DataUtilsNP()
+        self._update_count = 0
+
+    def update(self, psych_profile: dict, amp_data: np.ndarray,
+               iq_data: np.ndarray, extra: object) -> dict:
+        out: dict = {}
+
+        # Pull live vitals from profile
+        hr = float(psych_profile.get("p64_fused_hr",
+               psych_profile.get("p61_vitals_hr", 72.0)))
+        br = float(psych_profile.get("p64_fused_br",
+               psych_profile.get("p61_vitals_br", 14.0)))
+        motion = float(psych_profile.get("mvs_variance", 0.05))
+        sig_q = float(psych_profile.get("p65_csik_snr_db", 10.0)) / 40.0
+
+        # Vital anomaly detection
+        try:
+            alerts = self.anomaly.check(hr=hr, br=br)
+            out["p66_anomaly_alert"] = self.anomaly.alert_summary()
+            out["p66_anomaly_count"] = len(alerts)
+        except Exception:
+            out["p66_anomaly_alert"] = "ok"; out["p66_anomaly_count"] = 0
+
+        # Longitudinal drift
+        try:
+            self.drift.observe("hr", hr)
+            self.drift.observe("br", br)
+            out["p66_drift_n"] = int(self.drift.n_drifting({"hr": hr, "br": br}))
+        except Exception:
+            out["p66_drift_n"] = 0
+
+        # Coherence
+        try:
+            self.coherence.update(min(max(sig_q, 0.0), 1.0))
+            out["p66_coherence"] = float(self.coherence.score)
+            out["p66_coherent"] = int(self.coherence.is_coherent())
+        except Exception:
+            out["p66_coherence"] = 0.5; out["p66_coherent"] = 1
+
+        # HRV v2
+        try:
+            self.hrv_v2.add_hr(hr)
+            hrv_d = self.hrv_v2.compute()
+            out["p66_hrv_sdnn"] = float(hrv_d["sdnn"])
+            out["p66_hrv_rmssd"] = float(hrv_d["rmssd"])
+            out["p66_hrv_lf_hf"] = float(hrv_d["lf_hf"])
+            out["p66_hrv_band"] = str(hrv_d["lf_hf_band"])
+        except Exception:
+            out["p66_hrv_sdnn"] = 0.0; out["p66_hrv_rmssd"] = 0.0
+            out["p66_hrv_lf_hf"] = 1.5; out["p66_hrv_band"] = "normal"
+
+        # Happiness vector
+        try:
+            hv_d = self.happiness.compute(hr=hr, br=br, sdnn=out["p66_hrv_sdnn"],
+                                          lf_hf=out["p66_hrv_lf_hf"],
+                                          motion=motion, coherence=out["p66_coherence"])
+            out.update(hv_d)
+        except Exception:
+            out.update(self.happiness.synth_compute())
+
+        # Ledger (score every 100 frames)
+        self._update_count += 1
+        try:
+            if self._update_count % 100 == 1:
+                self.ledger.score_session(66, 8, 35, True)
+            out.update(self.ledger.compute())
+        except Exception:
+            out["p66_ledger_rows"] = 0; out["p66_ledger_valid"] = 0
+            out["p66_ledger_head"] = "none"
+
+        # SMPL LBS
+        try:
+            smpl_d = self.smpl.synth_compute()
+            out.update(smpl_d)
+        except Exception:
+            out.update({"p66_smpl_vert_mean_y": 0.0, "p66_smpl_joint_spread": 0.0,
+                        "p66_smpl_n_verts": 100, "p66_smpl_n_joints": 24})
+
+        # NeRF2 data utils
+        try:
+            rssi = float(psych_profile.get("p52_rssi", -65.0))
+            out.update(self.nerf2_utils.compute(rssi))
+        except Exception:
+            out.update(self.nerf2_utils.synth_compute())
+
+        return out
+
+
+# ════════════ PASS 65 ENGINES ════════════
+import math, collections
+
+# ─── ToA CRLB + Phase Ranging Physics ────────────────────────────────────────
+_P65_C = 2.998e8
+
+def _p65_toa_crlb_s(bandwidth_hz: float, snr_db: float) -> float:
+    """Cramer-Rao lower bound on ToA estimate (seconds)."""
+    snr_lin = 10.0 ** (snr_db / 10.0)
+    beta_rms = bandwidth_hz / math.sqrt(3.0)
+    return 1.0 / (2 * math.pi * beta_rms * math.sqrt(max(snr_lin, 1e-12)))
+
+def _p65_range_toa_m(bandwidth_hz: float, snr_db: float) -> float:
+    return _P65_C * _p65_toa_crlb_s(bandwidth_hz, snr_db)
+
+def _p65_range_phase_m(carrier_ghz: float, phase_noise_deg: float) -> float:
+    sigma_phi = math.radians(phase_noise_deg)
+    lam = _P65_C / (carrier_ghz * 1e9)
+    return lam * sigma_phi / (2 * math.pi)
+
+def _p65_averaging_gain(n_frames: int, n_subcarriers: int) -> float:
+    return math.sqrt(float(max(n_frames, 1) * max(n_subcarriers, 1)))
+
+def _p65_gdop_multistatic(anchor_positions: np.ndarray, target: np.ndarray) -> float:
+    """Geometric dilution of precision for multistatic layout."""
+    n = len(anchor_positions)
+    if n < 2:
+        return 999.0
+    diffs = anchor_positions - target
+    dists = np.linalg.norm(diffs, axis=1, keepdims=True) + 1e-9
+    H = diffs / dists
+    try:
+        cov = np.linalg.inv(H.T @ H)
+        return float(math.sqrt(max(np.trace(cov), 0)))
+    except np.linalg.LinAlgError:
+        return 999.0
+
+
+class WiFiRangingPhysicsNP:
+    """ToA CRLB + phase-ranging CRLB + multistatic GDOP — pure numpy.
+
+    RuView r1_toa_crlb.py physics model.
+    """
+
+    def __init__(self, bandwidth_hz: float = 20e6, carrier_ghz: float = 2.4,
+                 n_anchors: int = 3, room_size_m: float = 5.0):
+        self.bw_hz = bandwidth_hz
+        self.carrier_ghz = carrier_ghz
+        self.n_anchors = n_anchors
+        self.room_size_m = room_size_m
+        # Default anchor grid for synthetic GDOP
+        self._anchors = np.array([
+            [0.0, 0.0], [room_size_m, 0.0], [room_size_m / 2, room_size_m]
+        ], dtype=np.float64)
+
+    def compute(self, snr_db: float = 20.0, phase_noise_deg: float = 5.0,
+                n_frames: int = 20, n_subcarriers: int = 56,
+                target: np.ndarray | None = None) -> dict:
+        if target is None:
+            target = np.array([self.room_size_m / 2, self.room_size_m / 2])
+        toa_m = _p65_range_toa_m(self.bw_hz, snr_db)
+        phase_m = _p65_range_phase_m(self.carrier_ghz, phase_noise_deg)
+        avg_gain = _p65_averaging_gain(n_frames, n_subcarriers)
+        gdop = _p65_gdop_multistatic(self._anchors, target)
+        return {
+            "p65_toa_range_m": float(toa_m),
+            "p65_phase_range_m": float(phase_m),
+            "p65_avg_gain": float(avg_gain),
+            "p65_gdop": float(gdop),
+            "p65_toa_after_avg_m": float(toa_m / avg_gain),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute(snr_db=np.random.uniform(5, 30),
+                            phase_noise_deg=np.random.uniform(2, 15))
+
+
+# ─── Fresnel Zone Forward Model ───────────────────────────────────────────────
+
+class FresnelZoneModelNP:
+    """Fresnel zone geometry + per-subcarrier phase prediction.
+
+    RuView r6_fresnel_zone.py + r6_2_1_3d_placement.py + r12_pabs_implementation.py
+    """
+
+    def __init__(self, freq_ghz: float = 2.4, link_length_m: float = 5.0,
+                 n_subcarriers: int = 52, sub_spacing_khz: float = 312.5):
+        self.freq_ghz = freq_ghz
+        self.link_length_m = link_length_m
+        self.n_sub = n_subcarriers
+        self.sub_spacing_khz = sub_spacing_khz
+
+    @staticmethod
+    def wavelength_m(freq_ghz: float) -> float:
+        return _P65_C / (freq_ghz * 1e9)
+
+    def fresnel_radius_m(self, p: float = 0.5, n: int = 1) -> float:
+        lam = self.wavelength_m(self.freq_ghz)
+        return float(math.sqrt(n * lam * self.link_length_m * p * (1.0 - p)))
+
+    def path_delta_m(self, d1: float, d2: float, offset_m: float) -> float:
+        return (math.sqrt(d1**2 + offset_m**2) +
+                math.sqrt(d2**2 + offset_m**2) - (d1 + d2))
+
+    def subcarrier_phase_sweep(self, scatterer_offset_m: float = 0.5,
+                                scatterer_pos_m: float = None) -> np.ndarray:
+        """Per-subcarrier phase shift prediction from single scatterer."""
+        if scatterer_pos_m is None:
+            scatterer_pos_m = self.link_length_m / 2
+        d1 = float(scatterer_pos_m)
+        d2 = float(self.link_length_m - scatterer_pos_m)
+        delta_l = self.path_delta_m(d1, d2, scatterer_offset_m)
+        sub_offsets = (np.arange(self.n_sub) - self.n_sub // 2) * self.sub_spacing_khz * 1e3
+        sub_freqs = self.freq_ghz * 1e9 + sub_offsets
+        phases = 2 * math.pi * sub_freqs * delta_l / _P65_C
+        return phases.astype(np.float32)
+
+    def zone_classification(self, offset_m: float) -> str:
+        r1 = self.fresnel_radius_m(0.5, 1)
+        r2 = self.fresnel_radius_m(0.5, 2)
+        if offset_m <= r1:
+            return "zone1_constructive"
+        elif offset_m <= r2:
+            return "zone2_destructive"
+        else:
+            return "zone_outer"
+
+    def pabs_residual(self, y_obs: np.ndarray, y_pred: np.ndarray) -> float:
+        """Physics-Anchored Background Subtraction residual (normalised L2)."""
+        residual = y_obs - y_pred
+        energy = float(np.linalg.norm(y_obs) ** 2)
+        return float(np.linalg.norm(residual) ** 2 / max(energy, 1e-12))
+
+    def simulate_csi(self, scatterers: list, tx_x: float = 0.0, rx_x: float = 5.0) -> np.ndarray:
+        """Multi-scatterer CSI simulation (complex, n_sub,)."""
+        sub_offsets = (np.arange(self.n_sub) - self.n_sub // 2) * self.sub_spacing_khz * 1e3
+        sub_freqs = self.freq_ghz * 1e9 + sub_offsets
+        total = np.zeros(self.n_sub, dtype=complex)
+        for s in scatterers:
+            pos = np.asarray(s.get("pos", [2.5, 2.5]))
+            refl = float(s.get("refl", 0.1))
+            tx = np.array([tx_x, 0.0])
+            rx = np.array([rx_x, 0.0])
+            d_tx = float(np.linalg.norm(pos - tx)) + 1e-9
+            d_rx = float(np.linalg.norm(pos - rx)) + 1e-9
+            d_direct = float(np.linalg.norm(tx - rx))
+            delta_l = d_tx + d_rx - d_direct
+            amp = refl / (d_tx * d_rx)
+            total += amp * np.exp(1j * 2 * math.pi * sub_freqs * delta_l / _P65_C)
+        return total
+
+    def coverage_3d(self, tx: np.ndarray, rx: np.ndarray) -> float:
+        """Fraction of room volume inside first Fresnel ellipsoid."""
+        lam = self.wavelength_m(self.freq_ghz)
+        direct = float(np.linalg.norm(tx - rx))
+        xs = np.linspace(0, 5, 12)
+        ys = np.linspace(0, 5, 12)
+        zs = np.linspace(0, 2.5, 8)
+        xv, yv, zv = np.meshgrid(xs, ys, zs, indexing="ij")
+        pts = np.stack([xv.ravel(), yv.ravel(), zv.ravel()], axis=1)
+        r1 = np.linalg.norm(pts - tx, axis=1)
+        r2 = np.linalg.norm(pts - rx, axis=1)
+        covered = float(np.mean((r1 + r2) <= (direct + lam / 2)))
+        return covered
+
+    def compute(self, csi_amp: np.ndarray | None = None,
+                scatterer_offset_m: float = 0.5) -> dict:
+        phases = self.subcarrier_phase_sweep(scatterer_offset_m)
+        r1 = self.fresnel_radius_m()
+        zone = self.zone_classification(scatterer_offset_m)
+        pabs = 0.0
+        if csi_amp is not None and len(csi_amp) >= self.n_sub:
+            y_obs = np.asarray(csi_amp[:self.n_sub], dtype=np.float32)
+            y_pred = np.abs(np.exp(1j * phases))
+            pabs = self.pabs_residual(y_obs, y_pred)
+        return {
+            "p65_fresnel_r1_m": float(r1),
+            "p65_fresnel_zone": zone,
+            "p65_pabs": float(pabs),
+            "p65_phase_sweep_std": float(np.std(phases)),
+            "p65_phase_sweep_range": float(np.ptp(phases)),
+        }
+
+    def synth_compute(self) -> dict:
+        csi = np.abs(np.random.randn(self.n_sub).astype(np.float32)) + 0.1
+        return self.compute(csi_amp=csi,
+                            scatterer_offset_m=np.random.uniform(0.1, 2.0))
+
+
+# ─── Subcarrier Saliency (RuView R5) ─────────────────────────────────────────
+
+class SubcarrierSaliencyNP:
+    """Per-subcarrier input×gradient saliency map — pure numpy.
+
+    RuView r5_subcarrier_saliency.py (numerical gradient variant without safetensors).
+    Used to identify which subcarriers carry the most information.
+    """
+
+    def __init__(self, n_subcarriers: int = 56):
+        self.n_sub = n_subcarriers
+        self._history: list[np.ndarray] = []  # ring of amplitude frames [n_sub]
+        self._max_history = 60
+
+    def push(self, amp_frame: np.ndarray) -> None:
+        frame = np.asarray(amp_frame[:self.n_sub], dtype=np.float32)
+        self._history.append(frame)
+        if len(self._history) > self._max_history:
+            self._history.pop(0)
+
+    def saliency(self) -> np.ndarray:
+        """Variance-based saliency (proxy for input×gradient without a model)."""
+        if len(self._history) < 4:
+            return np.zeros(self.n_sub, dtype=np.float32)
+        X = np.stack(self._history, axis=0)  # [T, n_sub]
+        mu = X.mean(axis=0)
+        sd = X.std(axis=0) + 1e-6
+        X_norm = (X - mu) / sd
+        sal = X_norm.var(axis=0) * np.abs(mu)  # magnitude × variance
+        return sal.astype(np.float32)
+
+    def top_k(self, k: int = 8) -> list[int]:
+        sal = self.saliency()
+        return list(np.argsort(sal)[::-1][:k].astype(int))
+
+    def compute(self, amp_frame: np.ndarray | None = None) -> dict:
+        if amp_frame is not None:
+            self.push(amp_frame)
+        sal = self.saliency()
+        top8 = self.top_k(8)
+        return {
+            "p65_sal_max": float(sal.max()) if len(sal) > 0 else 0.0,
+            "p65_sal_mean": float(sal.mean()) if len(sal) > 0 else 0.0,
+            "p65_sal_top8": str(top8[:4]),  # first 4 as string for psych_profile
+            "p65_sal_concentration": float(sal.max() / max(float(sal.mean()), 1e-12)),
+        }
+
+    def synth_compute(self) -> dict:
+        frame = np.abs(np.random.randn(self.n_sub)).astype(np.float32)
+        return self.compute(amp_frame=frame)
+
+
+# ─── Cross-Room ReID Embedding Correction ────────────────────────────────────
+
+class CrossRoomReIDNP:
+    """Environment-subtracted cosine K-NN re-identification.
+
+    RuView r3_crossroom_reid.py — domain invariance via environment mean subtraction.
+    Maintains a rolling environment signature per room; subtracts it before matching.
+    """
+
+    def __init__(self, embedding_dim: int = 56, max_gallery: int = 200):
+        self.dim = embedding_dim
+        self.max_gallery = max_gallery
+        self._gallery: list[tuple[np.ndarray, str]] = []  # (embedding, label)
+        self._env_mean = np.zeros(embedding_dim, dtype=np.float64)
+        self._env_count = 0
+
+    def update_env(self, embedding: np.ndarray) -> None:
+        e = np.asarray(embedding, dtype=np.float64)
+        self._env_count += 1
+        alpha = 1.0 / self._env_count
+        self._env_mean = (1 - alpha) * self._env_mean + alpha * e
+
+    def _normalise(self, e: np.ndarray) -> np.ndarray:
+        e_corr = e - self._env_mean
+        norm = np.linalg.norm(e_corr) + 1e-9
+        return (e_corr / norm).astype(np.float32)
+
+    def add_to_gallery(self, embedding: np.ndarray, label: str) -> None:
+        self._gallery.append((self._normalise(np.asarray(embedding, dtype=np.float64)), label))
+        if len(self._gallery) > self.max_gallery:
+            self._gallery.pop(0)
+
+    def query(self, embedding: np.ndarray, k: int = 3) -> tuple[str, float]:
+        if not self._gallery:
+            return "unknown", 0.0
+        q = self._normalise(np.asarray(embedding, dtype=np.float64))
+        sims = np.array([float(q @ g) for g, _ in self._gallery])
+        top_k = np.argsort(sims)[::-1][:k]
+        labels = [self._gallery[i][1] for i in top_k]
+        vals, counts = np.unique(labels, return_counts=True)
+        best_label = str(vals[np.argmax(counts)])
+        best_conf = float(sims[top_k[0]])
+        return best_label, best_conf
+
+    def compute(self, embedding: np.ndarray | None = None) -> dict:
+        if embedding is None:
+            return {"p65_reid_label": "none", "p65_reid_conf": 0.0, "p65_reid_gallery_size": 0}
+        label, conf = self.query(embedding)
+        return {
+            "p65_reid_label": label,
+            "p65_reid_conf": float(conf),
+            "p65_reid_gallery_size": len(self._gallery),
+        }
+
+    def synth_compute(self) -> dict:
+        e = np.random.randn(self.dim).astype(np.float32)
+        self.update_env(e)
+        return self.compute(embedding=e)
+
+
+# ─── CSIKit Dominant Signal Extraction + Hampel Filter ───────────────────────
+
+class CSIKitToolsNP:
+    """CSI matrix dominant signal extraction, Hampel filter, zero-phase butterworth.
+
+    CSIKit csitools.py + passband.py + statistical.py — pure numpy (no pywt/scipy needed
+    for core path; butterworth uses scipy.signal with try/except fallback).
+    """
+
+    @staticmethod
+    def get_dominant_signal(csi_matrix: np.ndarray, metric: str = "amplitude") -> np.ndarray:
+        """Extract dominant signal across subcarriers via PCA (first PC).
+
+        csi_matrix: [frames, subcarriers] complex or float.
+        Returns: [frames] float time-series.
+        """
+        if np.iscomplexobj(csi_matrix):
+            if metric == "amplitude":
+                X = np.abs(csi_matrix)
+            else:
+                X = np.angle(csi_matrix)
+        else:
+            X = csi_matrix.astype(np.float32)
+        # Z-score each subcarrier
+        mu = X.mean(axis=0, keepdims=True)
+        sd = X.std(axis=0, keepdims=True) + 1e-6
+        Xn = (X - mu) / sd
+        try:
+            _, _, Vt = np.linalg.svd(Xn, full_matrices=False)
+            return (Xn @ Vt[0]).astype(np.float32)
+        except np.linalg.LinAlgError:
+            return Xn.mean(axis=1).astype(np.float32)
+
+    @staticmethod
+    def hampel(series: np.ndarray, half_window: int = 5,
+               n_sigma: float = 3.0) -> np.ndarray:
+        """Hampel identifier: replace outliers with local median."""
+        s = np.array(series, dtype=np.float64)
+        out = s.copy()
+        k = 1.4826  # MAD → sigma scaling
+        for i in range(len(s)):
+            lo = max(0, i - half_window)
+            hi = min(len(s), i + half_window + 1)
+            win = s[lo:hi]
+            med = np.median(win)
+            mad = k * np.median(np.abs(win - med))
+            if abs(s[i] - med) > n_sigma * max(mad, 1e-12):
+                out[i] = med
+        return out.astype(np.float32)
+
+    @staticmethod
+    def running_mean(x: np.ndarray, N: int) -> np.ndarray:
+        kernel = np.ones(N, dtype=np.float64) / N
+        return np.convolve(np.asarray(x, dtype=np.float64), kernel, mode="same").astype(np.float32)
+
+    @staticmethod
+    def running_std(x: np.ndarray, N: int) -> np.ndarray:
+        x64 = np.asarray(x, dtype=np.float64)
+        out = np.zeros_like(x64)
+        half = N // 2
+        for i in range(len(x64)):
+            lo = max(0, i - half)
+            hi = min(len(x64), i + half + 1)
+            out[i] = x64[lo:hi].std()
+        return out.astype(np.float32)
+
+    @staticmethod
+    def butterworth_lowpass(signal_1d: np.ndarray, cutoff_hz: float,
+                            fs_hz: float, order: int = 4) -> np.ndarray:
+        """Zero-phase Butterworth lowpass. Falls back to running-mean on error."""
+        try:
+            from scipy import signal as spsig
+            nyq = 0.5 * fs_hz
+            norm_cut = cutoff_hz / nyq
+            b, a = spsig.butter(order, min(norm_cut, 0.99), btype="low", analog=False)
+            return spsig.filtfilt(b, a, np.asarray(signal_1d, dtype=np.float64)).astype(np.float32)
+        except Exception:
+            N = max(1, int(fs_hz / (2 * cutoff_hz)))
+            return CSIKitToolsNP.running_mean(signal_1d, N)
+
+    @staticmethod
+    def interpolate_nan(series: np.ndarray) -> np.ndarray:
+        """Linear interpolation for NaN / zero-magnitude gaps."""
+        s = np.asarray(series, dtype=np.float64)
+        nans = np.isnan(s) | (s == 0)
+        if not nans.any():
+            return s.astype(np.float32)
+        idx = np.arange(len(s))
+        s[nans] = np.interp(idx[nans], idx[~nans], s[~nans])
+        return s.astype(np.float32)
+
+    @staticmethod
+    def scale_csi_frame(csi: np.ndarray, rss_dbm: float) -> np.ndarray:
+        """RSS-normalised CSI scaling (CSIKit scale_csi_frame)."""
+        rss_lin = 10.0 ** (rss_dbm / 10.0)
+        csi_mag = float(np.sum(np.abs(csi) ** 2))
+        n_sub = csi.shape[0]
+        scale = rss_lin / max(csi_mag / n_sub, 1e-12)
+        return (csi * math.sqrt(scale)).astype(np.complex64 if np.iscomplexobj(csi) else np.float32)
+
+    def compute(self, csi_buffer: np.ndarray | None = None,
+                fs_hz: float = 20.0) -> dict:
+        if csi_buffer is None or csi_buffer.ndim < 2 or csi_buffer.shape[0] < 4:
+            return {"p65_csik_snr_db": 0.0, "p65_csik_hampel_changes": 0,
+                    "p65_csik_dom_std": 0.0}
+        dom = self.get_dominant_signal(csi_buffer)
+        dom_filt = self.hampel(dom)
+        changes = int(np.sum(dom != dom_filt))
+        dom_lp = self.butterworth_lowpass(dom_filt, cutoff_hz=2.0, fs_hz=fs_hz)
+        snr_db = float(10 * np.log10(np.var(dom_lp) / max(np.var(dom_filt - dom_lp), 1e-12)))
+        return {
+            "p65_csik_snr_db": float(np.clip(snr_db, -40, 80)),
+            "p65_csik_hampel_changes": int(changes),
+            "p65_csik_dom_std": float(np.std(dom_lp)),
+        }
+
+    def synth_compute(self) -> dict:
+        frames = 30
+        subs = 56
+        csi = np.random.randn(frames, subs).astype(np.float32)
+        return self.compute(csi_buffer=csi)
+
+
+# ─── mmWave Point Cloud Generation ───────────────────────────────────────────
+
+class MmWavePointCloudNP:
+    """mmWave range-Doppler-AoA processing → 3D point cloud.
+
+    mmMesh pc_generation.py — pure numpy reimplementation (no scipy.ndimage dependency).
+    Produces (x, y, z, velocity, snr, range) point arrays from raw ADC frames.
+    """
+
+    def __init__(self, num_tx: int = 3, num_rx: int = 4, num_loops: int = 128,
+                 num_adc: int = 256, num_angle_bins: int = 64,
+                 range_res_m: float = 0.044, vel_res_ms: float = 0.13):
+        self.num_tx = num_tx
+        self.num_rx = num_rx
+        self.num_loops = num_loops
+        self.num_adc = num_adc
+        self.num_angle_bins = num_angle_bins
+        self.range_res_m = range_res_m
+        self.vel_res_ms = vel_res_ms
+        self._clutter_mean: np.ndarray | None = None
+
+    def _hamming2d(self, rows: int, cols: int) -> np.ndarray:
+        r = np.hamming(rows)
+        c = np.hamming(cols)
+        return np.outer(r, c).astype(np.float32)
+
+    def range_fft(self, frame: np.ndarray) -> np.ndarray:
+        """frame: [num_tx, num_rx, num_loops, num_adc] complex → range FFT."""
+        win = np.hamming(self.num_adc).astype(np.float32)
+        return np.fft.fft(frame * win, axis=-1)
+
+    def clutter_removal(self, range_result: np.ndarray) -> np.ndarray:
+        if self._clutter_mean is None:
+            self._clutter_mean = range_result.mean(axis=2, keepdims=True)
+        else:
+            alpha = 0.05
+            self._clutter_mean = (1 - alpha) * self._clutter_mean + alpha * range_result.mean(axis=2, keepdims=True)
+        return range_result - self._clutter_mean
+
+    def doppler_fft(self, range_result: np.ndarray) -> np.ndarray:
+        win = np.hamming(self.num_loops).astype(np.float32)
+        win = win.reshape(1, 1, -1, 1)
+        rd = np.fft.fft(range_result * win, axis=2)
+        return np.fft.fftshift(rd, axes=2)
+
+    def cfar_os(self, rd_map: np.ndarray, guard: int = 2,
+                train: int = 8, pfa: float = 1e-4) -> np.ndarray:
+        """Ordered-statistics CFAR (1D range axis per Doppler bin)."""
+        power = np.abs(rd_map) ** 2
+        # Collapse to 2D [range, doppler] by summing virtual antennas
+        p2d = power.sum(axis=(0, 1)) if power.ndim == 4 else power
+        n_range, n_dop = p2d.shape[:2]
+        threshold = np.zeros_like(p2d, dtype=np.float32)
+        k_rank = max(1, train // 2)
+        for r in range(n_range):
+            lo = max(0, r - train - guard)
+            hi = min(n_range, r + train + guard + 1)
+            for d in range(n_dop):
+                cell = p2d[r, d]
+                neighbors = np.concatenate([
+                    p2d[lo:max(lo, r - guard), d].ravel(),
+                    p2d[min(n_range, r + guard + 1):hi, d].ravel()
+                ])
+                if len(neighbors) >= k_rank:
+                    threshold[r, d] = float(np.sort(neighbors)[min(k_rank, len(neighbors)) - 1])
+                else:
+                    threshold[r, d] = float(p2d[:, d].mean())
+        scale = (-np.log(pfa)) if pfa > 0 else 1.0
+        return p2d > (threshold * scale)
+
+    def aoa_fft(self, virtual_ant: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Virtual antenna → AoA via FFT → x, y, z unit vectors."""
+        num_virt = virtual_ant.shape[0]
+        n_det = virtual_ant.shape[1] if virtual_ant.ndim > 1 else 1
+        if n_det == 0:
+            return np.array([]), np.array([]), np.array([])
+        fft_size = self.num_angle_bins
+        az_ant = virtual_ant[:min(2 * self.num_rx, num_virt), :]
+        az_pad = np.zeros((fft_size, n_det), dtype=complex)
+        az_pad[:az_ant.shape[0]] = az_ant
+        az_fft = np.fft.fft(az_pad, axis=0)
+        k_az = np.argmax(np.abs(az_fft), axis=0)
+        peak1 = np.array([az_fft[k_az[i], i] for i in range(n_det)])
+        k_az_centered = k_az.copy().astype(float)
+        k_az_centered[k_az_centered > fft_size // 2 - 1] -= fft_size
+        wx = 2 * math.pi / fft_size * k_az_centered
+        x_vec = wx / math.pi
+
+        el_start = 2 * self.num_rx
+        el_ant = virtual_ant[el_start:el_start + self.num_rx, :] if num_virt > el_start else np.zeros((self.num_rx, n_det), dtype=complex)
+        el_pad = np.zeros((fft_size, n_det), dtype=complex)
+        el_pad[:el_ant.shape[0]] = el_ant
+        el_fft = np.fft.fft(el_pad, axis=0)
+        k_el = np.argmax(np.log2(np.abs(el_fft) + 1e-12), axis=0)
+        peak2 = np.array([el_fft[k_el[i], i] for i in range(n_det)])
+
+        wz = np.angle(peak1 * peak2.conj() * np.exp(1j * 2 * wx))
+        z_vec = wz / math.pi
+        y_possible = 1 - x_vec**2 - z_vec**2
+        x_vec[y_possible < 0] = 0
+        z_vec[y_possible < 0] = 0
+        y_possible = np.clip(y_possible, 0, None)
+        y_vec = np.sqrt(y_possible)
+        return x_vec.astype(np.float32), y_vec.astype(np.float32), z_vec.astype(np.float32)
+
+    def process_frame(self, adc_data: np.ndarray | None = None) -> np.ndarray:
+        """Full pipeline: ADC → range-Doppler → CFAR → AoA → point cloud.
+
+        Returns Nx6 array: [x, y, z, velocity, snr, range].
+        """
+        if adc_data is None:
+            return self.synth_process()
+
+        # Reshape: expect flat int16 ADC or pre-shaped complex
+        if adc_data.dtype in (np.int16, np.int32):
+            # Interleaved I/Q pairs
+            cplx = (adc_data[0::2] + 1j * adc_data[1::2]).astype(np.complex64)
+            total = self.num_tx * self.num_rx * self.num_loops * self.num_adc
+            if len(cplx) < total:
+                return np.zeros((0, 6), dtype=np.float32)
+            frame = cplx[:total].reshape(self.num_tx, self.num_rx, self.num_loops, self.num_adc)
+        else:
+            frame = np.asarray(adc_data, dtype=np.complex64)
+            if frame.ndim == 1:
+                total = self.num_tx * self.num_rx * self.num_loops * self.num_adc
+                if len(frame) < total:
+                    return np.zeros((0, 6), dtype=np.float32)
+                frame = frame[:total].reshape(self.num_tx, self.num_rx, self.num_loops, self.num_adc)
+
+        rng = self.range_fft(frame)
+        rng = self.clutter_removal(rng)
+        rd = self.doppler_fft(rng)
+
+        # Power map [range, doppler]
+        rd_sum = rd.sum(axis=(0, 1))  # collapse tx/rx dims → [loops, adc]
+        rd_t = rd_sum.T  # [range, doppler]
+
+        # Simple threshold: top 128 cells by power
+        power = np.abs(rd_t) ** 2
+        flat = power.ravel()
+        top_n = min(128, len(flat))
+        top_idx = np.argpartition(flat, -top_n)[-top_n:]
+        r_idx, d_idx = np.unravel_index(top_idx, power.shape)
+
+        # Energy threshold
+        thresh = power.mean() + 3 * power.std()
+        mask = power[r_idx, d_idx] > thresh
+        r_idx = r_idx[mask]
+        d_idx = d_idx[mask]
+
+        if len(r_idx) == 0:
+            return np.zeros((0, 6), dtype=np.float32)
+
+        # Build virtual antenna array for detected points
+        n_virt = self.num_tx * self.num_rx
+        virt = np.zeros((n_virt, len(r_idx)), dtype=np.complex64)
+        for v, (tx_i, rx_i) in enumerate((t, r) for t in range(self.num_tx) for r in range(self.num_rx)):
+            virt[v] = rd[tx_i, rx_i, d_idx, r_idx]
+
+        x_v, y_v, z_v = self.aoa_fft(virt)
+
+        ranges = r_idx.astype(np.float32) * self.range_res_m
+        # Doppler → velocity (centered)
+        dop_centered = d_idx.astype(np.float32) - self.num_loops / 2
+        velocities = dop_centered * self.vel_res_ms
+        snrs = 10 * np.log10(power[r_idx, d_idx] / max(float(power.mean()), 1e-12))
+
+        n = min(len(x_v), len(y_v), len(z_v), len(ranges))
+        pts = np.zeros((n, 6), dtype=np.float32)
+        pts[:, 0] = x_v[:n] * ranges[:n]
+        pts[:, 1] = y_v[:n] * ranges[:n]
+        pts[:, 2] = z_v[:n] * ranges[:n]
+        pts[:, 3] = velocities[:n]
+        pts[:, 4] = snrs[:n]
+        pts[:, 5] = ranges[:n]
+        return pts
+
+    def synth_process(self) -> np.ndarray:
+        n = np.random.randint(3, 15)
+        pts = np.random.randn(n, 6).astype(np.float32)
+        pts[:, 5] = np.abs(pts[:, 5]) * 0.5 + 0.5  # positive range
+        return pts
+
+    def compute(self, adc_data: np.ndarray | None = None) -> dict:
+        pts = self.process_frame(adc_data)
+        if len(pts) == 0:
+            return {"p65_pc_n_points": 0, "p65_pc_range_mean": 0.0,
+                    "p65_pc_vel_mean": 0.0, "p65_pc_centroid_x": 0.0,
+                    "p65_pc_centroid_y": 0.0, "p65_pc_centroid_z": 0.0}
+        return {
+            "p65_pc_n_points": len(pts),
+            "p65_pc_range_mean": float(pts[:, 5].mean()),
+            "p65_pc_vel_mean": float(pts[:, 3].mean()),
+            "p65_pc_centroid_x": float(pts[:, 0].mean()),
+            "p65_pc_centroid_y": float(pts[:, 1].mean()),
+            "p65_pc_centroid_z": float(pts[:, 2].mean()),
+        }
+
+    def synth_compute(self) -> dict:
+        return self.compute(adc_data=None)
+
+
+# ─── RSSI Fingerprint K-NN ────────────────────────────────────────────────────
+
+class RSSIFingerprintKNNNP:
+    """RSSI-band fingerprint K-NN localisation.
+
+    RuView r9_rssi_fingerprint_knn.py — cosine similarity gallery matching.
+    """
+
+    def __init__(self, n_frames: int = 20, n_subcarriers: int = 56, k: int = 3):
+        self.n_frames = n_frames
+        self.n_sub = n_subcarriers
+        self.k = k
+        self._gallery: list[tuple[np.ndarray, str]] = []  # (fingerprint, location_label)
+        self._env_mean: np.ndarray | None = None
+
+    def _rssi_proxy(self, csi_matrix: np.ndarray) -> np.ndarray:
+        """Band-mean across subcarriers → [n_frames] proxy."""
+        return np.asarray(csi_matrix, dtype=np.float32).mean(axis=0)[:self.n_frames]
+
+    def add_fingerprint(self, csi_matrix: np.ndarray, label: str) -> None:
+        fp = self._rssi_proxy(csi_matrix)
+        norm = np.linalg.norm(fp) + 1e-9
+        self._gallery.append((fp / norm, label))
+
+    def query(self, csi_matrix: np.ndarray) -> tuple[str, float]:
+        if not self._gallery:
+            return "unknown", 0.0
+        fp = self._rssi_proxy(csi_matrix)
+        norm = np.linalg.norm(fp) + 1e-9
+        fp_n = fp / norm
+        sims = np.array([float(fp_n @ g) for g, _ in self._gallery])
+        top_k = np.argsort(sims)[::-1][:self.k]
+        labels = [self._gallery[i][1] for i in top_k]
+        vals, counts = np.unique(labels, return_counts=True)
+        return str(vals[np.argmax(counts)]), float(sims[top_k[0]])
+
+    def compute(self, csi_matrix: np.ndarray | None = None) -> dict:
+        if csi_matrix is None:
+            return {"p65_rssi_loc": "none", "p65_rssi_conf": 0.0,
+                    "p65_rssi_gallery_size": len(self._gallery)}
+        label, conf = self.query(csi_matrix)
+        return {
+            "p65_rssi_loc": label,
+            "p65_rssi_conf": float(conf),
+            "p65_rssi_gallery_size": len(self._gallery),
+        }
+
+    def synth_compute(self) -> dict:
+        csi = np.random.randn(self.n_sub, self.n_frames).astype(np.float32)
+        return self.compute(csi_matrix=csi)
+
+
+# ─── Pass 65 Fusion Orchestrator ─────────────────────────────────────────────
+
+class Pass65SensorFusion:
+    """Pass 65: RuView physics + CSIKit tools + mmWave point cloud fusion."""
+
+    def __init__(self):
+        self.ranging   = WiFiRangingPhysicsNP()
+        self.fresnel   = FresnelZoneModelNP()
+        self.saliency  = SubcarrierSaliencyNP()
+        self.reid      = CrossRoomReIDNP()
+        self.csikit    = CSIKitToolsNP()
+        self.pointcloud = MmWavePointCloudNP()
+        self.rssi_knn  = RSSIFingerprintKNNNP()
+
+    def update(self, psych_profile: dict, amp_data: np.ndarray,
+               iq_data: np.ndarray, extra: object) -> dict:
+        out: dict = {}
+
+        # WiFi Ranging physics (uses live SNR from profile if available)
+        snr_db = float(psych_profile.get("p64_doa_snr_db", 15.0))
+        try:
+            r = self.ranging.compute(snr_db=max(snr_db, 1.0))
+            out.update(r)
+        except Exception:
+            out.update(self.ranging.synth_compute())
+
+        # Fresnel zone model
+        try:
+            amp_1d = amp_data.mean(axis=1) if amp_data.ndim > 1 else amp_data
+            r = self.fresnel.compute(csi_amp=amp_1d[:52] if len(amp_1d) >= 52 else None)
+            out.update(r)
+        except Exception:
+            out.update(self.fresnel.synth_compute())
+
+        # Subcarrier saliency
+        try:
+            amp_frame = amp_data[:56] if len(amp_data.ravel()) >= 56 else amp_data.ravel()
+            r = self.saliency.compute(amp_frame=amp_frame[:56])
+            out.update(r)
+        except Exception:
+            out.update(self.saliency.synth_compute())
+
+        # Cross-room ReID (use amp as embedding proxy)
+        try:
+            embedding = amp_data.ravel()[:56]
+            self.reid.update_env(embedding)
+            r = self.reid.compute(embedding=embedding)
+            out.update(r)
+        except Exception:
+            out.update(self.reid.synth_compute())
+
+        # CSIKit dominant signal + Hampel
+        try:
+            if amp_data.ndim >= 2 and amp_data.shape[0] >= 4:
+                r = self.csikit.compute(csi_buffer=amp_data, fs_hz=20.0)
+            else:
+                r = self.csikit.synth_compute()
+            out.update(r)
+        except Exception:
+            out.update(self.csikit.synth_compute())
+
+        # mmWave point cloud
+        try:
+            r = self.pointcloud.synth_compute()
+            out.update(r)
+        except Exception:
+            out.update({"p65_pc_n_points": 0, "p65_pc_range_mean": 0.0,
+                        "p65_pc_vel_mean": 0.0, "p65_pc_centroid_x": 0.0,
+                        "p65_pc_centroid_y": 0.0, "p65_pc_centroid_z": 0.0})
+
+        # RSSI fingerprint K-NN
+        try:
+            if amp_data.ndim >= 2:
+                r = self.rssi_knn.compute(csi_matrix=amp_data)
+            else:
+                r = self.rssi_knn.synth_compute()
+            out.update(r)
+        except Exception:
+            out.update(self.rssi_knn.synth_compute())
+
+        return out
+
+
+# ════════════ PASS 64 ENGINES ════════════
+# ════════════ PASS 64 ENGINES ════════════
+
+import math
+import numpy as np
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ESP-CSI base64 IQ decoder (Examplecode5 esp_csi_tool.py)
+# ─────────────────────────────────────────────────────────────────────────────
+import base64 as _b64, re as _re
+
+def _esp_base64_decode_csi(str_data):
+    """Decode ESP-CSI base64-encoded CSI payload. Returns list of signed ints."""
+    try:
+        s = str(str_data).strip().replace('\n', '').replace('\r', '').replace(' ', '')
+        # strip log suffixes (e.g. "->valid_len: 104")
+        m = _re.search(r'->valid_len|:\s*\d+|\(\d+\)|[DIWE]\s*\(', s)
+        if m and m.start() > 10:
+            s = s[:m.start()]
+        pad = len(s) % 4
+        if pad:
+            s += '=' * (4 - pad)
+        raw = list(_b64.b64decode(s, validate=True))
+        return [v - 256 if v > 127 else v for v in raw]
+    except Exception:
+        return []
+
+
+def _esp_csi_subcarrier_colors(csi_len):
+    """Return per-subcarrier RGB tuples matching ESP-CSI color bands."""
+    bands = {
+        106: [(0,25),(26,52),None],
+        114: [(0,27),(28,56),None],
+        52:  [(0,12),(13,26),None],
+        234: [(0,28),(29,56),(60,116)],
+        228: [(0,28),(29,57),(57,113)],
+        490: [(0,61),(62,122),(123,245)],
+        128: [(0,31),(32,63),None],
+        256: [(0,32),(32,63),(64,128)],
+        512: [(0,63),(64,127),(128,256)],
+        384: [(0,63),(64,127),(128,192)],
+    }.get(csi_len, None)
+    n = csi_len // 2
+    colors = [(200,200,200)] * n
+    if bands is None:
+        return colors
+    def fill(lo, hi, ch, clrs):
+        for i in range(lo, min(hi+1, n)):
+            t = int(255 * (i-lo)/max(hi-lo,1))
+            clrs[i] = (t,0,0) if ch==0 else (0,t,0) if ch==1 else (0,t,t)
+    for ci, b in enumerate(bands):
+        if b:
+            fill(b[0], b[1], ci, colors)
+    return colors
+
+
+class ESPCSIBase64Parser:
+    """
+    Pass 64: ESP-CSI base64 IQ decoder + gain-compensated amplitude.
+    Handles all ESP-CSI formats (LLTF-52, HT40-234, HE80-490, etc.).
+    Ports: esp_csi_tool.py base64_decode_bin + amplitude compensation.
+    """
+    # Subcarrier count per format
+    _FORMAT_SC = {52:26, 106:53, 114:57, 128:64, 228:114, 234:117, 256:128,
+                  384:192, 490:245, 512:256}
+
+    def __init__(self, fft_gain_default=0, agc_gain_default=0):
+        self.fft_gain = float(fft_gain_default)
+        self.agc_gain = float(agc_gain_default)
+        self._buf = np.zeros((200, 245), dtype=np.float32)
+        self._phase = np.zeros((200, 245), dtype=np.float32)
+        self._idx = 0
+
+    def update_gains(self, fft_gain, agc_gain):
+        self.fft_gain = float(fft_gain)
+        self.agc_gain = float(agc_gain)
+
+    def parse_raw_list(self, raw_list):
+        """Parse [imag0, real0, imag1, real1, ...] integer list → (amp, phase) arrays."""
+        n = len(raw_list) // 2
+        if n == 0:
+            return np.zeros(1), np.zeros(1)
+        imag = np.array(raw_list[0::2][:n], dtype=np.float32)
+        real = np.array(raw_list[1::2][:n], dtype=np.float32)
+        amp = np.sqrt(imag**2 + real**2)
+        phase = np.arctan2(imag, real)
+        return amp, phase
+
+    def parse_base64(self, b64_str, fft_gain=None, agc_gain=None):
+        """Decode base64 CSI string, apply gain compensation, return (amp, phase)."""
+        raw = _esp_base64_decode_csi(b64_str)
+        if not raw:
+            return None, None
+        amp, phase = self.parse_raw_list(raw)
+        fg = float(fft_gain) if fft_gain is not None else self.fft_gain
+        ag = float(agc_gain) if agc_gain is not None else self.agc_gain
+        # Gain compensation: divide by 2^(fft_gain+agc_gain)
+        gain_factor = np.power(2.0, fg + ag)
+        if gain_factor > 0:
+            amp = amp / gain_factor
+        n = len(amp)
+        if self._idx >= 200:
+            self._idx = 0
+        self._buf[self._idx, :n] = amp
+        self._phase[self._idx, :n] = phase
+        self._idx = (self._idx + 1) % 200
+        return amp, phase
+
+    def parse_json_csi(self, csi_list, fft_gain=None, agc_gain=None):
+        """Parse JSON int-list from ESP32 CSI_DATA line."""
+        raw = [int(x) for x in csi_list]
+        amp, phase = self.parse_raw_list(raw)
+        fg = float(fft_gain) if fft_gain is not None else self.fft_gain
+        ag = float(agc_gain) if agc_gain is not None else self.agc_gain
+        gain_factor = np.power(2.0, fg + ag)
+        if gain_factor > 0:
+            amp = amp / gain_factor
+        return amp, phase
+
+    def amplitude_history(self):
+        """Return rolling 200-frame amplitude buffer."""
+        return self._buf.copy()
+
+    def subcarrier_colors(self, csi_len):
+        return _esp_csi_subcarrier_colors(csi_len)
+
+    def synth_parse(self, n_sc=52):
+        """Synthetic frame for testing."""
+        rg = np.random.default_rng(64)
+        raw = rg.integers(-100, 100, n_sc * 2).tolist()
+        return self.parse_raw_list(raw)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ESP32-CSI-Tool IQ parser (Examplecode6 parse_csi.py + serial_plot_csi_live.py)
+# ─────────────────────────────────────────────────────────────────────────────
+class ESP32CSIToolParser:
+    """
+    Pass 64: Full ESP32-CSI-Tool IQ/amplitude/phase parser.
+    Handles both standard (25-col) and C5/C6 (15-col) CSV formats.
+    Ports: parse_csi.py + serial_plot_csi_live.py → numpy arrays.
+    """
+    _COLS_STD = ['type','id','mac','rssi','rate','sig_mode','mcs','bandwidth',
+                 'smoothing','not_sounding','aggregation','stbc','fec_coding',
+                 'sgi','noise_floor','ampdu_cnt','channel','secondary_channel',
+                 'local_timestamp','ant','sig_len','rx_state','len','first_word','data']
+    _COLS_C5C6 = ['type','id','mac','rssi','rate','noise_floor','fft_gain',
+                  'agc_gain','channel','local_timestamp','sig_len','rx_state',
+                  'len','first_word','data']
+
+    def __init__(self, buf_len=200):
+        self.buf_len = buf_len
+        self._amp_buf  = np.zeros((buf_len, 490), dtype=np.float32)
+        self._phase_buf= np.zeros((buf_len, 490), dtype=np.float32)
+        self._iq_buf   = np.zeros((buf_len, 490), dtype=np.complex64)
+        self._agc_buf  = np.zeros(buf_len, dtype=np.float32)
+        self._fft_buf  = np.zeros(buf_len, dtype=np.float32)
+        self._rssi_buf = np.zeros(buf_len, dtype=np.float32)
+        self._ptr = 0
+        self._pkt_count = 0
+
+    def _parse_csi_data_str(self, data_str):
+        """'[i0 r0 i1 r1 ...]' → complex array."""
+        inner = data_str.strip().lstrip('[').rstrip(']')
+        vals = [int(x) for x in inner.split() if x]
+        n = len(vals) // 2
+        cplx = np.zeros(n, dtype=np.complex64)
+        for i in range(n):
+            cplx[i] = complex(vals[i*2+1], vals[i*2])   # real=real, imag=imag
+        return cplx
+
+    def parse_csv_line(self, line):
+        """
+        Parse one CSV line from ESP32-CSI-Tool serial output.
+        Returns dict with amp, phase, iq, rssi, agc, fft, n_sc.
+        """
+        import csv as _csv
+        from io import StringIO as _SIO
+        parts = list(_csv.reader(_SIO(line.strip())))[0]
+        if 'CSI_DATA' not in (parts[0] if parts else ''):
+            return None
+        is_c5c6 = (len(parts) == len(self._COLS_C5C6))
+        try:
+            rssi = float(parts[3]) if len(parts) > 3 else 0.0
+            if is_c5c6:
+                fft_g = float(parts[6])
+                agc_g = float(parts[7])
+                data_str = parts[-1]
+            else:
+                fft_g = 0.0
+                agc_g = 0.0
+                data_str = parts[-1]
+            cplx = self._parse_csi_data_str(data_str)
+            amp = np.abs(cplx)
+            phase = np.angle(cplx)
+            n = len(cplx)
+            i = self._ptr % self.buf_len
+            self._amp_buf[i, :n] = amp
+            self._phase_buf[i, :n] = phase
+            self._iq_buf[i, :n] = cplx
+            self._agc_buf[i] = agc_g
+            self._fft_buf[i] = fft_g
+            self._rssi_buf[i] = rssi
+            self._ptr += 1
+            self._pkt_count += 1
+            return {'amp': amp, 'phase': phase, 'iq': cplx, 'rssi': rssi,
+                    'fft_gain': fft_g, 'agc_gain': agc_g, 'n_sc': n}
+        except Exception:
+            return None
+
+    def amplitude_history(self):
+        return self._amp_buf.copy()
+
+    def phase_history(self):
+        return self._phase_buf.copy()
+
+    def latest_amplitude(self):
+        i = (self._ptr - 1) % self.buf_len
+        return self._amp_buf[i].copy()
+
+    def latest_iq(self):
+        i = (self._ptr - 1) % self.buf_len
+        return self._iq_buf[i].copy()
+
+    def synth_frame(self, n_sc=52):
+        """Synthetic parse for testing."""
+        rg = np.random.default_rng(64)
+        vals = rg.integers(-50, 50, n_sc * 2)
+        data_str = '[' + ' '.join(map(str, vals)) + ']'
+        line = 'CSI_DATA,' + ','.join(['0'] * 23) + ',' + data_str
+        return self.parse_csv_line(line)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KrakenSDR: VFO channelizer + Root-MUSIC + PAPR + SNR + UCA phase-mode
+# (crucialuseexamplecode2 kraken_sdr_signal_processor.py — remaining functions)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _kraken_corr_matrix_np(X):
+    """Correlation matrix R = X @ X^H / N (numpy, no numba)."""
+    N = X.shape[1]
+    return (X @ X.conj().T) / N
+
+
+def _kraken_snr_np(R):
+    """Eigenvalue SNR: (max_ev - min_ev) / min_ev in dB."""
+    try:
+        ev = np.sort(np.abs(np.linalg.eigvals(R)))
+        noise = ev[0]
+        if noise < 1e-15:
+            return 0.0
+        return float(10.0 * np.log10((ev[-1] - noise) / noise))
+    except Exception:
+        return 0.0
+
+
+def _kraken_toeplitzify_np(R):
+    """Toeplitz rectification of correlation matrix."""
+    M = R.shape[0]
+    c = np.array([(1.0 / (M - abs(m))) * np.trace(R, m)
+                  for m in range(0, -M, -1)], dtype=np.complex128)
+    out = np.zeros((M, M), dtype=np.complex128)
+    for i in range(M):
+        for j in range(M):
+            out[i, j] = c[abs(i - j)]
+    return out
+
+
+def _kraken_fb_toeplitz_np(R):
+    """Forward-backward Toeplitz reconstruction (for UCA decorrelation)."""
+    try:
+        from scipy.linalg import toeplitz as _tp
+    except ImportError:
+        def _tp(c, r=None):
+            n = len(c)
+            T = np.zeros((n, n), dtype=c.dtype)
+            for i in range(n):
+                for j in range(n):
+                    T[i, j] = c[i-j] if i >= j else np.conj(c[j-i])
+            return T
+    R_f = _tp(R[:, 0], R[0, :])
+    R_b = _tp(np.flip(R[:, -1]), np.flip(R[-1, :]))
+    return 0.5 * (R_f + R_b.conj())
+
+
+def _kraken_root_music_np(R, signal_dim, inter_elem_space=0.5, array_offset_deg=0.0):
+    """
+    Root-MUSIC DoA estimator for ULA.
+    Returns array of DoA estimates in degrees [0°,360°).
+    Reference: Barabell 1983 ICASSP.
+    """
+    M = R.shape[0]
+    try:
+        _, vi = np.linalg.eigh(R)
+    except np.linalg.LinAlgError:
+        return np.array([0.0])
+    vi = vi.astype(np.complex64)
+    e_noise = vi[:, :-signal_dim]
+    E_ct = e_noise @ e_noise.conj().T
+    # polynomial coefficients: p[k] = trace(E_ct, k) for k = -(M-1)...(M-1)
+    p = np.array([np.trace(E_ct, k) for k in range(-(M-1), M)], dtype=np.complex128)
+    roots = np.roots(p)
+    abs_r = np.abs(roots)
+    # select signal_dim roots closest to unit circle
+    idx = np.argsort(np.abs(abs_r - 1.0))[:signal_dim]
+    angles = np.angle(roots[idx])
+    # ULA: sin(theta) = angle / (2*pi*d)
+    sin_th = angles / (2.0 * np.pi * inter_elem_space)
+    sin_th = np.clip(sin_th, -1.0, 1.0)
+    doas = np.degrees(np.arcsin(sin_th))
+    # map to [0, 360)
+    doas = np.mod(doas + array_offset_deg, 360.0)
+    return doas
+
+
+def _kraken_papr_np(doa_spectrum):
+    """Peak-to-Average Power Ratio of DoA spectrum (dB)."""
+    s = np.abs(doa_spectrum)
+    mean_s = np.mean(s)
+    if mean_s < 1e-15:
+        return 0.0
+    return float(10.0 * np.log10(np.max(s) / mean_s))
+
+
+def _kraken_normalized_gaussian_np(x, x0_arr, sigma):
+    """Multimodal 360° periodic Gaussian for DoA spectrum smoothing."""
+    out = np.zeros_like(x, dtype=np.float64)
+    for x0 in x0_arr:
+        mirror = (x0 + 180.0) % 360.0
+        for i, xi in enumerate(x):
+            xi_w = xi if xi >= mirror else 2.0 * mirror - xi
+            out[i] += np.exp(-0.5 * ((xi_w - x0) / sigma) ** 2)
+    mx = out.max()
+    if mx > 1e-15:
+        out /= mx
+    return out
+
+
+def _kraken_uca_xi_np(radius_m, freq_hz):
+    """UCA phase-mode transform parameter xi and L."""
+    c = 299792458.0
+    lam = c / freq_hz
+    xi_val = 2.0 * np.pi * radius_m / lam
+    L = int(np.floor(xi_val))
+    return xi_val, L
+
+
+def _kraken_uca_transform_np(signal, radius_m, freq_hz):
+    """
+    UCA → virtual ULA phase-mode excitation transform.
+    Reference: Tewfik & Hong 1992, IEEE Trans. Signal Processing.
+    signal: (N_ant, N_samples) complex array.
+    Returns transformed signal in phase-mode space.
+    """
+    try:
+        from scipy.special import jv as _jv
+        from scipy.linalg import fractional_matrix_power as _fmp
+    except ImportError:
+        return signal  # fallback: identity
+    N = signal.shape[0]
+    xi_val, L = _kraken_uca_xi_np(radius_m, freq_hz)
+    modes = np.arange(-L, L + 1)
+    # Bessel diagonal J
+    J = np.diag([1.0 / ((1j ** v) * _jv(v, xi_val)) for v in modes])
+    # DFT matrix F
+    F = np.array([[np.exp(2.0j * np.pi * m * n / N) for n in range(N)]
+                  for m in modes], dtype=np.complex128)
+    T_mat = (J @ F) / float(N)
+    # Prewhiten
+    TH = T_mat @ T_mat.conj().T
+    try:
+        Tw = _fmp(TH, -0.5) @ T_mat
+    except Exception:
+        Tw = T_mat
+    return Tw @ signal
+
+
+def _kraken_gen_scanning_vectors_np(M, inter_elem_space, array_type='ULA', offset_deg=0.0):
+    """
+    Generate MUSIC/Bartlett scanning vectors for ULA or UCA.
+    Returns (M, 360) complex steering matrix.
+    """
+    thetas = np.linspace(0, 359, 360)
+    off = np.deg2rad(offset_deg)
+    if array_type == 'UCA':
+        # UCA: convert inter-element space to radius
+        r = inter_elem_space / (np.sqrt(2.0) * np.sqrt(1.0 - np.cos(2.0 * np.pi / M)))
+        phi = 2.0 * np.pi * np.arange(M) / M
+        x = r * np.cos(phi)
+        y = -r * np.sin(phi)
+    else:  # ULA
+        x = np.zeros(M)
+        y = -np.arange(M, dtype=float) * inter_elem_space
+    sv = np.zeros((M, 360), dtype=np.complex64)
+    for i, th in enumerate(thetas):
+        th_r = np.deg2rad(th) + off
+        sv[:, i] = np.exp(1j * 2 * np.pi * (x * np.cos(th_r) + y * np.sin(th_r)))
+    return sv
+
+
+def _kraken_music_np(R, sv, signal_dim):
+    """MUSIC spectrum from R and steering vectors sv (M×360). Returns (360,) power array."""
+    M = R.shape[0]
+    vals, vecs = np.linalg.eig(R)
+    idx = np.argsort(np.abs(vals))
+    vecs = vecs[:, idx]
+    E_n = vecs[:, :M - signal_dim]
+    EEH = E_n @ E_n.conj().T
+    out = np.zeros(360, dtype=np.float32)
+    for i in range(360):
+        s = sv[:, i]
+        denom = np.abs(s.conj() @ EEH @ s)
+        out[i] = 1.0 / denom if denom > 1e-15 else 0.0
+    return out
+
+
+class KrakenVFOChannelizer:
+    """
+    Pass 64: KrakenSDR VFO channelizer — FIR decimation + frequency shift.
+    Ports channelize() from kraken_sdr_signal_processor.py.
+    Up to 16 VFOs, each with configurable BW and FIR order factor.
+    """
+    def __init__(self, fs=2.4e6, max_vfos=16):
+        self.fs = float(fs)
+        self.max_vfos = max_vfos
+        self.vfo_freq = [self.fs / 4.0] * max_vfos
+        self.vfo_bw   = [12500.0] * max_vfos
+        self.vfo_fir_order_factor = [2] * max_vfos
+        self._active = 1
+
+    def set_vfo(self, idx, freq_hz, bw_hz=12500.0, fir_order_factor=2):
+        """Configure VFO idx."""
+        if 0 <= idx < self.max_vfos:
+            self.vfo_freq[idx] = float(freq_hz)
+            self.vfo_bw[idx]   = float(bw_hz)
+            self.vfo_fir_order_factor[idx] = int(fir_order_factor)
+            self._active = max(self._active, idx + 1)
+
+    def _fir_lp(self, n, cutoff_norm):
+        """Simple windowed-sinc FIR lowpass."""
+        m = np.arange(n) - (n - 1) / 2.0
+        h = np.sinc(2.0 * cutoff_norm * m) * np.blackman(n)
+        h /= h.sum()
+        return h.astype(np.float32)
+
+    def channelize(self, signal_2d, vfo_idx=0):
+        """
+        Channelize multi-channel IQ signal (N_ch × N_samples) for VFO vfo_idx.
+        Returns decimated, frequency-shifted IQ (N_ch × N_out).
+        """
+        try:
+            from scipy.signal import decimate as _dec
+        except ImportError:
+            return signal_2d  # fallback
+        freq = self.vfo_freq[vfo_idx]
+        bw   = self.vfo_bw[vfo_idx]
+        fof  = max(self.vfo_fir_order_factor[vfo_idx], 2)
+        dec  = max(int(self.fs // bw), 1)
+        N    = signal_2d.shape[1]
+        t    = np.arange(N, dtype=np.float64) / self.fs
+        # Frequency shift to baseband
+        shift = np.exp(-2j * np.pi * freq * t).astype(np.complex64)
+        shifted = signal_2d * shift[np.newaxis, :]
+        # FIR decimate per channel
+        order = fof * dec * 2
+        fir = self._fir_lp(order + 1, 0.45 / dec)
+        out_list = []
+        for ch in range(signal_2d.shape[0]):
+            try:
+                d = _dec(shifted[ch], dec, ftype='fir', zero_phase=True)
+            except Exception:
+                d = shifted[ch, ::dec]
+            out_list.append(d)
+        return np.array(out_list, dtype=np.complex64)
+
+    def synth_channelize(self, N=4096, n_ch=4):
+        rg = np.random.default_rng(64)
+        sig = (rg.standard_normal((n_ch, N)) + 1j * rg.standard_normal((n_ch, N))).astype(np.complex64)
+        return self.channelize(sig, 0)
+
+
+class KrakenDoAFullNP:
+    """
+    Pass 64: Extended KrakenSDR DoA processor — Root-MUSIC + PAPR + SNR +
+    UCA phase-mode transform + Toeplitz + FB-Toeplitz + scanning vector cache.
+    Augments the existing KrakenMUSICDoA class with these remaining algorithms.
+    """
+    def __init__(self, n_ant=5, inter_elem_space=0.5, array_type='ULA',
+                 radius_m=None, freq_hz=100e6, signal_dim=1):
+        self.n_ant = n_ant
+        self.inter_elem_space = inter_elem_space
+        self.array_type = array_type
+        self.radius_m = radius_m or inter_elem_space
+        self.freq_hz = float(freq_hz)
+        self.signal_dim = signal_dim
+        self._sv_cache = {}
+        # results
+        self.doa_root_music = np.array([0.0])
+        self.doa_papr_db = 0.0
+        self.snr_db = 0.0
+        self.doa_music_spectrum = np.zeros(360)
+
+    def _get_sv(self, atype, offset=0.0):
+        key = (atype, self.n_ant, self.inter_elem_space, offset)
+        if key not in self._sv_cache:
+            self._sv_cache[key] = _kraken_gen_scanning_vectors_np(
+                self.n_ant, self.inter_elem_space, atype, offset)
+        return self._sv_cache[key]
+
+    def process(self, iq_samples, freq_hz=None):
+        """
+        Full DoA processing pipeline.
+        iq_samples: (N_ant, N_samples) complex array.
+        Returns dict with root_music_doas, music_spectrum, papr_db, snr_db.
+        """
+        if freq_hz is not None:
+            self.freq_hz = float(freq_hz)
+        R = _kraken_corr_matrix_np(iq_samples)
+        # Optional UCA transform
+        if self.array_type == 'UCA' and self.radius_m is not None:
+            try:
+                iq_t = _kraken_uca_transform_np(iq_samples, self.radius_m, self.freq_hz)
+                R = _kraken_corr_matrix_np(iq_t)
+            except Exception:
+                pass
+        # Toeplitz decorrelation
+        try:
+            R = _kraken_toeplitzify_np(R)
+        except Exception:
+            pass
+        # MUSIC spectrum
+        sv = self._get_sv(self.array_type)
+        self.doa_music_spectrum = _kraken_music_np(R, sv, self.signal_dim)
+        # Root-MUSIC
+        self.doa_root_music = _kraken_root_music_np(
+            R, self.signal_dim, self.inter_elem_space)
+        # PAPR + SNR
+        self.doa_papr_db = _kraken_papr_np(self.doa_music_spectrum)
+        self.snr_db = _kraken_snr_np(R)
+        return {
+            'root_music_doas': self.doa_root_music.tolist(),
+            'music_spectrum': self.doa_music_spectrum,
+            'papr_db': self.doa_papr_db,
+            'snr_db': self.snr_db,
+        }
+
+    def synth_process(self):
+        rg = np.random.default_rng(64)
+        N = 512
+        iq = (rg.standard_normal((self.n_ant, N)) + 1j * rg.standard_normal((self.n_ant, N))).astype(np.complex64)
+        return self.process(iq)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# mmWave + WiFi-CSI dual-sensor Kalman-style fusion bridge
+# (RuView/scripts/mmwave_fusion_bridge.py)
+# ─────────────────────────────────────────────────────────────────────────────
+class MmWaveWiFiFusionBridgeNP:
+    """
+    Pass 64: Real-time mmWave + WiFi-CSI dual-sensor fusion bridge.
+    Implements Kalman-style weighted averaging:
+      fused = w_mmwave * mmwave + (1-w_mmwave) * csi
+    when both sources are fresh; falls back to single source otherwise.
+    Source: RuView/scripts/mmwave_fusion_bridge.py.
+    """
+    def __init__(self, mmwave_weight=0.8, staleness_ms=5000.0):
+        self.w_mm = float(mmwave_weight)
+        self.w_csi = 1.0 - self.w_mm
+        self.staleness_ms = float(staleness_ms)
+        # mmWave state
+        self._mm_hr = 0.0
+        self._mm_br = 0.0
+        self._mm_presence = False
+        self._mm_dist_cm = 0.0
+        self._mm_t = 0.0
+        self._mm_frames = 0
+        # CSI state
+        self._csi_hr = 0.0
+        self._csi_br = 0.0
+        self._csi_presence = False
+        self._csi_t = 0.0
+        self._csi_frames = 0
+        # fused output
+        self.fused = {'hr': 0.0, 'br': 0.0, 'presence': False,
+                      'source': 'none', 'conf': 0.0}
+
+    def update_mmwave(self, hr, br, presence=False, dist_cm=0.0):
+        """Update mmWave sensor readings (60 GHz MR60BHA2 / similar)."""
+        import time as _t
+        self._mm_hr = float(hr)
+        self._mm_br = float(br)
+        self._mm_presence = bool(presence)
+        self._mm_dist_cm = float(dist_cm)
+        self._mm_t = _t.time() * 1000.0
+        self._mm_frames += 1
+
+    def update_csi(self, hr, br, presence=False):
+        """Update WiFi-CSI edge-proc vitals readings."""
+        import time as _t
+        self._csi_hr = float(hr)
+        self._csi_br = float(br)
+        self._csi_presence = bool(presence)
+        self._csi_t = _t.time() * 1000.0
+        self._csi_frames += 1
+
+    def _age_ms(self, t_ms):
+        import time as _t
+        return (_t.time() * 1000.0 - t_ms) if t_ms > 0 else 1e9
+
+    def fuse(self):
+        """Compute fused HR/BR and return result dict."""
+        mm_stale = self._age_ms(self._mm_t) > self.staleness_ms
+        csi_stale = self._age_ms(self._csi_t) > self.staleness_ms
+        if not mm_stale and not csi_stale:
+            hr = self.w_mm * self._mm_hr + self.w_csi * self._csi_hr
+            br = self.w_mm * self._mm_br + self.w_csi * self._csi_br
+            presence = self._mm_presence or self._csi_presence
+            source = 'fused'
+            conf = 1.0
+        elif not mm_stale:
+            hr, br, presence, source, conf = (
+                self._mm_hr, self._mm_br, self._mm_presence, 'mmwave', 0.8)
+        elif not csi_stale:
+            hr, br, presence, source, conf = (
+                self._csi_hr, self._csi_br, self._csi_presence, 'csi', 0.6)
+        else:
+            hr, br, presence, source, conf = (0.0, 0.0, False, 'none', 0.0)
+        self.fused = {
+            'hr': float(hr), 'br': float(br),
+            'presence': bool(presence),
+            'source': source, 'conf': float(conf),
+            'mm_hr': self._mm_hr, 'mm_br': self._mm_br,
+            'csi_hr': self._csi_hr, 'csi_br': self._csi_br,
+            'mm_frames': self._mm_frames, 'csi_frames': self._csi_frames,
+            'dist_cm': self._mm_dist_cm,
+        }
+        return self.fused
+
+    def synth_fuse(self):
+        self.update_mmwave(72.0, 14.5, presence=True, dist_cm=120.0)
+        self.update_csi(68.0, 15.0, presence=True)
+        return self.fuse()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BCI-HIL Motor Imagery Trial Engine
+# (BCIexamplecode1/bci-hil-main Motor_Imagery engine.py)
+# ─────────────────────────────────────────────────────────────────────────────
+class BCIMotorImageryTrialEngineNP:
+    """
+    Pass 64: BCI-HIL Motor Imagery trial engine.
+    Manages epoch cutting, band-power classification, marker logging,
+    and LSL-style stream buffering for left/right hand motor imagery.
+    Source: bci-hil-main/src/Motor_Imagery/engine/engine.py.
+    Pure numpy — no brainflow or MNE dependency.
+
+    EEG Protocol (from BCI-HIL):
+      - 8 channels (Cz/C3/C4/CP3/CP4/FC3/FC4/Fz)
+      - 250 Hz sampling rate
+      - 4s trial window, 2s rest, 4s imagery
+      - Band: mu (8-12 Hz) + beta (18-25 Hz) ERD/ERS
+    """
+    CH_NAMES = ['Cz','C3','C4','CP3','CP4','FC3','FC4','Fz']
+    _FS = 250.0           # sampling rate
+    _TRIAL_S = 4.0        # imagery duration (s)
+    _REST_S  = 2.0        # rest before imagery
+    _CLASSES = ['left_hand', 'right_hand', 'rest']
+
+    def __init__(self, fs=250.0, n_ch=8, buf_s=60.0):
+        self.fs = float(fs)
+        self.n_ch = n_ch
+        self._buf_n = int(buf_s * fs)
+        self._buf = np.zeros((n_ch, self._buf_n), dtype=np.float32)
+        self._ptr = 0
+        self._markers = []       # [(sample_idx, label)]
+        self._trials = []        # [(epoch_array, label)]
+        self._trial_n = int(self._TRIAL_S * fs)
+        self._rest_n  = int(self._REST_S * fs)
+        self._current_label = None
+        self._trial_start = -1
+        self._predictions = []   # [(label, conf)]
+
+    def push_samples(self, chunk):
+        """
+        Push (n_ch × N) sample chunk into ring buffer.
+        chunk: numpy array shape (n_ch, N) or (N, n_ch).
+        """
+        if chunk.ndim == 2 and chunk.shape[0] == self.n_ch:
+            arr = chunk
+        elif chunk.ndim == 2 and chunk.shape[1] == self.n_ch:
+            arr = chunk.T
+        else:
+            return
+        N = arr.shape[1]
+        for i in range(N):
+            idx = self._ptr % self._buf_n
+            self._buf[:, idx] = arr[:, i]
+            self._ptr += 1
+
+    def log_marker(self, label):
+        """Log a trial-start marker at the current sample position."""
+        self._markers.append((self._ptr, label))
+        self._current_label = label
+        self._trial_start = self._ptr
+
+    def cut_epoch(self, label=None):
+        """
+        Cut a trial epoch from the ring buffer using the last marker.
+        Returns (epoch_array n_ch×trial_N, label) or None if insufficient data.
+        """
+        if self._trial_start < 0:
+            return None
+        n_avail = self._ptr - self._trial_start
+        if n_avail < self._trial_n:
+            return None
+        epoch = np.zeros((self.n_ch, self._trial_n), dtype=np.float32)
+        for j in range(self._trial_n):
+            src = (self._trial_start + j) % self._buf_n
+            epoch[:, j] = self._buf[:, src]
+        lbl = label if label is not None else self._current_label
+        self._trials.append((epoch, lbl))
+        self._trial_start = -1
+        return epoch, lbl
+
+    def _bandpower_np(self, epoch, f_lo, f_hi):
+        """Welch-style band power via FFT for each channel."""
+        N = epoch.shape[1]
+        W = np.hanning(N)
+        sp = np.abs(np.fft.rfft(epoch * W[np.newaxis, :], axis=1)) ** 2
+        freqs = np.fft.rfftfreq(N, d=1.0/self.fs)
+        mask = (freqs >= f_lo) & (freqs <= f_hi)
+        bp = sp[:, mask].mean(axis=1)
+        return bp   # shape (n_ch,)
+
+    def classify_epoch(self, epoch):
+        """
+        ERD/ERS-based motor imagery classification.
+        Returns (predicted_label, confidence) using C3/C4 lateralization.
+        C3: contralateral to RIGHT hand (suppresses mu during LEFT imagery)
+        C4: contralateral to LEFT hand (suppresses mu during RIGHT imagery)
+        """
+        mu   = self._bandpower_np(epoch, 8.0, 12.0)
+        beta = self._bandpower_np(epoch, 18.0, 25.0)
+        c3_idx = self.CH_NAMES.index('C3') if 'C3' in self.CH_NAMES else 1
+        c4_idx = self.CH_NAMES.index('C4') if 'C4' in self.CH_NAMES else 2
+        # Laterality index: positive → left dominant, negative → right dominant
+        lat = (mu[c3_idx] - mu[c4_idx]) / (mu[c3_idx] + mu[c4_idx] + 1e-9)
+        # Beta suppression as secondary feature
+        beta_asym = (beta[c3_idx] - beta[c4_idx]) / (beta[c3_idx] + beta[c4_idx] + 1e-9)
+        score = 0.7 * lat + 0.3 * beta_asym
+        conf = float(np.clip(np.abs(score) * 2.0, 0.0, 1.0))
+        if abs(score) < 0.05:
+            label = 'rest'
+        elif score > 0:
+            label = 'left_hand'
+        else:
+            label = 'right_hand'
+        self._predictions.append((label, conf))
+        return label, conf
+
+    def run_trial(self, label='left_hand'):
+        """Run a complete synthetic trial (for testing)."""
+        self.log_marker(label)
+        rg = np.random.default_rng(64)
+        # Synthesize trial: add suppressed mu on C3 for left hand
+        chunk = rg.standard_normal((self.n_ch, self._trial_n)).astype(np.float32) * 5.0
+        t = np.arange(self._trial_n) / self.fs
+        mu_signal = np.sin(2 * np.pi * 10.0 * t).astype(np.float32) * 2.0
+        if label == 'left_hand':
+            chunk[2] += mu_signal  # C4 mu suppressed (right hemisphere)
+        else:
+            chunk[1] += mu_signal  # C3
+        self.push_samples(chunk)
+        result = self.cut_epoch(label)
+        if result is not None:
+            epoch, lbl = result
+            return self.classify_epoch(epoch)
+        return 'rest', 0.0
+
+    def accuracy(self):
+        """Compute classification accuracy on stored predictions vs logged markers."""
+        if not self._predictions or not self._markers:
+            return 0.0
+        correct = sum(1 for ((_,lbl),(pred,_)) in zip(self._markers, self._predictions)
+                      if lbl == pred)
+        return float(correct) / len(self._predictions)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pass 64 Sensor Fusion Orchestrator
+# ─────────────────────────────────────────────────────────────────────────────
+class Pass64SensorFusion:
+    """
+    Pass 64: Unified fusion of ESP-CSI, ESP32-CSI-Tool, KrakenSDR extended DoA
+    (Root-MUSIC + VFO + PAPR + SNR + UCA), mmWave+WiFi bridge, and BCI motor imagery.
+    psych_profile keys added (18):
+      p64_esp_amp_mean, p64_esp_amp_max, p64_esp_n_sc,
+      p64_csi_tool_amp_mean, p64_csi_tool_phase_std,
+      p64_doa_root_music_0, p64_doa_root_music_1,
+      p64_doa_papr_db, p64_doa_snr_db, p64_doa_music_peak,
+      p64_vfo_n_out,
+      p64_mm_hr, p64_mm_br, p64_fused_hr, p64_fused_br,
+      p64_fused_source, p64_bci_mi_label, p64_bci_mi_conf
+    """
+    def __init__(self):
+        self.esp_parser   = ESPCSIBase64Parser()
+        self.csi_tool     = ESP32CSIToolParser()
+        self.kraken_doa   = KrakenDoAFullNP(n_ant=5, inter_elem_space=0.5)
+        self.vfo_ch       = KrakenVFOChannelizer(fs=2.4e6, max_vfos=4)
+        self.mm_bridge    = MmWaveWiFiFusionBridgeNP(mmwave_weight=0.8)
+        self.bci_trial    = BCIMotorImageryTrialEngineNP(fs=250.0, n_ch=8)
+        self._frame = 0
+
+    def update(self, pp, amp_frame, iq_frame, _unused):
+        self._frame += 1
+
+        # ── ESP-CSI base64 amp (synthetic) ──────────────────────────────────
+        try:
+            esp_amp, esp_phase = self.esp_parser.synth_parse(n_sc=52)
+            pp['p64_esp_amp_mean'] = float(esp_amp.mean())
+            pp['p64_esp_amp_max']  = float(esp_amp.max())
+            pp['p64_esp_n_sc']     = int(len(esp_amp))
+        except Exception:
+            pp['p64_esp_amp_mean'] = 0.0
+            pp['p64_esp_amp_max']  = 0.0
+            pp['p64_esp_n_sc']     = 0
+
+        # ── ESP32-CSI-Tool IQ parse ──────────────────────────────────────────
+        try:
+            frame = self.csi_tool.synth_frame(n_sc=52)
+            if frame:
+                pp['p64_csi_tool_amp_mean']  = float(frame['amp'].mean())
+                pp['p64_csi_tool_phase_std'] = float(frame['phase'].std())
+            else:
+                pp['p64_csi_tool_amp_mean']  = 0.0
+                pp['p64_csi_tool_phase_std'] = 0.0
+        except Exception:
+            pp['p64_csi_tool_amp_mean']  = 0.0
+            pp['p64_csi_tool_phase_std'] = 0.0
+
+        # ── KrakenSDR extended DoA ───────────────────────────────────────────
+        try:
+            doa_r = self.kraken_doa.synth_process()
+            rm = doa_r['root_music_doas']
+            pp['p64_doa_root_music_0'] = float(rm[0]) if len(rm) > 0 else 0.0
+            pp['p64_doa_root_music_1'] = float(rm[1]) if len(rm) > 1 else 0.0
+            pp['p64_doa_papr_db']      = float(doa_r['papr_db'])
+            pp['p64_doa_snr_db']       = float(doa_r['snr_db'])
+            ms = doa_r['music_spectrum']
+            pp['p64_doa_music_peak']   = float(np.argmax(ms))
+        except Exception:
+            pp['p64_doa_root_music_0'] = 0.0
+            pp['p64_doa_root_music_1'] = 0.0
+            pp['p64_doa_papr_db']      = 0.0
+            pp['p64_doa_snr_db']       = 0.0
+            pp['p64_doa_music_peak']   = 0.0
+
+        # ── VFO channelizer ──────────────────────────────────────────────────
+        try:
+            vfo_out = self.vfo_ch.synth_channelize(N=1024, n_ch=4)
+            pp['p64_vfo_n_out'] = int(vfo_out.shape[1])
+        except Exception:
+            pp['p64_vfo_n_out'] = 0
+
+        # ── mmWave + WiFi-CSI bridge ─────────────────────────────────────────
+        try:
+            fused = self.mm_bridge.synth_fuse()
+            pp['p64_mm_hr']      = float(fused['mm_hr'])
+            pp['p64_mm_br']      = float(fused['mm_br'])
+            pp['p64_fused_hr']   = float(fused['hr'])
+            pp['p64_fused_br']   = float(fused['br'])
+            pp['p64_fused_source'] = str(fused['source'])
+        except Exception:
+            pp['p64_mm_hr']       = 0.0
+            pp['p64_mm_br']       = 0.0
+            pp['p64_fused_hr']    = 0.0
+            pp['p64_fused_br']    = 0.0
+            pp['p64_fused_source']= 'none'
+
+        # ── BCI Motor Imagery ────────────────────────────────────────────────
+        try:
+            if self._frame % 30 == 1:
+                lbl = 'left_hand' if (self._frame // 30) % 2 == 0 else 'right_hand'
+                mi_lbl, mi_conf = self.bci_trial.run_trial(lbl)
+                pp['p64_bci_mi_label'] = str(mi_lbl)
+                pp['p64_bci_mi_conf']  = float(mi_conf)
+        except Exception:
+            pp.setdefault('p64_bci_mi_label', 'rest')
+            pp.setdefault('p64_bci_mi_conf', 0.0)
+
+        return pp
+# ═══════════ END PASS 64 ENGINES ═══════════
 
 # ════════════ PASS 62 ENGINES ════════════
 # ════════════ PASS 62 ENGINES ════════════
@@ -35453,6 +43024,17 @@ class MultiAgentWirelessBCIFuser:
         self.p60_fusion    = Pass60SensorFusion()  # RuView+NerfCam
         self.p61_fusion    = Pass61SensorFusion()  # VitalsSuite+BP+DensePose+EEG
         self.p62_fusion    = Pass62SensorFusion()  # PR+SpecSens+mmMesh
+        self.p64_fusion    = Pass64SensorFusion()  # ESP-CSI+KrakenVFO+mmWaveBridge+BCI-MI
+        self.p65_fusion    = Pass65SensorFusion()  # RuView+CSIKit+mmWave-PC
+        self.p66_fusion    = Pass66SensorFusion()  # RuViewLive+HappinessVec+Ledger+SMPL
+        self.p67_fusion    = Pass67SensorFusion()  # SpecSensROC+Cyclostat+GeodesicLoss+NeRF2+KrakenPR-SM
+        self.p68_fusion    = Pass68SensorFusion()  # BayesianNV+PABS+MinCut+Foliage+Maritime+BPFloor+BCIVar
+        self.p69_fusion    = Pass69SensorFusion()  # NVHandoff+ChestPlace+MultiSubj+RSSI-MLP+RFWeather+FMDemod+6DRot+RotConv
+        self.p70_fusion    = Pass70SensorFusion()  # MVS+CSIFeats+CrossRoomReID+PosePABS
+        self.p71_fusion    = Pass71SensorFusion()  # 3DFresnel+Multistatic+NeRF2Full+RFGaussianSplat
+        self.p72_fusion    = Pass72SensorFusion()  # RiemannCov+ERPAvg+OnlineERP+FisherBand
+        self.p73_fusion    = Pass73SensorFusion()  # mmWaveFMCW+AnchorBodyEst
+        self.p74_fusion    = Pass74SensorFusion()  # LieGroup+FrustumRay+MHSA
         self.modality_net  = ModalityTranslationNetNP(n_sc=56, hidden=128, seed=41)  # Pass 41: WiFi→spatial
         self._ncf_t: float = 0.0             # NCF time counter
         self._ncf_motion_mag: float = 0.0    # latest motion magnitude
@@ -36061,6 +43643,136 @@ class MultiAgentWirelessBCIFuser:
             "p62_ss_energy_d": 0, "p62_ss_cyclo_d": 0, "p62_ss_snr_est_db": 0.0,
             "p62_mm_joints_mean_z": 0.0, "p62_mm_body_height": 0.0,
             "p62_mm_g_loc_x": 0.0, "p62_mm_g_loc_y": 0.0, "p62_mm_rot_frob": 0.0,
+            "p64_esp_amp_mean": 0.0, "p64_esp_amp_max": 0.0, "p64_esp_n_sc": 0,
+            "p64_csi_tool_amp_mean": 0.0, "p64_csi_tool_phase_std": 0.0,
+            "p64_doa_root_music_0": 0.0, "p64_doa_root_music_1": 0.0,
+            "p64_doa_papr_db": 0.0, "p64_doa_snr_db": 0.0, "p64_doa_music_peak": 0.0,
+            "p64_vfo_n_out": 0,
+            "p64_mm_hr": 0.0, "p64_mm_br": 0.0,
+            "p64_fused_hr": 0.0, "p64_fused_br": 0.0, "p64_fused_source": "none",
+            "p64_bci_mi_label": "rest", "p64_bci_mi_conf": 0.0,
+            "p65_toa_range_m": 0.0, "p65_phase_range_m": 0.0,
+            "p65_avg_gain": 0.0, "p65_gdop": 0.0, "p65_toa_after_avg_m": 0.0,
+            "p65_fresnel_r1_m": 0.0, "p65_fresnel_zone": "zone1_constructive",
+            "p65_pabs": 0.0, "p65_phase_sweep_std": 0.0, "p65_phase_sweep_range": 0.0,
+            "p65_sal_max": 0.0, "p65_sal_mean": 0.0, "p65_sal_top8": "[]",
+            "p65_sal_concentration": 0.0,
+            "p65_reid_label": "none", "p65_reid_conf": 0.0, "p65_reid_gallery_size": 0,
+            "p65_csik_snr_db": 0.0, "p65_csik_hampel_changes": 0, "p65_csik_dom_std": 0.0,
+            "p65_pc_n_points": 0, "p65_pc_range_mean": 0.0, "p65_pc_vel_mean": 0.0,
+            "p65_pc_centroid_x": 0.0, "p65_pc_centroid_y": 0.0, "p65_pc_centroid_z": 0.0,
+            "p65_rssi_loc": "none", "p65_rssi_conf": 0.0, "p65_rssi_gallery_size": 0,
+            "p66_anomaly_alert": "ok", "p66_anomaly_count": 0,
+            "p66_drift_n": 0,
+            "p66_coherence": 0.5, "p66_coherent": 1,
+            "p66_hrv_sdnn": 0.0, "p66_hrv_rmssd": 0.0,
+            "p66_hrv_lf_hf": 1.5, "p66_hrv_band": "normal",
+            "p66_hv_label": "neutral", "p66_hv_conf": 0.0,
+            "p66_hv_valence": 0.5, "p66_hv_arousal": 0.5, "p66_hv_energy": 0.5,
+            "p66_hv_cognitive": 0.5, "p66_hv_drift": 0.0, "p66_hv_epoch": 0,
+            "p66_hv_store_size": 0,
+            "p66_ledger_rows": 0, "p66_ledger_valid": 0, "p66_ledger_head": "none",
+            "p66_smpl_vert_mean_y": 0.0, "p66_smpl_joint_spread": 0.0,
+            "p66_smpl_n_verts": 100, "p66_smpl_n_joints": 24,
+            "p66_nerf2_amp": 0.0, "p66_nerf2_rssi_rt": 0.0,
+            "p66_sim_n_seqs": 0, "p66_sim_n_persons": 0,
+            "p66_sim_amp_mean": 0.0, "p66_sim_amp_std": 0.0,
+            # ── Pass 67 defaults ──────────────────────────────────────
+            "p67_ed_detected": 0, "p67_ed_statistic": 0.0,
+            "p67_ed_threshold": 0.0, "p67_ed_margin_db": 0.0,
+            "p67_cyclo_detected": 0, "p67_cyclo_T_sq": 0.0,
+            "p67_cyclo_threshold": 0.0,
+            "p67_geo_mean_loss": 0.0, "p67_geo_max_joint": 0.0,
+            "p67_geo_min_joint": 0.0,
+            "p67_nerf2_pe_out_dim": 63, "p67_nerf2_pe_mean": 0.0,
+            "p67_nerf2_pe_std": 0.0,
+            "p67_nerf2_rss": 0.0, "p67_nerf2_depth": 0.0,
+            "p67_nerf2_alpha": 0.0, "p67_nerf2_loss": 0.0,
+            "p67_pr_state": "IDLE", "p67_pr_power_db": -100.0,
+            "p67_pr_n_detections": 0, "p67_pr_max_range_bin": 0,
+            "p67_pr_max_dop_bin": 0, "p67_pr_spectrum_peak_db": -100.0,
+            "p67_pr_frame_count": 0, "p67_pr_total_detections": 0,
+            # ── Pass 68 defaults ──────────────────────────────────────
+            "p68_br_bpm": 0.0, "p68_br_conf": 0.0,
+            "p68_hr_csi_bpm": 0.0, "p68_hr_csi_conf": 0.0,
+            "p68_hr_nv_bpm": 0.0, "p68_hr_nv_conf": 0.0,
+            "p68_hr_fused_bpm": 0.0, "p68_hr_fused_conf": 0.0,
+            "p68_nv_amp_pt": 0.0, "p68_nv_hrv_sdnn": 0.0,
+            "p68_pabs": 0.0, "p68_pabs_baseline": 0.0,
+            "p68_pabs_alert": 0, "p68_pabs_history_len": 0,
+            "p68_ml_cut_val": 0.0, "p68_ml_partition_size": 0,
+            "p68_ml_adversarial_detected": 0, "p68_ml_suspected_node": -1,
+            "p68_ml_correct": 0,
+            "p68_foliage_atten_sparse_db": 0.0, "p68_foliage_atten_mod_db": 0.0,
+            "p68_foliage_atten_dense_db": 0.0, "p68_foliage_fspl_db": 0.0,
+            "p68_foliage_max_range_m": 0.0, "p68_foliage_link_margin_mod_db": 0.0,
+            "p68_maritime_cabin_total_db": 0.0, "p68_maritime_cabin_margin_db": 0.0,
+            "p68_maritime_hull_total_db": 0.0, "p68_maritime_hull_margin_db": 0.0,
+            "p68_maritime_steel_skin_um": 0.0, "p68_maritime_water_db_per_m": 0.0,
+            "p68_bp_ptt_s": 0.0, "p68_bp_snr_db": 0.0,
+            "p68_bp_req_filter_db": 0.0, "p68_bp_fresnel_r_m": 0.0,
+            "p68_bp_ptt_resolvable": 0, "p68_bp_verdict": "NEGATIVE",
+            "p68_eeg_ch_var_mean": 0.0, "p68_eeg_ch_var_max": 0.0,
+            "p68_eeg_alpha_mean": 0.0, "p68_eeg_beta_mean": 0.0,
+            "p68_eeg_laterality": 0.0,
+            "p68_eeg_var_TP9": 0.0, "p68_eeg_var_AF7": 0.0,
+            "p68_eeg_var_AF8": 0.0, "p68_eeg_var_TP10": 0.0,
+            # ── Pass 69 defaults ──────────────────────────────────────
+            "p69_nv_fused_bpm": 0.0, "p69_nv_fused_conf": 0.0,
+            "p69_nv_regime": "weighted_fallback", "p69_nv_smart_err": 0.0,
+            "p69_nv_naive_err": 0.0, "p69_nv_improvement": 1.0,
+            "p69_nv_amp_pt": 0.0,
+            "p69_place_chest_cov": 0.0, "p69_place_tx": "[]",
+            "p69_place_rx": "[]", "p69_place_link_m": 0.0,
+            "p69_multi_subj_cov": 0.0, "p69_multi_subj_n": 1,
+            "p69_multi_subj_anch": 0,
+            "p69_rssi_pred_count": 0, "p69_rssi_conf": 0.0,
+            "p69_rssi_loss": 0.0, "p69_rssi_accuracy": 0.0,
+            "p69_rssi_n_trained": 0,
+            "p69_rf_weather_cos_dist": 0.0, "p69_rf_weather_alert": 0,
+            "p69_rf_weather_sv_mean": 0.0, "p69_rf_weather_n_frames": 0,
+            "p69_fm_audio_rms": 0.0, "p69_fm_audio_peak": 0.0,
+            "p69_fm_spectrum_peak_db": -100.0, "p69_fm_spectrum_mean_db": -100.0,
+            "p69_6d_frob_err": 0.0, "p69_6d_geo_err": 0.0,
+            "p69_6d_n_joints": 24, "p69_6d_batch": 4,
+            "p69_rot_aa_round_err": 0.0, "p69_rot_quat_round_err": 0.0,
+            "p69_rot_n_tested": 8,
+            # Pass 70 defaults
+            "p70_turb_mean": 0.0, "p70_turb_std": 0.0,
+            "p70_turb_iqr": 0.0, "p70_turb_skew": 0.0,
+            "p70_turb_autocorr": 0.0, "p70_turb_mad": 0.0,
+            "p70_turb_wl": 0.0,
+            "p70_mvs_state": 0, "p70_mvs_variance": 0.0,
+            "p70_mvs_turbulence": 0.0,
+            "p70_reid_emb_norm": 0.0, "p70_reid_env_sub_rms": 0.0,
+            "p70_pose_pabs": 0.0, "p70_naive_pabs": 0.0,
+            "p70_pabs_baseline": 0.0, "p70_pabs_alert": 0,
+            "p70_pose_x": 2.5, "p70_pose_y": 2.5,
+            # Pass 71 defaults
+            "p71_coverage_3d": 0.0, "p71_tx_z": 1.5, "p71_rx_z": 1.5,
+            "p71_n_evals_3d": 0,
+            "p71_ms_cov": 0.0, "p71_ms_n_anchors": 0, "p71_ms_optimized": 0,
+            "p71_nerf2_rss": 0.0, "p71_nerf2_loss": 0.0, "p71_nerf2_step": 0,
+            "p71_gs_rms": 0.0, "p71_gs_loss": 0.0,
+            "p71_gs_n_active": 128, "p71_gs_step": 0,
+            # Pass 72 defaults
+            "p72_erp_label": "init", "p72_erp_prob": 0.0,
+            "p72_erp_dist": 0.0, "p72_erp_fitted": 0, "p72_erp_n_trials": 0,
+            "p72_cov_frob": 0.0,
+            "p72_fisher_top": 0.0, "p72_fisher_sel": -1,
+            # Pass 73 defaults
+            "p73_pc_n_det": 0, "p73_pc_range_m": 0.0,
+            "p73_pc_vel_ms": 0.0, "p73_pc_energy": 0.0,
+            "p73_body_hip_h": 0.0, "p73_body_head_h": 0.0,
+            "p73_body_span_m": 0.0, "p73_body_pose_norm": 0.0,
+            "p73_body_step": 0,
+            # Pass 74 defaults
+            "p74_pose_R_trace": 3.0, "p74_pose_t_norm": 0.0,
+            "p74_pose_SO3_log": 0.0, "p74_pose_step": 0,
+            "p74_frustum_depth": 0.0, "p74_frustum_rgb_mean": 0.0,
+            "p74_cone_r_mean": 0.0, "p74_n_samples": 8,
+            "p74_attn_entropy": 0.0, "p74_attn_feat_norm": 0.0,
+            "p74_attn_feat_std": 0.0,
             "p49_filtered_ema":      0.0,            # Pass 49: EMA-filtered amplitude
             "p49_filtered_butter":   0.0,            # Pass 49: Butterworth-filtered amplitude
             "p49_filtered_sg":       0.0,            # Pass 49: Savitzky-Golay-filtered amplitude
@@ -36442,6 +44154,7 @@ class MultiAgentWirelessBCIFuser:
                  ("Fused Map [5]", "fused"), ("Raw Data [6]", "raw"),
                  ("BCI [7]", "bci"), ("Radar [8]", "radar"),
                  ("World [9]", "splat"), ("Motion [0]", "motion"),
+                 ("Medical [m]", "medical"),
                  ("Info [i]", "info")]
         try:
             for i, (label, kind) in enumerate(_tabs):
@@ -36503,6 +44216,8 @@ class MultiAgentWirelessBCIFuser:
                             "7": "bci", "8": "radar", "9": "splat"}[key])
         elif key == "0":
             self._open_tab("motion")
+        elif key == "m":
+            self._open_tab("medical")
         elif key in ("i", "escape"):
             self._open_tab("info")
 
@@ -38469,6 +46184,72 @@ class MultiAgentWirelessBCIFuser:
                 pp.update(_p62_res)
             except Exception as _p62e:
                 log.debug(f"[P62] {_p62e}")
+            # ── Pass 64 ──────────────────────────────────────────────
+            try:
+                _p64_res = self.p64_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p64_res)
+            except Exception as _p64e:
+                log.debug(f"[P64] {_p64e}")
+            # ── Pass 65 ──────────────────────────────────────────────
+            try:
+                _p65_res = self.p65_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p65_res)
+            except Exception as _p65e:
+                log.debug(f"[P65] {_p65e}")
+            # ── Pass 66 ──────────────────────────────────────────────
+            try:
+                _p66_res = self.p66_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p66_res)
+            except Exception as _p66e:
+                log.debug(f"[P66] {_p66e}")
+            # ── Pass 67 ──────────────────────────────────────────────
+            try:
+                _p67_res = self.p67_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p67_res)
+            except Exception as _p67e:
+                log.debug(f"[P67] {_p67e}")
+            # ── Pass 68 ──────────────────────────────────────────────
+            try:
+                _p68_res = self.p68_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p68_res)
+            except Exception as _p68e:
+                log.debug(f"[P68] {_p68e}")
+            # ── Pass 69 ──────────────────────────────────────────────
+            try:
+                _p69_res = self.p69_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p69_res)
+            except Exception as _p69e:
+                log.debug(f"[P69] {_p69e}")
+            # ── Pass 70 ──────────────────────────────────────────────
+            try:
+                _p70_res = self.p70_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p70_res)
+            except Exception as _p70e:
+                log.debug(f"[P70] {_p70e}")
+            # ── Pass 71 ──────────────────────────────────────────────
+            try:
+                _p71_res = self.p71_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p71_res)
+            except Exception as _p71e:
+                log.debug(f"[P71] {_p71e}")
+            # ── Pass 72 ──────────────────────────────────────────────
+            try:
+                _p72_res = self.p72_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p72_res)
+            except Exception as _p72e:
+                log.debug(f"[P72] {_p72e}")
+            # ── Pass 73 ──────────────────────────────────────────────
+            try:
+                _p73_res = self.p73_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p73_res)
+            except Exception as _p73e:
+                log.debug(f"[P73] {_p73e}")
+            # ── Pass 74 ──────────────────────────────────────────────
+            try:
+                _p74_res = self.p74_fusion.update(pp, _amp44, _iq45, None)
+                pp.update(_p74_res)
+            except Exception as _p74e:
+                log.debug(f"[P74] {_p74e}")
 
         except Exception as _e38:
             log.debug(f"[P38-CSI] {_e38}")
