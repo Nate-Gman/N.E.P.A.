@@ -1374,6 +1374,10 @@ class DetailTabWindow:
                  "medical": "MEDICAL VITALS DASHBOARD",
                  "rfmap": "REAL RF SPECTRUM MAP",
                  "instrbus": "MULTI-INSTRUMENT BUS",
+                 "entities": "PER-ENTITY VIEW",
+                 "carrier": "CARRIER CORRELATION",
+                 "subsurface": "SUBSURFACE IMAGING (SIM)",
+                 "tuner": "SOFTWARE-DEFINED TUNER",
                  "info": "SYSTEM INFO & ABOUT"}.get(self.kind, self.kind)
         self._fig = plt.figure(f"N.E.P.A. - {title}", figsize=(16, 10))
         self._fig.patch.set_facecolor('#050505')
@@ -1401,6 +1405,23 @@ class DetailTabWindow:
             ax = fig.add_subplot(111); ax.axis('off')
             ax.text(0.5, 0.5, f"[{self.kind}] render error:\n{e}", ha='center',
                     va='center', color='#ff5555', fontsize=9)
+        self._apply_sim_watermark(fig, p)
+
+    def _apply_sim_watermark(self, fig, p):
+        """v94: when the session includes SIMULATED data (virtual instruments / demo / sim-validate),
+        stamp every view so it can NEVER be mistaken for a real measurement. This is what makes
+        'use code to simulate hardware' compatible with 'no fake data shown as real'."""
+        if (p or {}).get("vitals_mode") != "simulated":
+            return
+        try:
+            fig.text(0.5, 0.5, "SIMULATED", color='#ffaa00', alpha=0.10, fontsize=120,
+                     ha='center', va='center', rotation=28, fontweight='bold', zorder=1000)
+            fig.text(0.5, 0.972, "⚠  SIMULATION MODE — VIRTUAL INSTRUMENTS  ·  not a real "
+                     "measurement (press V to disable)", color='#ffaa00', alpha=0.92, fontsize=9.5,
+                     ha='center', va='center', fontweight='bold', zorder=1001,
+                     bbox=dict(boxstyle='round', facecolor='#2a1c00', edgecolor='#ffaa00', alpha=0.85))
+        except Exception:
+            pass
 
     def _draw_signal(self, fig, p, snap):
         raw = getattr(self.fuser, "_last_raw_csi", None)
@@ -1788,9 +1809,105 @@ class DetailTabWindow:
         except Exception:
             pass
 
+    def _draw_spectrum_radar(self, fig, p, snap):
+        """Pass 93: REAL spectrum-as-radar view (no coherent IQ attached). Everything here is
+        derived from genuinely-measured RSSI across the carriers; nothing is fabricated."""
+        cnt  = int(p.get("df_source_count", 0)) if p else 0
+        valid = bool(p.get("rf_corr_valid", False)) if p else False
+        lf   = p.get("live_feed", {}) if p else {}
+        fig.suptitle(
+            f"SPECTRUM-AS-RADAR (carrier bounces, magnitude domain) — REAL   ·   "
+            f"device-free movers: {cnt if valid else '—'}   ·   "
+            f"{lf.get('carriers_tracked', 0)} carriers @ {lf.get('sample_rate_hz', 0):.0f} Hz",
+            color='#00ffcc', fontsize=12, fontweight='bold')
+
+        # Panel 1 — device-free RANGE profile (real: motion vs distance) + targets
+        ax1 = fig.add_subplot(2, 2, 1); ax1.set_facecolor('#060a0e')
+        rad = p.get("radial_activity", []) if p else []
+        rmax = float(p.get("radial_range_max", 30.0)) if p else 30.0
+        if rad and np.sum(rad) > 0:
+            ra = np.asarray(rad, dtype=np.float64); xr = np.linspace(0, rmax, len(ra))
+            ax1.fill_between(xr, 0, ra, color='#ff8833', alpha=0.5, step='mid')
+            ax1.plot(xr, ra, color='#ffaa33', lw=1.2, drawstyle='steps-mid')
+            for tgt in (p.get("df_targets", []) or []):
+                ax1.axvline(tgt["range_m"], color='#00ffcc', lw=1.4, alpha=0.9)
+                ax1.text(tgt["range_m"], ax1.get_ylim()[1]*0.9,
+                         f"{tgt['range_m']:.1f}m\nconf {tgt['confidence']*100:.0f}%",
+                         color='#00ffcc', fontsize=6, ha='center', va='top')
+            ax1.set_xlabel("range from receiver (m)", color='#aaa', fontsize=8)
+            ax1.set_ylabel("device-free motion energy", color='#aaa', fontsize=8)
+        else:
+            ax1.text(0.5, 0.5, "no device-free motion on any carrier\n(move within the RF field to register)",
+                     ha='center', va='center', color='#778', transform=ax1.transAxes, fontsize=9)
+        ax1.set_title("Device-free RANGE profile (carrier bounces) [REAL]", color='#00ffcc', fontsize=9)
+        ax1.tick_params(colors='#666', labelsize=6)
+
+        # Panel 2 — per-carrier Doppler (Kalman link velocity) bar chart
+        ax2 = fig.add_subplot(2, 2, 2); ax2.set_facecolor('#060a0e')
+        vmap = p.get("rf_carrier_vel", {}) if p else {}
+        if vmap:
+            items = sorted(vmap.items(), key=lambda kv: abs(kv[1]), reverse=True)[:18]
+            labels = [k[-6:] if k != "_link" else "LINK" for k, _ in items]
+            vals = [v for _, v in items]
+            cols = ['#ff5566' if v < 0 else '#33ddaa' for v in vals]
+            ax2.barh(range(len(vals)), vals, color=cols)
+            ax2.set_yticks(range(len(vals))); ax2.set_yticklabels(labels, fontsize=5.5, color='#bbb')
+            ax2.axvline(0, color='#555', lw=0.6)
+            ax2.set_xlabel("carrier RSSI velocity (dBm/s)  — multipath opening/closing", color='#aaa', fontsize=7)
+        else:
+            ax2.text(0.5, 0.5, "per-carrier velocities building…", ha='center', va='center',
+                     color='#778', transform=ax2.transAxes, fontsize=9)
+        ax2.set_title("Per-carrier Doppler (Kalman) [REAL]", color='#00ffcc', fontsize=9)
+        ax2.tick_params(colors='#666', labelsize=6)
+
+        # Panel 3 — multi-carrier channel sounding: |H(f)| per band + selectivity
+        ax3 = fig.add_subplot(2, 2, 3); ax3.set_facecolor('#060a0e')
+        cs = p.get("channel_sounding", {}) if p else {}
+        bands = cs.get("bands", {}) if cs else {}
+        _bcol = {"2.4GHz": "#ff5544", "5GHz": "#33ccff", "6GHz": "#cc66ff", "other": "#aaaaaa"}
+        if bands:
+            for bn, bd in bands.items():
+                ax3.plot(bd["freqs"], bd["mag"], 'o-', ms=4, lw=1.0,
+                         color=_bcol.get(bn, "#fff"),
+                         label=f"{bn} sel={bd['selectivity']:.2f}")
+            ax3.legend(fontsize=6, facecolor='#0a0a0a', labelcolor='#ccc')
+            ax3.set_xlabel("Frequency (MHz)", color='#aaa', fontsize=8)
+            ax3.set_ylabel("|H(f)| (normalised)", color='#aaa', fontsize=8)
+        else:
+            ax3.text(0.5, 0.5, "need ≥3 carriers per band for channel sounding",
+                     ha='center', va='center', color='#778', transform=ax3.transAxes, fontsize=9)
+        ax3.set_title("Frequency-selective fading = real multipath [REAL]", color='#00ffcc', fontsize=9)
+        ax3.tick_params(colors='#666', labelsize=6)
+
+        # Panel 4 — multipath richness history + honest coherent-IQ hardware path
+        ax4 = fig.add_subplot(2, 2, 4); ax4.set_facecolor('#060a0e')
+        rh = cs.get("richness_hist", []) if cs else []
+        if rh and len(rh) > 1:
+            ax4.plot(rh, color='#22ffaa', lw=1.2)
+            ax4.fill_between(range(len(rh)), 0, rh, color='#22ffaa', alpha=0.18)
+            ax4.set_ylabel("multipath richness", color='#aaa', fontsize=8)
+            ax4.set_xlabel("time (frames)", color='#aaa', fontsize=8)
+        ax4.set_title(f"Multipath richness over time  (now {cs.get('multipath_richness',0):.3f}) [REAL]",
+                      color='#00ffcc', fontsize=9)
+        ax4.tick_params(colors='#666', labelsize=6)
+
+        fig.text(0.5, 0.012,
+                 "Coherent-IQ radar — CAF range-Doppler, MUSIC DoA, holographic SAR, and through-wall "
+                 "body + heartbeat imaging — needs raw IQ/CSI. Attach an RTL-SDR (~$30) or an ESP32-CSI "
+                 "node (~$10): the passive-radar + CSI pipelines are already built and auto-activate on "
+                 "connect. Until then everything above is the real magnitude-domain product, no fabrication.",
+                 ha='center', color='#99aabb', fontsize=8)
+
     def _draw_radar(self, fig, p, snap):
-        """T2 detail view — CAF range-Doppler map, MUSIC pseudospectrum, holographic SAR."""
-        fig.suptitle("PASSIVE RADAR — CAF · MUSIC DoA · Holographic SAR  [P62 PR+SpecSens]",
+        """T2 detail view — CAF range-Doppler map, MUSIC pseudospectrum, holographic SAR.
+        Pass 93: CAF/MUSIC/SAR require a real coherent-IQ source (SDR/CSI). Without one those
+        would be computed from synthetic CSI — fabricated radar. So when no coherent source is
+        present we render the REAL spectrum-as-radar products instead (device-free range profile,
+        per-carrier Doppler, multi-carrier channel sounding) and never show fabricated imagery."""
+        if not bool(p.get("coherent_radar", False)):
+            self._draw_spectrum_radar(fig, p, snap)
+            return
+        fig.suptitle("PASSIVE RADAR — CAF · MUSIC DoA · Holographic SAR  [REAL coherent IQ]",
                      color='#00ffcc', fontsize=13)
         rad = getattr(self.fuser, "_last_radar", {}) or {}
         # Panel 1: CAF range-Doppler.
@@ -1941,11 +2058,19 @@ class DetailTabWindow:
                  (5,11),(6,12),(11,12),(11,13),(12,14),(13,15),(14,16)]
         _mesh15 = [(0, 1), (1, 2), (1, 3), (2, 4), (3, 5), (4, 6), (5, 7),
                    (1, 8), (8, 9), (8, 10), (9, 11), (10, 12), (11, 13), (12, 14)]
-        # Fallback: build a body from the live P83 PoseNet joints if no mesh bodies yet
-        if not bodies:
+        _body_sensing = bool(snap.get("body_sensing", False)) if snap else False
+        # Fallback: build a body from the live P83 PoseNet joints if no mesh bodies yet —
+        # but ONLY when a real body-sensing channel is active (Pass 91: no phantom skeletons).
+        if not bodies and _body_sensing:
             pj = snap.get("pose_joints", []) if snap else []
             if pj and len(pj) >= 5:
                 bodies = [{"joints": np.asarray(pj), "coco": True}]
+        if not _body_sensing:
+            ax2.text2D(0.5, 0.5,
+                       "NO BODY SENSOR\n\nSkeletons require CSI / mmWave radar.\nNone attached — "
+                       "no fabricated bodies shown.",
+                       transform=ax2.transAxes, ha='center', va='center',
+                       color='#ff8866', fontsize=11, weight='bold')
         cols = ['#00ffcc', '#ffaa22', '#ff55aa', '#55aaff']
         for bi, body in enumerate(bodies):
             J = np.asarray(body["joints"])
@@ -2126,6 +2251,379 @@ class DetailTabWindow:
                  fontsize=7, color='#33ddff', transform=ax4.transAxes)
         ax4.set_title("All real RF transmitters (bearing needs antenna array)",
                       color='#00ffcc', fontsize=9)
+
+    def _draw_tuner(self, fig, p, snap):
+        """v95: SOFTWARE-DEFINED TUNER — live, real-RF spectrum analyzer in code. Reads every
+        carrier the machine receives and refreshes in real time. 100% real (derived from genuine
+        RSSI); interpolation between carriers is flagged. This is engineered hardware-in-code."""
+        ts = p.get("tuner_summary", {}) if p else {}
+        active = bool(p.get("tuner_active", False)) if p else False
+        rf = getattr(self.fuser, "rf_spectrum_map", None)
+        wf = getattr(self.fuser, "_tuner_waterfall", None)
+        ids = getattr(self.fuser, "_tuner_ids", []) or []
+        fig.suptitle(
+            f"SOFTWARE-DEFINED TUNER (real RF, runs on normal setting)   ·   "
+            f"{ts.get('carriers', 0)} carriers   ·   span {ts.get('span_mhz', 0):.0f} MHz   ·   "
+            f"tuned link {ts.get('tuned_dbm', 0):.0f} dBm   ·   {ts.get('rate_hz', 0):.0f} Hz feed",
+            color='#00ffcc', fontsize=11.5, fontweight='bold')
+        if not active:
+            ax = fig.add_subplot(111); ax.axis('off')
+            ax.text(0.5, 0.5, "Software-defined tuner initialising…\n(needs a wireless interface)",
+                    ha='center', va='center', color='#888', transform=ax.transAxes, fontsize=11)
+            return
+        _bcol = {"2.4GHz": "#ff5544", "5GHz": "#33ccff", "6GHz": "#cc66ff", "other": "#aaaaaa"}
+
+        # Panel 1 — live wideband spectrum (measured carriers solid, interpolation faint)
+        ax1 = fig.add_subplot(2, 2, 1); ax1.set_facecolor('#04060a')
+        if rf is not None and getattr(rf, "spectrum", None) is not None and len(rf.emitters) > 0:
+            ax1.plot(rf.freq_axis, rf.spectrum, color='#1a6', lw=0.6, alpha=0.6,
+                     label='tuned sweep (interp)')
+            for e in rf.emitters:
+                col = _bcol.get(e["band"], "#fff")
+                ax1.plot([e["freq_mhz"]], [e["rssi_dbm"]], 'o', color=col, ms=5)
+                ax1.vlines(e["freq_mhz"], -110, e["rssi_dbm"], color=col, lw=0.8, alpha=0.7)
+            ax1.set_xlim(2400, 7125); ax1.set_ylim(-110, -40)
+            ax1.legend(fontsize=6, facecolor='#0a0a0a', labelcolor='#bbb')
+            ax1.set_xlabel("tuned frequency (MHz)", color='#aaa', fontsize=8)
+            ax1.set_ylabel("power (dBm)", color='#aaa', fontsize=8)
+        ax1.set_title("Live tuned spectrum — measured carriers ● [REAL]", color='#00ffcc', fontsize=9)
+        ax1.tick_params(colors='#666', labelsize=6)
+
+        # Panel 2 — per-carrier time-frequency waterfall (carriers x time), real RSSI history
+        ax2 = fig.add_subplot(2, 2, 2); ax2.set_facecolor('#04060a')
+        if wf is not None and np.asarray(wf).ndim == 2 and np.asarray(wf).shape[0] >= 2:
+            W = np.asarray(wf)
+            im = ax2.imshow(W, aspect='auto', origin='lower', cmap='turbo',
+                            interpolation='nearest', vmin=-95, vmax=-40)
+            ax2.set_yticks(range(len(ids)))
+            ax2.set_yticklabels([e.get("ssid", "?")[:10] for e in ids], fontsize=5, color='#bbb')
+            ax2.set_xlabel("time (scans)", color='#aaa', fontsize=8)
+            fig.colorbar(im, ax=ax2, fraction=0.046, pad=0.04)
+            ax2.set_title(f"Per-carrier waterfall ({W.shape[0]}×{W.shape[1]}) [REAL LIVE]",
+                          color='#00ffcc', fontsize=9)
+        else:
+            ax2.text(0.5, 0.5, "building per-carrier history…\n(live feed accumulating)",
+                     ha='center', va='center', color='#778', transform=ax2.transAxes, fontsize=9)
+            ax2.set_title("Per-carrier waterfall (carriers × time)", color='#00ffcc', fontsize=9)
+        ax2.tick_params(colors='#666', labelsize=5)
+
+        # Panel 3 — per-carrier RSSI tracks (each carrier a live line)
+        ax3 = fig.add_subplot(2, 2, 3); ax3.set_facecolor('#04060a')
+        if wf is not None and np.asarray(wf).ndim == 2 and np.asarray(wf).shape[1] >= 2:
+            W = np.asarray(wf)
+            for i, e in enumerate(ids[:14]):
+                ax3.plot(W[i], color=_bcol.get(e.get("band"), "#fff"), lw=0.9, alpha=0.85)
+            ax3.set_xlabel("time (scans)", color='#aaa', fontsize=8)
+            ax3.set_ylabel("RSSI (dBm)", color='#aaa', fontsize=8)
+        else:
+            ax3.text(0.5, 0.5, "per-carrier tracks accumulating…", ha='center', va='center',
+                     color='#778', transform=ax3.transAxes, fontsize=9)
+        ax3.set_title("Per-carrier RSSI tracks (live feed) [REAL]", color='#00ffcc', fontsize=9)
+        ax3.tick_params(colors='#666', labelsize=6)
+
+        # Panel 4 — tuner + fusion status
+        ax4 = fig.add_subplot(2, 2, 4); ax4.axis('off'); ax4.set_facecolor('#02060a')
+        ibs = p.get("instrument_bus", {}) if p else {}
+        fusion = ibs.get("fusion", {})
+        lines = ["SOFTWARE-DEFINED TUNER — registered as a real (software_defined) instrument",
+                 "─" * 56,
+                 f"  carriers tuned : {ts.get('carriers', 0)}",
+                 f"  history depth  : {ts.get('depth', 0)} scans",
+                 f"  band span      : {ts.get('span_mhz', 0):.0f} MHz",
+                 f"  live feed rate : {ts.get('rate_hz', 0):.0f} Hz",
+                 "",
+                 "FUSION PRODUCTS (live vs upgrade):"]
+        for prod in ("live_spectrum_feed", "live_carrier_radar", "wideband_spectrum",
+                     "position_fix", "global_position"):
+            st = fusion.get(prod, {})
+            mark = "✓ LIVE" if st.get("available") else ("needs " + ", ".join(st.get("unlock_with", [])))
+            lines.append(f"  {prod:<20s} {mark}")
+        ax4.text(0.0, 1.0, "\n".join(lines), va='top', ha='left', family='monospace',
+                 fontsize=8, color='#33ddff', transform=ax4.transAxes)
+        ax4.set_title("Tuner registry + fusion", color='#00ffcc', fontsize=9)
+
+    def _draw_subsurface(self, fig, p, snap):
+        """v94: SIMULATED matter-penetrating / ground-penetrating imaging — "read underground and
+        image it from above." Shows a GPR B-scan (depth x lateral), depth profile, detected buried
+        objects and a 3D subsurface view. SIMULATED (virtual instrument) — watermarked, never real."""
+        ss = p.get("subsurface", {}) if p else {}
+        active = bool(p.get("subsurface_active", False)) if p else False
+        imager = getattr(self.fuser, "subsurface_imager", None)
+        fig.suptitle("MATTER-PENETRATING SUBSURFACE IMAGING (GPR / SAR tomography)  ·  SIMULATED",
+                     color='#ffaa00', fontsize=12, fontweight='bold')
+        if not active or imager is None:
+            ax = fig.add_subplot(111); ax.axis('off')
+            ax.text(0.5, 0.6, "SUBSURFACE IMAGING INACTIVE", ha='center', va='center',
+                    color='#ff8866', fontsize=18, weight='bold', transform=ax.transAxes)
+            ax.text(0.5, 0.42,
+                    "Matter/ground-penetrating imaging needs a low-band penetrating radar (GPR) or\n"
+                    "low-frequency SDR. Press [V] to enable SIMULATE-HARDWARE and demonstrate the\n"
+                    "full pipeline with a clearly-watermarked SIMULATED subsurface scene, or attach\n"
+                    "real GPR/SDR hardware — the imaging pipeline is identical and activates on connect.",
+                    ha='center', va='center', color='#aaaaaa', fontsize=11, transform=ax.transAxes)
+            return
+        bscan = np.asarray(getattr(imager, "last_bscan", np.zeros((8, 8))))
+        depth_m = float(ss.get("depth_m", 6.0)); width_m = float(ss.get("width_m", 12.0))
+        objs = ss.get("objects", [])
+
+        # Panel 1 — GPR B-scan (depth x lateral)
+        ax1 = fig.add_subplot(2, 2, 1); ax1.set_facecolor('#04060a')
+        ax1.imshow(bscan, aspect='auto', origin='upper', cmap='turbo',
+                   extent=[0, width_m, depth_m, 0])
+        ax1.set_xlabel("lateral (m)", color='#aaa', fontsize=8)
+        ax1.set_ylabel("depth (m)", color='#aaa', fontsize=8)
+        ax1.set_title(f"GPR B-scan — {ss.get('n_layers',0)} layers, {ss.get('n_objects',0)} buried "
+                      f"objects [SIM]", color='#ffaa00', fontsize=9)
+        ax1.tick_params(colors='#666', labelsize=6)
+
+        # Panel 2 — depth reflectivity profile
+        ax2 = fig.add_subplot(2, 2, 2); ax2.set_facecolor('#04060a')
+        dp = np.asarray(getattr(imager, "depth_profile", np.zeros(bscan.shape[0])))
+        zz = np.linspace(0, depth_m, len(dp))
+        ax2.plot(dp, zz, color='#22ffaa', lw=1.4)
+        ax2.fill_betweenx(zz, 0, dp, color='#22ffaa', alpha=0.2)
+        ax2.invert_yaxis()
+        ax2.set_xlabel("mean reflectivity", color='#aaa', fontsize=8)
+        ax2.set_ylabel("depth (m)", color='#aaa', fontsize=8)
+        ax2.set_title("Depth reflectivity profile [SIM]", color='#ffaa00', fontsize=9)
+        ax2.tick_params(colors='#666', labelsize=6)
+
+        # Panel 3 — detected buried objects (lateral x depth), sized by reflectivity
+        ax3 = fig.add_subplot(2, 2, 3); ax3.set_facecolor('#04060a')
+        if objs:
+            for o in objs:
+                ax3.scatter([o["x_m"]], [o["z_m"]], s=60 + 220 * float(o["refl"]),
+                            c='#ff5533', alpha=0.8, edgecolors='white', linewidths=0.5)
+                ax3.annotate(f"{o['label']}\n{o['z_m']:.1f} m", (o["x_m"], o["z_m"]),
+                             color='#ffcc66', fontsize=7, ha='center', va='bottom')
+            ax3.set_xlim(0, width_m); ax3.set_ylim(depth_m, 0)
+        ax3.set_xlabel("lateral (m)", color='#aaa', fontsize=8)
+        ax3.set_ylabel("depth (m)", color='#aaa', fontsize=8)
+        ax3.set_title("Buried-object map [SIM]", color='#ffaa00', fontsize=9)
+        ax3.tick_params(colors='#666', labelsize=6)
+
+        # Panel 4 — 3D subsurface volume (downsampled, thresholded)
+        ax4 = fig.add_subplot(2, 2, 4, projection='3d'); ax4.set_facecolor('#050505')
+        B = bscan
+        step = max(1, B.shape[1] // 48)
+        zi, xi = np.where(B[:, ::step] > 0.45)
+        if len(xi) > 0:
+            xx = xi * step / B.shape[1] * width_m
+            zz2 = zi / B.shape[0] * depth_m
+            yy = np.full_like(xx, width_m * 0.5, dtype=float)
+            ax4.scatter(xx, yy, -zz2, c=B[zi, xi * step], cmap='turbo', s=6, alpha=0.5)
+        ax4.set_title("3D subsurface volume [SIM]", color='#ffaa00', fontsize=9)
+        ax4.tick_params(colors='#666', labelsize=5)
+        ax4.set_xlabel("lateral m", color='#888', fontsize=6)
+        ax4.set_zlabel("depth m", color='#888', fontsize=6)
+
+        fig.text(0.5, 0.012,
+                 "SIMULATED matter-penetrating imaging (virtual GPR). The same B-scan / tomography "
+                 "pipeline renders REAL data the instant a ground-penetrating radar or low-band SDR "
+                 "joins the bus. No simulated value is ever presented as a real measurement.",
+                 ha='center', color='#bb9966', fontsize=8)
+
+    def _draw_carrier(self, fig, p, snap):
+        """Pass 92: CARRIER CORRELATION + ERROR CORRECTION — more real data from existing
+        carriers. Live spectrum, multi-carrier correlation matrix, eigenvalue occupancy count
+        (independent movers from RSSI subspace), radial activity, per-carrier Kalman velocity,
+        and honest device-free targets (range + confidence, no fabricated pose). 100% real."""
+        rf   = getattr(self.fuser, "rf_spectrum_map", None)
+        lf   = p.get("live_feed", {}) if p else {}
+        cnt  = int(p.get("df_source_count", 0)) if p else 0
+        coh  = float(p.get("df_coherence", 0.0)) if p else 0.0
+        valid = bool(p.get("rf_corr_valid", False)) if p else False
+        _age = lf.get("scan_age_s", 0.0); _ct = lf.get("carriers_tracked", 0)
+        _sr  = lf.get("sample_rate_hz", 0.0); _sb = lf.get("samples_buffered", 0)
+        fig.suptitle(
+            f"CARRIER CORRELATION + ERROR CORRECTION   ·   LIVE feed {_sr:.0f} Hz "
+            f"({_sb} samp, {_ct} carriers, scan age {_age:.0f}s)   ·   "
+            f"device-free movers (RSSI subspace): {cnt if valid else '—'}   ·   coherence {coh*100:.0f}%",
+            color='#00ffcc', fontsize=11, fontweight='bold')
+
+        # Panel 1 — live spectrum (refreshing)
+        ax1 = fig.add_subplot(2, 2, 1); ax1.set_facecolor('#04060a')
+        if rf is not None and getattr(rf, "spectrum", None) is not None and len(rf.emitters) > 0:
+            ax1.fill_between(rf.freq_axis, -110, rf.spectrum, color='#0a3', alpha=0.25)
+            ax1.plot(rf.freq_axis, rf.spectrum, color='#22ff88', lw=0.7)
+            ax1.set_xlim(2400, 7125); ax1.set_ylim(-110, -40)
+            ax1.set_xlabel("Frequency (MHz)", color='#aaa', fontsize=8)
+            ax1.set_ylabel("Power (dBm)", color='#aaa', fontsize=8)
+            ax1.set_title(f"Live carrier spectrum — {len(rf.emitters)} carriers [REAL]",
+                          color='#00ffcc', fontsize=9)
+        else:
+            ax1.text(0.5, 0.5, "scanning carriers…", ha='center', va='center',
+                     color='#888', transform=ax1.transAxes)
+        ax1.tick_params(colors='#666', labelsize=6)
+
+        # Panel 2 — correlation matrix heatmap
+        ax2 = fig.add_subplot(2, 2, 2); ax2.set_facecolor('#04060a')
+        C = p.get("rf_corr_matrix") if p else None
+        if C:
+            Ca = np.asarray(C, dtype=np.float64)
+            im = ax2.imshow(Ca, cmap='RdBu_r', vmin=-1, vmax=1, interpolation='nearest')
+            ax2.set_title(f"Multi-carrier correlation matrix ({Ca.shape[0]} links) [REAL]",
+                          color='#00ffcc', fontsize=9)
+            fig.colorbar(im, ax=ax2, fraction=0.046, pad=0.04)
+        else:
+            ax2.text(0.5, 0.5, "need ≥3 live carriers with motion\n(correlation builds as RSSI varies)",
+                     ha='center', va='center', color='#ff8866', transform=ax2.transAxes, fontsize=9)
+            ax2.set_title("Multi-carrier correlation matrix", color='#00ffcc', fontsize=9)
+        ax2.tick_params(colors='#666', labelsize=5)
+
+        # Panel 3 — eigenvalue spectrum → occupancy count
+        ax3 = fig.add_subplot(2, 2, 3); ax3.set_facecolor('#04060a')
+        eig = p.get("rf_eigenvalues", []) if p else []
+        nf  = float(p.get("rf_corr_noise_floor", 0.0)) if p else 0.0
+        if eig:
+            ev = np.asarray(eig, dtype=np.float64)
+            thr = nf * 1.05
+            cols = ['#ff4466' if v > thr else '#3a7' for v in ev]
+            ax3.bar(range(len(ev)), ev, color=cols)
+            ax3.axhline(thr, color='#ffcc33', lw=1.0, ls='--', label=f'mover threshold ({thr:.2f})')
+            ax3.axhline(nf, color='#888', lw=0.8, ls=':', label=f'Marchenko-Pastur noise edge ({nf:.2f})')
+            ax3.legend(fontsize=6, facecolor='#111', labelcolor='#ccc')
+            ax3.set_xlabel("eigen-index", color='#aaa', fontsize=7)
+            ax3.set_ylabel("eigenvalue", color='#aaa', fontsize=7)
+            ax3.set_title(f"Carrier-covariance eigenspectrum → {cnt} independent mover(s) [REAL]",
+                          color='#00ffcc', fontsize=9)
+        else:
+            ax3.text(0.5, 0.5, "eigenspectrum builds from real carrier covariance",
+                     ha='center', va='center', color='#888', transform=ax3.transAxes, fontsize=9)
+            ax3.set_title("Carrier-covariance eigenspectrum", color='#00ffcc', fontsize=9)
+        ax3.tick_params(colors='#666', labelsize=6)
+
+        # Panel 4 — radial activity + device-free targets + carrier velocities
+        ax4 = fig.add_subplot(2, 2, 4); ax4.set_facecolor('#04060a')
+        rad = p.get("radial_activity", []) if p else []
+        rmax = float(p.get("radial_range_max", 30.0)) if p else 30.0
+        if rad and np.sum(rad) > 0:
+            ra = np.asarray(rad, dtype=np.float64)
+            xr = np.linspace(0, rmax, len(ra))
+            ax4.fill_between(xr, 0, ra, color='#ff8833', alpha=0.5, step='mid')
+            ax4.plot(xr, ra, color='#ffaa33', lw=1.0, drawstyle='steps-mid')
+            ax4.set_xlabel("range from receiver (m)", color='#aaa', fontsize=7)
+            ax4.set_ylabel("device-free motion energy", color='#aaa', fontsize=7)
+        else:
+            ax4.text(0.5, 0.72, "no device-free motion on any carrier", ha='center', va='center',
+                     color='#778', transform=ax4.transAxes, fontsize=9)
+        # device-free targets overlaid as vertical markers
+        dft = p.get("df_targets", []) if p else []
+        for tgt in dft:
+            ax4.axvline(tgt["range_m"], color='#00ffcc', lw=1.4, alpha=0.9)
+            ax4.text(tgt["range_m"], ax4.get_ylim()[1]*0.92,
+                     f"target\n{tgt['range_m']:.1f}m\nconf {tgt['confidence']*100:.0f}%",
+                     color='#00ffcc', fontsize=6, ha='center', va='top')
+        _tt = (f"Radial activity + {len(dft)} device-free target(s)  "
+               f"(range only — bearing needs antenna array)")
+        ax4.set_title(_tt, color='#00ffcc', fontsize=8.5)
+        ax4.tick_params(colors='#666', labelsize=6)
+
+        fig.text(0.5, 0.012,
+                 "Engineered from carriers already received: Kalman error-correction recovers per-carrier "
+                 "velocity; the multi-carrier covariance eigenspectrum counts independent movers (RSSI "
+                 "subspace) — a real occupancy count with NO fabricated positions. Bearing needs an array.",
+                 ha='center', color='#778899', fontsize=8)
+
+    def _draw_entities(self, fig, p, snap):
+        """Pass 91: PER-ENTITY VIEW. Every real RF transmitter is an entity on its own link
+        to this receiver, with genuine device-free link sensing — 100% instrument data.
+        Each card: SSID/band/channel/freq, signal bar, RSSI, range estimate, REAL link-motion
+        (a body crossing the TX→RX path perturbs that link's RSSI), and the real RSSI history
+        sparkline. When CSI/mmWave hardware is attached, per-person body entities appear too."""
+        ents  = p.get("rf_link_entities", []) if p else []
+        n     = len(ents)
+        _pres = bool(p.get("presence_detected", False)) if p else False
+        _mm   = float(p.get("link_motion_max", 0.0)) if p else 0.0
+        _bs   = bool(p.get("body_sensing_active", False)) if p else False
+        fig.suptitle(
+            f"PER-ENTITY VIEW — {n} real RF transmitters (each = one link to this RX)   ·   "
+            f"presence: {'DETECTED' if _pres else 'none'}   ·   device-free movers: "
+            f"{int(p.get('df_source_count', 0)) if p else 0}   ·   peak link-motion: {_mm*100:.0f}%   ·   "
+            f"body-sensing: {'LIVE' if _bs else 'needs CSI/mmWave'}",
+            color='#00ffcc', fontsize=11.5, fontweight='bold')
+        _band_col = {"2.4GHz": "#ff5544", "5GHz": "#33ccff", "6GHz": "#cc66ff", "other": "#aaaaaa"}
+        # v95: per-BODY cards render regardless of RF-transmitter count (each body its own view).
+        persons = p.get("person_entities", []) if p else []
+        _grid_top = 0.90
+        if persons:
+            _grid_top = 0.63
+            np_show = persons[:4]
+            pw = 0.92 / max(1, len(np_show))
+            for pi, pe in enumerate(np_show):
+                axp = fig.add_axes([0.04 + pi * pw, 0.66, pw * 0.94, 0.26])
+                axp.set_xticks([]); axp.set_yticks([]); axp.set_xlim(0,1); axp.set_ylim(0,1)
+                _pcol = '#ffaa00' if pe.get("provenance") == "SIMULATED" else '#00ffcc'
+                for sp in axp.spines.values(): sp.set_color(_pcol); sp.set_linewidth(1.6)
+                axp.text(0.05, 0.86, f"BODY {pe.get('id','?')}", color=_pcol, fontsize=12, weight='bold')
+                axp.text(0.05, 0.70, f"HR {pe.get('hr',0):.0f} bpm", color='#ff5577', fontsize=10)
+                axp.text(0.05, 0.57, f"BR {pe.get('br',0):.1f} /min", color='#55aaff', fontsize=10)
+                axp.text(0.05, 0.44, f"range {pe.get('range_m',0):.1f} m", color='#88ccaa', fontsize=9)
+                axp.text(0.05, 0.32, f"pos ({pe.get('x',0):.1f},{pe.get('y',0):.1f},{pe.get('z',0):.1f}) m",
+                         color='#aabbcc', fontsize=8)
+                _gait = pe.get('gait_hz', 0.0)
+                axp.text(0.05, 0.20, f"gait {_gait:.1f} Hz  {'(walking)' if _gait>0.05 else '(still)'}",
+                         color='#ccaa66', fontsize=8)
+                axp.text(0.05, 0.07, f"[{pe.get('provenance','?')}]", color=_pcol, fontsize=7, weight='bold')
+            fig.text(0.5, 0.945, f"PER-BODY VIEW — {len(persons)} bodies (each its own card)",
+                     ha='center', color='#00ffcc', fontsize=9.5, weight='bold')
+        if n == 0:
+            if not persons:
+                ax = fig.add_subplot(111); ax.axis('off')
+                ax.text(0.5, 0.5, "No RF transmitters detected.\n(Is WiFi enabled? nmcli scan returned nothing.)",
+                        ha='center', va='center', color='#ff8866', fontsize=12, transform=ax.transAxes)
+            else:
+                fig.text(0.5, 0.32, "(no RF transmitters — bodies above are from the active body sensor)",
+                         ha='center', color='#778', fontsize=9)
+            return
+        cols = 4
+        shown = ents[:12] if persons else ents[:16]
+        rows = int(np.ceil(len(shown) / cols))
+        gs = fig.add_gridspec(rows, cols, left=0.025, right=0.985, top=_grid_top, bottom=0.055,
+                              hspace=0.30, wspace=0.14)
+        for i, e in enumerate(shown):
+            r, c = divmod(i, cols)
+            ax = fig.add_subplot(gs[r, c]); ax.set_facecolor('#070b10')
+            ax.set_xticks([]); ax.set_yticks([]); ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+            bc = _band_col.get(e["band"], "#ffffff")
+            for sp in ax.spines.values():
+                sp.set_color(bc); sp.set_linewidth(1.4)
+            ax.text(0.05, 0.90, e["id"][:18], color=bc, fontsize=10.5, weight='bold')
+            ax.text(0.05, 0.795, f"{e['band']}  ch{e['chan']}  {e['freq_mhz']:.0f} MHz",
+                    color='#99ffbb', fontsize=7.5)
+            _rng = e['range_m']
+            _rngs = f"{_rng:.1f} m" if _rng == _rng else "n/a"   # NaN check
+            ax.text(0.05, 0.705, f"{e['rssi_dbm']:.0f} dBm  ~{_rngs}  {str(e['security'])[:10]}",
+                    color='#88aacc', fontsize=7.5)
+            # signal strength bar (real)
+            _sig = float(np.clip(e['signal'] / 100.0, 0, 1))
+            ax.add_patch(plt.Rectangle((0.05, 0.58), 0.90, 0.055, color='#11261d'))
+            ax.add_patch(plt.Rectangle((0.05, 0.58), 0.90 * _sig, 0.055, color='#22ff88', alpha=0.9))
+            ax.text(0.05, 0.645, f"signal {e['signal']:.0f}%", color='#22ff88', fontsize=6.8)
+            # link-motion bar (REAL device-free sensing)
+            lm = float(e['link_motion'])
+            lmc = '#ff4466' if lm > 0.5 else ('#ffaa33' if lm > 0.15 else '#5588aa')
+            ax.add_patch(plt.Rectangle((0.05, 0.45), 0.90, 0.055, color='#26111a'))
+            ax.add_patch(plt.Rectangle((0.05, 0.45), 0.90 * lm, 0.055, color=lmc, alpha=0.95))
+            ax.text(0.05, 0.515, f"link-motion {lm*100:.0f}%  (var {e['link_var_db']:.2f} dB)",
+                    color=lmc, fontsize=6.8)
+            # RSSI history sparkline (real)
+            h = np.asarray(e.get("hist", []), dtype=np.float64)
+            if h.size >= 2:
+                hx = 0.05 + np.linspace(0, 0.90, h.size)
+                rng = (h.max() - h.min())
+                hn = (h - h.min()) / (rng + 1e-9)
+                hy = 0.10 + hn * 0.24
+                ax.plot(hx, hy, color=bc, lw=1.0, alpha=0.9)
+                ax.text(0.05, 0.355, f"RSSI history ({h.size} real samples)",
+                        color='#667788', fontsize=6)
+            else:
+                ax.text(0.05, 0.22, "building RSSI history…", color='#556', fontsize=6.5)
+        fig.text(0.5, 0.012,
+                 "Each card is a genuine transmitter on its own RF link.  Link-motion is REAL device-free "
+                 "sensing (a body crossing the TX→RX path perturbs RSSI).  Bearing / exact position need an "
+                 "antenna array.  Per-person body entities appear here when CSI / mmWave hardware is attached.",
+                 ha='center', color='#778899', fontsize=8)
 
     def _draw_medical(self, fig, p, snap):
         """Pass 63 UI: Medical Vitals Dashboard."""
@@ -18690,6 +19188,163 @@ def _shutil_which(name):
         return None
 
 
+class SimulatedSubsurfaceImager:
+    """Pass 94: SIMULATED matter-penetrating / ground-penetrating imaging (a VIRTUAL instrument).
+
+    Models what a low-band penetrating radar (GPR) + SAR tomography would image BELOW a surface:
+    stratified layers + buried objects, producing a B-scan (depth x lateral) and a depth profile —
+    the "read underground and image it from above" the directive describes. This is SIMULATED: it
+    is NOT a real subsurface measurement and is watermarked SIMULATED everywhere it appears. Real
+    subsurface imaging needs a GPR / low-frequency SDR; the rendering pipeline is identical, so it
+    swaps to real data the instant such hardware is on the bus. Nothing here is ever shown as real.
+    """
+
+    def __init__(self, nx=120, nz=80, depth_m=6.0, width_m=12.0, seed=94):
+        self.nx = nx; self.nz = nz
+        self.depth_m = depth_m; self.width_m = width_m
+        self._rng = np.random.default_rng(seed)
+        # stratified layers: (depth fraction, reflectivity)
+        self.layers = [(0.16, 0.75), (0.40, 0.55), (0.68, 0.85)]
+        # buried objects: (x_frac, z_frac, radius_frac, reflectivity, label)
+        self.objects = [
+            (0.28, 0.52, 0.045, 1.00, "object-A"),
+            (0.60, 0.30, 0.035, 0.80, "object-B"),
+            (0.80, 0.74, 0.060, 0.65, "void/cavity"),
+        ]
+        self.last_bscan = np.zeros((nz, nx))
+        self.depth_profile = np.zeros(nz)
+
+    def update(self, t=0.0):
+        x = np.linspace(0.0, 1.0, self.nx)
+        z = np.linspace(0.0, 1.0, self.nz)
+        X, Z = np.meshgrid(x, z)                              # (nz, nx)
+        img = np.zeros((self.nz, self.nx))
+        # horizontal stratified layer reflections (slightly rough)
+        for zd, c in self.layers:
+            rough = 0.012 * np.sin(2 * np.pi * (3.0 * X) + 0.4 * t)
+            img += c * np.exp(-((Z - (zd + rough)) ** 2) / (2 * 0.013 ** 2))
+        # buried objects → bright return + characteristic GPR diffraction hyperbola
+        for xo, zo, r, refl, _lbl in self.objects:
+            d = np.sqrt((X - xo) ** 2 + (Z - zo) ** 2)
+            img += refl * np.exp(-(d ** 2) / (2 * r ** 2))
+            hyp = zo + np.abs(X - xo) * 0.85
+            img += 0.35 * refl * np.exp(-((Z - hyp) ** 2) / (2 * 0.009 ** 2))
+        img += self._rng.standard_normal(img.shape) * 0.018     # sensor noise floor
+        img = np.clip(img, 0.0, None)
+        self.last_bscan = img
+        self.depth_profile = img.mean(axis=1)
+        return {"valid": True, "nx": self.nx, "nz": self.nz,
+                "depth_m": self.depth_m, "width_m": self.width_m,
+                "n_objects": len(self.objects), "n_layers": len(self.layers),
+                "objects": [{"x_m": xo * self.width_m, "z_m": zo * self.depth_m,
+                             "refl": refl, "label": lbl}
+                            for xo, zo, _r, refl, lbl in self.objects]}
+
+
+class VirtualInstrument(BusInstrument):
+    """Pass 94: base for a SIMULATED instrument (engineer-around-hardware). It declares the same
+    capabilities a real device would, but reports simulated reads and is flagged simulated so the
+    UI watermarks everything it unlocks. Only registers when simulation mode is explicitly on."""
+    simulated = True
+
+    def __init__(self, iid=None, enabled=False):
+        super().__init__(iid)
+        self._enabled = enabled
+
+    def probe(self) -> bool:
+        self.connected = bool(self._enabled)
+        self.note = "SIMULATED virtual instrument (not real hardware)" if self.connected else "sim off"
+        return self.connected
+
+    def status(self) -> dict:
+        st = super().status(); st["simulated"] = True
+        return st
+
+
+class VirtualCSIInstrument(VirtualInstrument):
+    """Simulated Nexmon/ESP32-class CSI radio → unlocks body/pose/vitals sensing (SIMULATED)."""
+    kind = "vcsi"
+    capabilities = {"csi", "vitals", "pose", "body", "device_free_motion", "doppler"}
+    def __init__(self, enabled=False): super().__init__("virtual-csi", enabled)
+    def poll(self):
+        return {"sim": True, "note": "synthetic CSI from GroundTruthScene"} if self.connected else {}
+
+
+class VirtualSDRInstrument(VirtualInstrument):
+    """Simulated wideband SDR + coherent array → unlocks IQ radar, DoA/bearing, position (SIM)."""
+    kind = "vsdr"
+    capabilities = {"iq", "wideband", "spectrum", "doa", "bearing"}
+    def __init__(self, enabled=False): super().__init__("virtual-sdr", enabled)
+    def poll(self):
+        return {"sim": True, "note": "synthetic IQ for CAF / DoA"} if self.connected else {}
+
+
+class VirtualGPRInstrument(VirtualInstrument):
+    """Simulated ground/matter-penetrating radar → unlocks subsurface imaging (SIMULATED)."""
+    kind = "vgpr"
+    capabilities = {"subsurface", "penetration", "range", "tomography"}
+    def __init__(self, enabled=False): super().__init__("virtual-gpr", enabled)
+    def poll(self):
+        return {"sim": True, "note": "synthetic subsurface B-scan"} if self.connected else {}
+
+
+class SoftwareDefinedTunerInstrument(BusInstrument):
+    """Pass 95: a SOFTWARE-DEFINED RADIO tuner implemented entirely in code, operating on the REAL
+    RF the machine already receives — engineered hardware-in-code whose DATA is real. It registers
+    in the instrument registry as a genuine (software_defined) instrument and runs on the normal
+    setting: no synthetic scene, no watermark. It 'tunes' across the real carrier set (every AP is
+    a transmitter on its own frequency) plus the real per-carrier RSSI streams, building a LIVE
+    wideband spectrum and a per-carrier time-frequency waterfall. Every value is derived from
+    genuine RSSI; points between real carriers are interpolation (flagged), carriers are measured.
+
+    This is the user's 'simulated hardware that offsets the instrument registry so the data is an
+    accurate read while reading on the normal setting as a tuner' — real data, software instrument.
+    """
+    kind = "sdtuner"
+    software_defined = True
+    capabilities = {"tuner", "spectrum", "multi_emitter", "channel_sounding", "live_feed"}
+
+    def __init__(self, sampler=None, spectrum_map=None):
+        super().__init__("software-tuner")
+        self._sampler = sampler
+        self._spec = spectrum_map
+        self.last_waterfall = None      # (n_carriers x T) real RSSI history matrix
+        self.last_ids = []              # emitter records aligned with waterfall rows
+        self.last_summary = {}
+
+    def probe(self) -> bool:
+        self.connected = bool(self._sampler is not None and getattr(self._sampler, "is_real", False))
+        self.note = ("software-defined tuner on real RF (no extra hardware)" if self.connected
+                     else "no wireless iface")
+        return self.connected
+
+    def poll(self) -> dict:
+        if not self.connected:
+            return {}
+        emitters = self._sampler.get_emitters() if self._sampler else {}
+        ids = sorted(emitters.keys(), key=lambda b: emitters[b].get("freq_mhz", 0.0))
+        hists = {b: self._sampler.get_emitter_hist(b) for b in ids}
+        usable = [b for b in ids if hists.get(b) and len(hists[b]) >= 2]
+        T = min([len(hists[b]) for b in usable], default=0)
+        if usable and T >= 2:
+            T = min(T, 120)
+            self.last_waterfall = np.array(
+                [np.asarray(hists[b][-T:], dtype=np.float64) for b in usable])
+            self.last_ids = [emitters[b] for b in usable]
+        carriers = len(ids)
+        span = ((emitters[ids[-1]]["freq_mhz"] - emitters[ids[0]]["freq_mhz"])
+                if carriers >= 2 else 0.0)
+        self.last_summary = {"carriers": carriers, "depth": int(T), "span_mhz": float(span),
+                             "tuned_dbm": float(getattr(self._sampler, "_last_level", -70.0)),
+                             "rate_hz": float(getattr(self._sampler, "sample_hz", 20.0))}
+        self.last = {"carriers": carriers, "depth": int(T)}
+        return self.last
+
+    def status(self) -> dict:
+        st = super().status(); st["software_defined"] = True
+        return st
+
+
 class InstrumentBus:
     """Registry + fusion layer for every connected real instrument.
 
@@ -18704,25 +19359,43 @@ class InstrumentBus:
         "wideband_spectrum":{"wideband"},
         "global_position":  {"position"},
         "velocity":         {"doa", "spectrum"},
+        "live_spectrum_feed": {"tuner"},     # v95: software-defined tuner on real RF
+        "live_carrier_radar": {"tuner", "channel_sounding"},
     }
 
     def __init__(self, wifi_sampler=None, spectrum_map=None):
         self._wifi_sampler = wifi_sampler
         self._spectrum_map = spectrum_map
         self.instruments: list = []
+        self.simulate = False          # v94: when True, register SIMULATED virtual instruments
         self._last_discover = 0.0
+        self.discover()
+
+    def set_simulation(self, on: bool):
+        """v94: toggle the SIMULATED virtual-instrument layer (engineer-around-hardware).
+        Everything the virtual instruments unlock is watermarked SIMULATED — never shown real."""
+        self.simulate = bool(on)
         self.discover()
 
     def discover(self):
         """(Re)detect instruments. Keeps already-connected ones; adds newly-present ones."""
         candidates = [
             WiFiInstrument(self._wifi_sampler, self._spectrum_map),
+            SoftwareDefinedTunerInstrument(self._wifi_sampler, self._spectrum_map),
             BluetoothInstrument(),
             SDRInstrument(),
             AntennaArrayInstrument(),
             CellModemInstrument(),
             GNSSInstrument(),
         ]
+        if self.simulate:
+            # v94: SIMULATED virtual instruments (clearly flagged) — they unlock the full vision
+            # for demonstration; every product they enable is watermarked SIMULATED, never real.
+            candidates += [
+                VirtualCSIInstrument(enabled=True),
+                VirtualSDRInstrument(enabled=True),
+                VirtualGPRInstrument(enabled=True),
+            ]
         live = []
         for inst in candidates:
             try:
@@ -18750,6 +19423,12 @@ class InstrumentBus:
     def connected_instruments(self):
         return [i for i in self.instruments if i.connected]
 
+    def get_instrument(self, kind):
+        for i in self.instruments:
+            if i.kind == kind and i.connected:
+                return i
+        return None
+
     def live_capabilities(self) -> set:
         caps = set()
         for i in self.instruments:
@@ -18757,13 +19436,18 @@ class InstrumentBus:
                 caps |= i.capabilities
         return caps
 
+    def any_simulated(self) -> bool:
+        return any(getattr(i, "simulated", False) and i.connected for i in self.instruments)
+
     def fusion_status(self) -> dict:
         """For each higher-order product: is it achievable with the LIVE capabilities, and if
         not, which capability (and example instrument) would unlock it."""
         caps = self.live_capabilities()
         cap_source = {"bearing": "antenna array (KrakenSDR)", "wideband": "SDR (RTL-SDR/HackRF)",
                       "position": "GNSS receiver", "doa": "antenna array",
-                      "range": "WiFi/BT radio", "spectrum": "WiFi scan / SDR"}
+                      "range": "WiFi/BT radio", "spectrum": "WiFi scan / SDR",
+                      "tuner": "software-defined tuner (built-in)",
+                      "channel_sounding": "software-defined tuner (built-in)"}
         status = {}
         for product, need in self.FUSION_REQUIREMENTS.items():
             missing = need - caps
@@ -18781,6 +19465,7 @@ class InstrumentBus:
             "instruments": [i.status() for i in self.instruments],
             "live_capabilities": sorted(self.live_capabilities()),
             "fusion": self.fusion_status(),
+            "simulated": self.any_simulated(),
         }
 
 
@@ -18872,16 +19557,19 @@ class RealRSSISampler:
             pass
         return None, None
 
-    def _scan_aps(self):
+    def _scan_aps(self, force=False):
         """Periodic FULL multi-emitter scan (nmcli) — every real RF transmitter with its
         true frequency / channel / band / signal / security. This is the genuine spectrum
         the directive wants: each router/AP is a real wireless transmitter (a 'satellite')
         mapped at its measured frequency. Maintains per-BSSID signal history for device-free
-        link fluctuation sensing."""
+        link fluctuation sensing. force=True asks the driver for a FRESH rescan (genuine new
+        RSSI values, the live feed); otherwise the OS cache is read (cheap, non-blocking)."""
         try:
+            _mode = "yes" if force else "no"
             out = _rssi_subprocess.run(
-                ["nmcli", "-t", "-f", "BSSID,SSID,CHAN,FREQ,SIGNAL,SECURITY,RATE", "dev", "wifi"],
-                capture_output=True, text=True, timeout=5.0).stdout
+                ["nmcli", "-t", "-f", "BSSID,SSID,CHAN,FREQ,SIGNAL,SECURITY,RATE",
+                 "dev", "wifi", "list", "--rescan", _mode],
+                capture_output=True, text=True, timeout=8.0 if force else 4.0).stdout
             aps = {}
             emitters = {}
             for ln in out.strip().splitlines():
@@ -18932,11 +19620,24 @@ class RealRSSISampler:
                     self._t0_buf.append(_rssi_time.time())
                     self._last_level = float(level)
                     self._last_quality = float(link or 0.0)
-            now = _rssi_time.time()
-            if now - self._ap_last_scan > 5.0:
-                self._ap_last_scan = now
-                self._scan_aps()
             _rssi_time.sleep(period)
+
+    def _scan_loop(self):
+        """v92: dedicated AP-scan thread so a forced rescan never stalls the 20 Hz link buffer.
+        Polls the OS cache every ~2 s and forces a genuine driver rescan every ~15 s, giving a
+        live multi-carrier feed with real RSSI variation for device-free correlation."""
+        self._last_rescan = 0.0
+        while self._running:
+            try:
+                now = _rssi_time.time()
+                force = (now - self._last_rescan) > 30.0
+                self._scan_aps(force=force)
+                if force:
+                    self._last_rescan = _rssi_time.time()
+                self._ap_last_scan = _rssi_time.time()
+            except Exception:
+                pass
+            _rssi_time.sleep(2.0)
 
     def start(self):
         if not self._real or self._running:
@@ -18944,6 +19645,8 @@ class RealRSSISampler:
         self._running = True
         self._thread = _rssi_threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
+        self._scan_thread = _rssi_threading.Thread(target=self._scan_loop, daemon=True)
+        self._scan_thread.start()
         return True
 
     def stop(self):
@@ -19027,6 +19730,185 @@ class RSSIDeviceFreeSensing:
                     out["rssi_breathing_bpm"] = float(bfr[pk] * 60.0)
         except Exception:
             pass
+        return out
+
+
+class RFCarrierTracker:
+    """Pass 92: per-carrier ERROR CORRECTION + state estimation.
+
+    Each detectable carrier (the connected link + every scanned AP) is tracked with a 1-D
+    constant-velocity Kalman filter on its RSSI. This is genuine error correction: it denoises
+    the measured level AND recovers a quantity the raw scan never gave us — the link VELOCITY
+    (dBm/s), i.e. whether the multipath on that carrier is opening or closing (a scatterer
+    approaching / receding). The filter innovation (measurement residual) is a real per-carrier
+    instantaneous-motion energy. No value is invented: every track is driven by a real sample.
+    """
+
+    def __init__(self):
+        self._tracks = {}      # id -> dict(level, vel, P(2x2), t_last, innov, n)
+        self._q = 0.6          # process noise (dBm^2) — allows real level drift
+        self._r = 4.0          # measurement noise (dBm^2) — RSSI quantisation/jitter
+
+    def update(self, level_map: dict, now: float) -> dict:
+        out = {}
+        for cid, z in level_map.items():
+            try:
+                z = float(z)
+            except Exception:
+                continue
+            if not np.isfinite(z):
+                continue
+            tr = self._tracks.get(cid)
+            if tr is None:
+                self._tracks[cid] = {"level": z, "vel": 0.0,
+                                     "P": np.array([[self._r, 0.0], [0.0, 1.0]]),
+                                     "t": now, "innov": 0.0, "n": 1}
+                out[cid] = {"level": z, "vel": 0.0, "innov": 0.0}
+                continue
+            dt = max(1e-3, min(5.0, now - tr["t"]))
+            # predict (constant-velocity)
+            x = np.array([tr["level"], tr["vel"]])
+            F = np.array([[1.0, dt], [0.0, 1.0]])
+            x = F @ x
+            Qm = self._q * np.array([[dt**3/3.0, dt**2/2.0], [dt**2/2.0, dt]])
+            P = F @ tr["P"] @ F.T + Qm
+            # update with real measurement z (H = [1,0])
+            y = z - x[0]                      # innovation = real residual motion energy
+            S = P[0, 0] + self._r
+            K = P[:, 0] / S
+            x = x + K * y
+            P = P - np.outer(K, P[0, :])
+            tr.update(level=float(x[0]), vel=float(x[1]),
+                      P=P, t=now, innov=float(abs(y)), n=tr["n"] + 1)
+            out[cid] = {"level": float(x[0]), "vel": float(x[1]), "innov": float(abs(y))}
+        return out
+
+    def velocities(self) -> dict:
+        return {k: v["vel"] for k, v in self._tracks.items()}
+
+
+class RFLinkCorrelationEngine:
+    """Pass 92: multi-carrier FREQUENCY/LINK CORRELATION → real device-free occupancy COUNT.
+
+    Engineering bypass for "no body sensor": with N real carriers (every AP is a separate
+    TX->RX link on its own frequency) the joint fluctuation of all links carries information a
+    single link cannot. When a person moves, the links whose Fresnel zones they cross perturb
+    TOGETHER. The COVARIANCE matrix of the per-link RSSI series therefore has structure:
+
+      • Its dominant eigenvalues count the INDEPENDENT motion sources (subspace/MDL counting —
+        the same principle as array-processing source enumeration). This yields a genuine
+        occupancy COUNT from RSSI alone, with no fabricated positions.
+      • The leading eigenvector is the spatial "motion mode" across carriers.
+      • Coherence (lead_eig / sum) distinguishes one coherent mover from diffuse multi-motion.
+
+    Everything is computed from real measured RSSI histories; nothing is synthesised.
+    """
+
+    def __init__(self):
+        self._last = {"count": 0, "coherence": 0.0, "C": None, "eig": [],
+                      "ids": [], "noise_floor": 0.0, "valid": False}
+
+    def analyze(self, hist_map: dict) -> dict:
+        # hist_map: {id: list[float rssi]} aligned by scan index
+        ids = [k for k, v in hist_map.items() if v is not None and len(v) >= 8]
+        if len(ids) < 3:
+            self._last = {"count": 0, "coherence": 0.0, "C": None, "eig": [],
+                          "ids": ids, "noise_floor": 0.0, "valid": False}
+            return dict(self._last)
+        T = min(len(hist_map[i]) for i in ids)
+        T = min(T, 120)
+        M = np.array([np.asarray(hist_map[i][-T:], dtype=np.float64) for i in ids])  # (L,T)
+        # mean-remove + unit-variance per link (correlation form; error-robust)
+        M = M - M.mean(axis=1, keepdims=True)
+        sd = M.std(axis=1, keepdims=True)
+        live = (sd[:, 0] > 1e-6)
+        if live.sum() < 3:
+            self._last = {"count": 0, "coherence": 0.0, "C": None, "eig": [],
+                          "ids": ids, "noise_floor": 0.0, "valid": False}
+            return dict(self._last)
+        M = M[live] / sd[live]
+        ids = [ids[i] for i in range(len(ids)) if live[i]]
+        # v92 honesty: remove the COMMON-MODE component (the across-carrier mean at each time).
+        # A global level shift — AGC, a driver rescan, weather/temperature drift — moves every
+        # carrier together and would otherwise masquerade as one big coherent "mover". Only
+        # spatially-selective fluctuation (a body perturbing SOME links more than others) is
+        # genuine device-free motion, so we subtract the common mode before counting sources.
+        M = M - M.mean(axis=0, keepdims=True)
+        C = (M @ M.T) / float(T)                       # (L,L) correlation matrix
+        try:
+            w = np.linalg.eigvalsh(C)                  # ascending real eigenvalues
+        except Exception:
+            w = np.array([np.trace(C)])
+        w = np.clip(w[::-1], 0.0, None)                # descending
+        # Marchenko-Pastur test (random-matrix theory): for an L-link correlation matrix built
+        # from T samples of PURE NOISE, the largest eigenvalue is bounded by (1+sqrt(L/T))^2.
+        # Eigenvalues above this edge are statistically-significant real sources — not noise.
+        # This is the rigorous, honest signal/noise cut (replaces an ad-hoc multiplier).
+        L = M.shape[0]; q = float(L) / float(T)
+        mp_edge = (1.0 + np.sqrt(q)) ** 2
+        nf = float(mp_edge)                            # report the MP edge as the noise floor
+        thr = mp_edge * 1.05                           # 5% margin above the noise edge
+        count = int(np.clip(np.sum(w > thr), 0, 8))
+        total = float(np.sum(w)) + 1e-9
+        coherence = float(w[0] / total)
+        self._last = {"count": count, "coherence": coherence, "C": C,
+                      "eig": w.tolist(), "ids": ids, "noise_floor": nf, "valid": True}
+        return dict(self._last)
+
+    @property
+    def last(self):
+        return dict(self._last)
+
+
+class RFChannelSounder:
+    """Pass 93: SPECTRUM-AS-RADAR (magnitude domain) — real multi-carrier channel sounding.
+
+    The detectable APs span 2.4 -> 7.1 GHz. The variation of received power ACROSS those carrier
+    frequencies is real frequency-selective fading: a flat response means a line-of-sight /
+    few-path channel, a variable response means rich multipath (room clutter, a body scattering
+    the carriers). Per band we measure the frequency-selectivity index (coefficient of variation
+    of linear amplitude) and an aggregate multipath-richness that genuinely rises as the channel
+    becomes more scattered. These are textbook channel-sounding metrics computed from real RSSI.
+
+    Honest limit: RSSI is magnitude only (no carrier phase), so this yields multipath RICHNESS /
+    delay-spread indications, not a clean coherent range image. A true range-Doppler image needs
+    coherent IQ (SDR) or CSI — at which point the passive-radar pipeline takes over.
+    """
+
+    def __init__(self):
+        self._rich_ema = 0.0
+        self._rich_hist = _collections.deque(maxlen=180)
+
+    def analyze(self, emitters: dict) -> dict:
+        out = {"bands": {}, "multipath_richness": 0.0, "selectivity_overall": 0.0,
+               "n_carriers": 0, "valid": False, "richness_hist": list(self._rich_hist)}
+        if not emitters:
+            return out
+        bygroup = {}
+        for e in emitters.values():
+            b = e.get("band", "other")
+            bygroup.setdefault(b, []).append((float(e.get("freq_mhz", 0.0)),
+                                              float(e.get("rssi_dbm", -100.0))))
+        sels = []
+        for b, lst in bygroup.items():
+            if len(lst) < 3:
+                continue
+            lst.sort()
+            fr = np.array([x[0] for x in lst]); rs = np.array([x[1] for x in lst])
+            mag = 10.0 ** (rs / 20.0)                       # linear amplitude |H(f)|
+            sel = float(np.std(mag) / (np.mean(mag) + 1e-12))   # frequency-selectivity index
+            out["bands"][b] = {"n": len(lst), "selectivity": sel,
+                               "span_mhz": float(fr.max() - fr.min()),
+                               "freqs": fr.tolist(),
+                               "mag": (mag / (mag.max() + 1e-12)).tolist()}
+            sels.append(sel)
+        if sels:
+            ov = float(np.mean(sels))
+            self._rich_ema = 0.7 * self._rich_ema + 0.3 * ov
+            self._rich_hist.append(self._rich_ema)
+            out.update(selectivity_overall=ov, multipath_richness=float(self._rich_ema),
+                       n_carriers=sum(len(v) for v in bygroup.values()), valid=True,
+                       richness_hist=list(self._rich_hist))
         return out
 
 
@@ -52121,6 +53003,7 @@ class MultiAgentWirelessBCIFuser:
         self.mode = mode
         self.udp_port = udp_port
         self.demo_only = demo_only
+        self.sim_hardware = False     # v94: SIMULATE-HARDWARE (virtual instruments, watermarked)
         self.record_flag = record
         # Pass 26: sim_validate gates the synthetic GroundTruthScene + accuracy scoring.
         # DEFAULT (False) = REAL DATA ONLY: the display shows only genuinely-measured
@@ -52146,6 +53029,10 @@ class MultiAgentWirelessBCIFuser:
         # live link & multi-AP RSSI fluctuation (no synthetic data).
         self.rssi_sampler = RealRSSISampler(sample_hz=20.0)
         self.rssi_dfs = RSSIDeviceFreeSensing()
+        self.rf_carrier_tracker = RFCarrierTracker()      # v92: per-carrier Kalman error-correction
+        self.rf_link_corr = RFLinkCorrelationEngine()     # v92: multi-carrier occupancy count
+        self.rf_channel_sounder = RFChannelSounder()      # v93: spectrum-as-radar channel sounding
+        self.subsurface_imager = SimulatedSubsurfaceImager()  # v94: SIM matter-penetrating imaging
         self.rf_spectrum_map = RealRFSpectrumMap(n_bins=4096)   # v89: real spectrum analyzer
         # v90: multi-instrument bus — any present instrument contributes real data; the WiFi
         # radio is just the seed. Re-discovers at runtime so newly-connected hardware joins.
@@ -53478,6 +54365,10 @@ class MultiAgentWirelessBCIFuser:
                  ("Medical [m]", "medical"),
                  ("RF-Map [f]", "rfmap"),
                  ("Instr-Bus [b]", "instrbus"),
+                 ("Entities [e]", "entities"),
+                 ("Carrier [c]", "carrier"),
+                 ("Subsurf [g]", "subsurface"),
+                 ("Tuner [t]", "tuner"),
                  ("Info [i]", "info")]
         try:
             _nbtn = len(_tabs)
@@ -53553,6 +54444,23 @@ class MultiAgentWirelessBCIFuser:
             self._open_tab("rfmap")
         elif key == "b":
             self._open_tab("instrbus")
+        elif key == "e":
+            self._open_tab("entities")
+        elif key == "c":
+            self._open_tab("carrier")
+        elif key == "g":
+            self._open_tab("subsurface")
+        elif key == "t":
+            self._open_tab("tuner")
+        elif key in ("V",):
+            # v94: toggle SIMULATE-HARDWARE live (virtual instruments). Watermarked SIMULATED.
+            _on = not bool(getattr(self, "sim_hardware", False))
+            self.sim_hardware = _on
+            try:
+                self.instrument_bus.set_simulation(_on)
+            except Exception:
+                pass
+            log.info(f"[UI] SIMULATE-HARDWARE {'ON (virtual CSI/SDR/GPR — SIMULATED)' if _on else 'OFF (real data only)'}")
         elif key in ("i", "escape"):
             self._open_tab("info")
 
@@ -54009,10 +54917,17 @@ class MultiAgentWirelessBCIFuser:
             "instruments": msummary["instruments"],
             "instrument_objs": list(mesh.instruments.values()),
             "fixes": fixes,
-            # P83 live arrays for the 3D world + fused map
-            "fmcw_points":     _pp_ref.get("p83_fmcw_points", _pp_ref.get("fmcw_points", [])),
-            "pose_joints":     _pp_ref.get("p83_pose_joints", []),
+            # P83 live arrays for the 3D world + fused map. Pass 91: pose/FMCW body points
+            # are only real when a body-sensing channel (CSI/mmWave) is active. On RSSI-only
+            # capture they would be derived from synthetic CSI, so we publish them ONLY when
+            # vitals_mode is real/simulated — never fabricating bodies/skeletons in 'none'.
+            "fmcw_points":     (_pp_ref.get("p83_fmcw_points", _pp_ref.get("fmcw_points", []))
+                                if self.vitals_mode in ("real", "simulated") else []),
+            "pose_joints":     (_pp_ref.get("p83_pose_joints", [])
+                                if self.vitals_mode in ("real", "simulated") else []),
             "sat_descriptors": _pp_ref.get("p83_sat_descriptors", []),
+            "body_sensing":    self.vitals_mode in ("real", "simulated"),
+            "vitals_mode":     self.vitals_mode,
         }
         # Pass 33 (TIER 3): drive the world-reconstruction engine on a slow cadence and
         # publish its outputs (surface mesh, body meshes, splat image, status) into the
@@ -54022,7 +54937,9 @@ class MultiAgentWirelessBCIFuser:
             _blobs = self._world_snapshot["blobs"]
             wr.nerf_train_step(self.voxel_grid)
             wr.update_splats(fused if fused is not None else self.voxel_grid)
-            bodies = wr.body_mesh(_blobs)
+            # Pass 91: only mesh bodies when a real body-sensing channel exists. RF nodes
+            # (routers/APs/hosts) are NOT people — meshing them fabricated bodies.
+            bodies = wr.body_mesh(_blobs) if self.vitals_mode in ("real", "simulated") else []
             surface = wr.reconstruct_surface(fused if fused is not None else self.voxel_grid)
             self._world_snapshot["bodies"] = bodies
             self._world_snapshot["surface"] = surface
@@ -54265,13 +55182,18 @@ class MultiAgentWirelessBCIFuser:
         _cap = str(self.psych_profile.get("capture_method", "")).lower()
         _csi_hw = ("nexmon", "esp32", "passive", "rtl_sdr", "hackrf", "soapy",
                    "sdr", "fmcw", "mmwave")
-        if self.sim_validate or self.demo_only:
+        if self.sim_validate or self.demo_only or self.sim_hardware:
             self.vitals_mode = "simulated"
         elif any(m in _cap for m in _csi_hw):
             self.vitals_mode = "real"
         else:
             self.vitals_mode = "none"
         self.psych_profile["vitals_mode"] = self.vitals_mode
+        # Pass 91b: person counting requires a real body-sensing channel. Force 0 here every
+        # frame (the ICA refinement only runs once ≥8 frames accumulate and only when body
+        # sensing is real) so the init default of 1 never leaks an "x1" phantom in no-CSI mode.
+        if self.vitals_mode not in ("real", "simulated"):
+            self.num_persons = 0
 
         # ── v87 REAL device-free RSSI sensing ────────────────────────────────
         # Use the genuine high-rate RSSI fluctuation to recover what it CAN resolve:
@@ -54316,8 +55238,118 @@ class MultiAgentWirelessBCIFuser:
                 self.instrument_bus.maybe_rediscover(period_s=20.0)
                 self.instrument_bus.poll_all()
                 self.psych_profile["instrument_bus"] = self.instrument_bus.summary()
+                # v95: software-defined tuner — real-RF live spectrum + per-carrier waterfall
+                _tuner = self.instrument_bus.get_instrument("sdtuner")
+                if _tuner is not None:
+                    self.psych_profile["tuner_summary"] = dict(_tuner.last_summary)
+                    self._tuner_waterfall = _tuner.last_waterfall
+                    self._tuner_ids = _tuner.last_ids
+                    self.psych_profile["tuner_active"] = True
+                else:
+                    self.psych_profile["tuner_active"] = False
             except Exception as _bpe:
                 log.debug(f"[BUS] poll {_bpe}")
+            # ── v92: CARRIER ERROR-CORRECTION + MULTI-CARRIER CORRELATION ──────
+            # Engineer MORE real data from the carriers we already receive: Kalman-track every
+            # carrier (denoise + recover link velocity) and correlate all links to count
+            # independent movers (subspace occupancy) — all from real RSSI, nothing fabricated.
+            try:
+                _now = _rssi_time.time()
+                _emap2 = self.rssi_sampler.get_emitters() if getattr(self, "rssi_sampler", None) else {}
+                _lvl_map = {b: e.get("rssi_dbm", -100.0) for b, e in _emap2.items()}
+                try:
+                    _lvl_map["_link"] = float(self.rssi_sampler._last_level)
+                except Exception:
+                    pass
+                _trk = self.rf_carrier_tracker.update(_lvl_map, _now)
+                # per-emitter history → correlation/occupancy
+                _hmap = {b: self.rssi_sampler.get_emitter_hist(b) for b in _emap2.keys()}
+                _corr = self.rf_link_corr.analyze(_hmap)
+                self.psych_profile["df_source_count"] = int(_corr["count"])
+                self.psych_profile["df_coherence"]    = float(_corr["coherence"])
+                self.psych_profile["rf_eigenvalues"]  = _corr["eig"][:16]
+                self.psych_profile["rf_corr_valid"]   = bool(_corr["valid"])
+                self.psych_profile["rf_corr_noise_floor"] = float(_corr["noise_floor"])
+                self.psych_profile["rf_corr_ids"]     = _corr["ids"][:24]
+                if _corr["C"] is not None:
+                    _Cn = _corr["C"]
+                    self.psych_profile["rf_corr_matrix"] = _Cn[:24, :24].tolist()
+                # per-carrier velocity (real, error-corrected)
+                self.psych_profile["rf_carrier_vel"] = {
+                    k: round(float(v.get("vel", 0.0)), 3) for k, v in _trk.items()}
+                # radial activity: bin per-link motion (innovation) by known range
+                _rad = np.zeros(16, dtype=np.float64)
+                _rmax = 30.0
+                for _b, _e in _emap2.items():
+                    _tv = _trk.get(_b, {})
+                    _mot = float(_tv.get("innov", 0.0))
+                    try:    _rng = float(rssi_distance(_e.get("rssi_dbm", -100.0)))
+                    except Exception: _rng = float("nan")
+                    if np.isfinite(_rng):
+                        _bin = int(np.clip(_rng / _rmax * 16, 0, 15))
+                        _rad[_bin] += _mot
+                self.psych_profile["radial_activity"] = _rad.tolist()
+                self.psych_profile["radial_range_max"] = _rmax
+                # honest device-free TARGETS (range + motion + confidence, NO fabricated pose)
+                _dft = []
+                if _corr["valid"] and _corr["count"] >= 1 and _rad.sum() > 1e-6:
+                    _order = np.argsort(_rad)[::-1]
+                    for _k in range(min(_corr["count"], 4)):
+                        _bi = int(_order[_k])
+                        _r0 = (_bi + 0.5) / 16.0 * _rmax
+                        _conf = float(np.clip(_corr["coherence"] * (_rad[_bi] / (_rad.max() + 1e-9)), 0, 1))
+                        _dft.append({"range_m": round(_r0, 1),
+                                     "motion": round(float(_rad[_bi]), 3),
+                                     "confidence": round(_conf, 2),
+                                     "bearing_known": False})
+                self.psych_profile["df_targets"] = _dft
+                # live-feed health metrics
+                self.psych_profile["live_feed"] = {
+                    "sample_rate_hz": float(self.rssi_sampler.sample_hz),
+                    "samples_buffered": int(self.rssi_sampler.n_samples),
+                    "carriers_tracked": int(len(_trk)),
+                    "scan_age_s": round(_now - float(getattr(self.rssi_sampler, "_ap_last_scan", _now)), 1),
+                    "ts": _now,
+                }
+                # v93: spectrum-as-radar magnitude-domain channel sounding (multipath richness)
+                _cs = self.rf_channel_sounder.analyze(_emap2)
+                self.psych_profile["channel_sounding"] = _cs
+                # coherent-IQ radar (CAF/MUSIC/SAR/through-wall) needs SDR/CSI; reflect honestly
+                _sdr_live = False
+                try:
+                    _ibsum = self.psych_profile.get("instrument_bus", {})
+                    _livecaps = set(_ibsum.get("live_capabilities", []) or [])
+                    _sdr_live = bool({"iq", "wideband", "doa", "bearing"} & _livecaps)
+                except Exception:
+                    pass
+                self.psych_profile["coherent_radar"] = bool(
+                    self.vitals_mode == "real" or _sdr_live or self.sim_hardware)
+                # v94: SIMULATED matter-penetrating / GPR subsurface imaging (virtual instrument).
+                # Runs ONLY in sim-hardware mode and is watermarked SIMULATED everywhere it shows.
+                if self.sim_hardware:
+                    try:
+                        _ss = self.subsurface_imager.update(getattr(self, "_sim_t", 0.0))
+                        self.psych_profile["subsurface"] = _ss
+                        self.psych_profile["subsurface_active"] = True
+                    except Exception as _sse:
+                        log.debug(f"[SUBSURFACE] {_sse}")
+                    # v95: per-PERSON entities (each body its own view) — from the simulated scene
+                    # truth (distinct HR/BR/position per person). Provenance is SIMULATED, so the
+                    # whole view is watermarked; never shown as a real per-body measurement.
+                    try:
+                        _truth = self.gt_scene.current_truth(getattr(self, "_sim_t", 0.0))
+                        self.psych_profile["person_entities"] = [
+                            {"id": tg["id"], "x": tg["x"], "y": tg["y"], "z": tg["z"],
+                             "hr": tg["hr"], "br": tg["br"], "gait_hz": tg.get("gait_hz", 0.0),
+                             "range_m": tg.get("range_m", 0.0), "provenance": "SIMULATED"}
+                            for tg in _truth]
+                    except Exception:
+                        self.psych_profile["person_entities"] = []
+                else:
+                    self.psych_profile["subsurface_active"] = False
+                    self.psych_profile["person_entities"] = []
+            except Exception as _cce:
+                log.debug(f"[CARRIER] {_cce}")
         except Exception as _dfe:
             self.psych_profile["rssi_sensing_real"] = False
             log.debug(f"[RSSI] dfs skip: {_dfe}")
@@ -54380,6 +55412,11 @@ class MultiAgentWirelessBCIFuser:
         # List 1.8: Markov BCI state from real physiology
         entropy = float(np.clip(np.std(mimo_amp) / (np.mean(np.abs(mimo_amp)) + 1e-6), 0, 1))
         bci_state = self.bci_machine.update(np.clip(hrv/80., 0, 1), np.clip(br/40., 0, 1), entropy)
+        # Pass 91b: brain-state inference needs a real physiological channel (CSI/EEG). Without
+        # one, hrv/br are NaN and the FSM output is meaningless — report an honest no-sensor
+        # state instead of a fabricated "stressed"/"defensive".
+        if self.vitals_mode == "none":
+            bci_state = "no-sensor"
 
         # List 1.2/1.12: ML-fused scores + confidence intervals
         ml_stack = np.array([r.get('ml_out', np.zeros(4)) for r in results])
@@ -54534,14 +55571,24 @@ class MultiAgentWirelessBCIFuser:
                                                 np.abs(diffused) * 0.3)
             except Exception:
                 pass
-            # List 2.1: ICA person count (Pass 17: clip before ICA to prevent overflow)
-            try:
-                amp_mat_clipped = np.clip(amp_mat, -1e4, 1e4)
-                sources = ica_separate(amp_mat_clipped, max_sources=4)
-                active = sum(1 for s in sources if np.std(s) > 0.05)
-                self.num_persons = max(1, min(4, active))
-            except Exception:
-                self.num_persons = 1
+            # List 2.1: ICA person count — Pass 91 GATED on real body-sensing hardware.
+            # ICA source-separation only yields a genuine person count from a real complex
+            # channel response (CSI / mmWave). On RSSI-only capture the amp matrix is
+            # RSSI-synth noise, so counting "sources" fabricated up to 4 phantom people
+            # (the "filler nonsense body position"). We therefore only count persons when
+            # vitals_mode == 'real' (genuine CSI/radar) or 'simulated' (clearly-labelled
+            # demo). Otherwise the honest count is 0; presence is reported separately from
+            # the REAL device-free RSSI signal (rssi_presence) without claiming a count.
+            if self.vitals_mode in ("real", "simulated"):
+                try:
+                    amp_mat_clipped = np.clip(amp_mat, -1e4, 1e4)
+                    sources = ica_separate(amp_mat_clipped, max_sources=4)
+                    active = sum(1 for s in sources if np.std(s) > 0.05)
+                    self.num_persons = max(1, min(4, active))
+                except Exception:
+                    self.num_persons = 1
+            else:
+                self.num_persons = 0
 
         # List 2.8: cross-modal consistency → down-weight low-confidence readings
         consistency = cross_modal_consistency(pp)
@@ -54586,6 +55633,49 @@ class MultiAgentWirelessBCIFuser:
         pp["num_persons"] = self.num_persons
         # Pass 24: per-person detected ranges from range-gated DAS
         pp["person_ranges"] = list(getattr(self, "_person_ranges", [self.estimated_distance_m]))
+
+        # ── Pass 91: HONEST PRESENCE + REAL PER-EMITTER LINK ENTITIES ─────────
+        # Every detectable transmitter (router/AP) is a real entity on its own RF link to
+        # this receiver. Each link's RSSI fluctuation is genuine device-free sensing: a body
+        # moving through the TX→RX multipath perturbs that link. We expose every emitter as
+        # an inspectable entity with its REAL measurements + per-link motion variance. No
+        # bearing is claimed (one RX, no array) — only what the link physically carries.
+        try:
+            _bs = self.vitals_mode in ("real", "simulated")
+            pp["presence_detected"]         = bool(pp.get("rssi_presence", False))
+            pp["presence_count_resolvable"] = _bs
+            pp["body_sensing_active"]       = _bs
+            _ents = []
+            _emap = self.rssi_sampler.get_emitters() if getattr(self, "rssi_sampler", None) else {}
+            for _b, _e in _emap.items():
+                _h  = self.rssi_sampler.get_emitter_hist(_b)
+                _ha = np.asarray(_h, dtype=np.float64) if _h else np.zeros(0)
+                if _ha.size >= 4:
+                    _var = float(np.std(_ha))
+                    _mot = float(np.clip((_var - 0.5) / 4.0, 0.0, 1.0))  # ~dB swing → motion
+                else:
+                    _var = 0.0; _mot = 0.0
+                try:    _rng = float(rssi_distance(_e.get("rssi_dbm", -100.0)))
+                except Exception: _rng = float("nan")
+                _ents.append({
+                    "id": _e.get("ssid", "?"), "bssid": _b,
+                    "freq_mhz": float(_e.get("freq_mhz", 0.0)), "chan": int(_e.get("chan", 0)),
+                    "band": _e.get("band", "?"), "signal": float(_e.get("signal", 0.0)),
+                    "rssi_dbm": float(_e.get("rssi_dbm", -100.0)),
+                    "security": _e.get("security", "?"), "rate": _e.get("rate", ""),
+                    "range_m": _rng, "link_var_db": _var, "link_motion": _mot,
+                    "hist": _ha[-64:].tolist(),
+                })
+            _ents.sort(key=lambda d: d["rssi_dbm"], reverse=True)
+            pp["rf_link_entities"]     = _ents
+            pp["rf_link_entity_count"] = len(_ents)
+            if _ents:
+                pp["link_motion_max"]  = max(e["link_motion"] for e in _ents)
+                pp["link_motion_mean"] = float(np.mean([e["link_motion"] for e in _ents]))
+            else:
+                pp["link_motion_max"] = pp["link_motion_mean"] = 0.0
+        except Exception as _ee:
+            log.debug(f"[ENTITIES] {_ee}")
 
         # ── Pass 25/26: GROUND-TRUTH ACCURACY SCORING (sim-validate test mode ONLY) ──
         # This grades the reconstruction against the synthetic GroundTruthScene. It is
@@ -55812,8 +56902,14 @@ class MultiAgentWirelessBCIFuser:
         try:
             _fmcw_pts = self.fmcw_pc.from_csi_proxy(
                 self._last_raw_csi if hasattr(self, "_last_raw_csi") else np.zeros(64, np.complex64))
-            pp["fmcw_point_count"] = int(len(_fmcw_pts))
-            pp["fmcw_points"]      = _fmcw_pts[:32].tolist() if len(_fmcw_pts) > 0 else []
+            # Pass 91: FMCW points come from a CSI proxy; on RSSI-only capture that proxy is
+            # synthetic, so the points would be fabricated. Publish only when body-sensing real.
+            if self.vitals_mode in ("real", "simulated"):
+                pp["fmcw_point_count"] = int(len(_fmcw_pts))
+                pp["fmcw_points"]      = _fmcw_pts[:32].tolist() if len(_fmcw_pts) > 0 else []
+            else:
+                pp["fmcw_point_count"] = 0
+                pp["fmcw_points"]      = []
         except Exception as _fme:
             log.debug(f"[FMCW] pc error: {_fme}")
 
@@ -57392,7 +58488,7 @@ class MultiAgentWirelessBCIFuser:
             # --sim-validate: drive CSI from the synthetic GroundTruthScene so the
             # reconstruction can be graded against known truth (offline test only).
             self._sim_t = t
-            if self.sim_validate:
+            if self.sim_validate or self.sim_hardware:
                 illum = self._rf_illuminators[self._rf_idx % len(self._rf_illuminators)]
                 self._rf_idx += 1
                 csi_row = self.gt_scene.synthesize_csi(t, illuminator=illum)
@@ -57476,8 +58572,11 @@ class MultiAgentWirelessBCIFuser:
                              f"breath~{_bbs} | HR=needs-CSI")
                 else:
                     _vstr = "HR=-- BR=-- [NO RSSI/CSI SENSOR]"
+                _pid_disp = (f"{p['person_id']} x{p['num_persons']}"
+                             if int(p.get('num_persons', 0)) >= 1
+                             else ("presence" if p.get('presence_detected') else "no-target"))
                 log.info(
-                    f"[{p['person_id']} x{p['num_persons']}] BCI={p['bci_state']:9s} | "
+                    f"[{_pid_disp}] BCI={p['bci_state']:9s} | "
                     f"{_vstr} | "
                     f"Threat={'HIGH' if p['threat_level']>0.5 else 'LOW '} | "
                     f"{_stat} | "
@@ -57501,10 +58600,14 @@ class MultiAgentWirelessBCIFuser:
                     self.tts.say(f"Warning. {_critical[0].replace('_', ' ')} detected.")
                     self._last_critical_tts = time.time()
                 if time.time() - self._last_tts >= 15:
-                    _np = int(p.get('num_persons', 1))
-                    _pr = p.get('person_ranges', [])
-                    _rng_txt = (f"{_np} person{'s' if _np != 1 else ''} detected. "
-                                if _np >= 1 else "")
+                    _np = int(p.get('num_persons', 0))
+                    if _np >= 1:
+                        _rng_txt = f"{_np} person{'s' if _np != 1 else ''} detected. "
+                    elif p.get('presence_detected', False):
+                        _rng_txt = ("Presence detected; count not resolvable without "
+                                    "C S I or an antenna array. ")
+                    else:
+                        _rng_txt = "No presence detected. "
                     _alert_txt = ('Alert: ' + (_critical[0] if _critical else _alerts[0]).replace('_', ' ')
                                   if _alerts else 'No anomalies.')
                     if p.get("vitals_valid", True) and p.get("vitals_mode","none") != "none":
@@ -58440,6 +59543,12 @@ if __name__ == "__main__":
                         help='Pass 26: OFFLINE TEST — drive CSI from the synthetic '
                              'GroundTruthScene and show the accuracy gauge. Default mode '
                              'shows ONLY real measured data from the connected router.')
+    parser.add_argument('--simulate-hardware', action='store_true',
+                        help='v94: ENGINEER-AROUND-HARDWARE — register SIMULATED virtual '
+                             'instruments (CSI/SDR/GPR) so the full vision (walking bodies, '
+                             'vitals, coherent radar, subsurface imaging) renders for '
+                             'demonstration. Every product is watermarked SIMULATED and is '
+                             'NEVER shown as real. Toggle live with the [V] key.')
     parser.add_argument('--fps', type=int, default=20,
                         help='Pass 26: target display refresh rate (frames/sec)')
     parser.add_argument('--record-splat', metavar='DIR', default=None,
@@ -58488,6 +59597,15 @@ if __name__ == "__main__":
                                        sim_validate=args.sim_validate)
     fuser.enable_world = not args.no_world   # Pass 25: walkable 3D world toggle
     fuser.target_fps = max(5, min(60, args.fps))  # Pass 26: live refresh rate
+    # v94: simulate-hardware (virtual instruments). Watermarked SIMULATED everywhere.
+    if getattr(args, "simulate_hardware", False):
+        fuser.sim_hardware = True
+        try:
+            fuser.instrument_bus.set_simulation(True)
+        except Exception:
+            pass
+        log.info("[MAIN] SIMULATE-HARDWARE ON — virtual CSI/SDR/GPR instruments registered "
+                 "(all outputs watermarked SIMULATED, never shown as real).")
     # Pass 30 (T0-5): enable passive-sniff CSI capture path.
     if args.passive_sniff and hasattr(fuser, "router_csi"):
         fuser.router_csi.enable_passive_sniff(monitor_iface=args.monitor_iface)
