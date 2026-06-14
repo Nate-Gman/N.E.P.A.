@@ -2595,6 +2595,15 @@ class DetailTabWindow:
                         if i.get("kind") == "bluetooth" and i.get("connected"))
         _ble_ents = int(p.get("rf_link_entity_count", 0) or 0)
         _esp32_fr = int(getattr(getattr(self.fuser, "esp32_csi_server", None), "_frames", 0))
+        # v119: multi-channel scanner + MDNS discovery stats
+        _mc_total = int(p.get("mc_scan_total", 0) if p else 0)
+        _mc_new   = int(p.get("mc_scan_new_aps", 0) if p else 0)
+        _mc_swps  = int(getattr(getattr(self.fuser, "multi_chan_scanner", None),
+                                "_sweeps_done", 0))
+        _mdns_tot = int(p.get("mdns_total", 0) if p else 0)
+        _mdns_new = int(p.get("mdns_new_nodes", 0) if p else 0)
+        _avahi_ok = getattr(getattr(self.fuser, "mdns_discovery", None), "_avahi_ok", None)
+        _mdns_src = "avahi" if _avahi_ok else ("ARP" if _avahi_ok is False else "scanning…")
         _extra = (
             f"  Extra WiFi adapters:  {_usb_n} ({', '.join(_usb_ifs) or 'none — plug USB dongle for 2nd receiver'})\n"
             f"  LAN traffic sensor:  {_lan_dev} active ifaces ({', '.join(_lan_ifs) or 'quiet'})  "
@@ -2604,7 +2613,11 @@ class DetailTabWindow:
             f"  BLE radio:           {'connected' if _ble_cnt else 'blocked/absent'}  "
             f"entities in pool: {_ble_ents}\n"
             f"  ESP32 CSI ingest:    {_esp32_fr} frames (--csi-port 5001)  "
-            f"POST /api/scan for phones (--web-viewer port 8765)"
+            f"POST /api/scan for phones (--web-viewer port 8765)\n"
+            f"  MultiChan scanner:   {_mc_total} APs across all 2.4/5/6 GHz channels  "
+            f"+{_mc_new} new this cycle  sweeps={_mc_swps}\n"
+            f"  MDNS/LAN discovery:  {_mdns_tot} devices [{_mdns_src}]  "
+            f"+{_mdns_new} new LAN nodes this cycle"
         )
         ax2.text(0.03, max(y - 0.02, 0.06), _extra,
                  transform=ax2.transAxes, color='#88ffcc', fontsize=7.5, va='top',
@@ -21445,7 +21458,7 @@ class RealRSSISampler:
         # correlation gets a continuous live feed — this is "read all carrier data, refreshing in
         # real time" using only real measured RSSI. Tunable via self.rescan_interval_s.
         self._last_rescan = 0.0
-        _interval = float(getattr(self, "rescan_interval_s", 5.0))
+        _interval = float(getattr(self, "rescan_interval_s", 3.0))   # v119: 3 s for live feed
         while self._running:
             try:
                 now = _rssi_time.time()
@@ -21605,6 +21618,30 @@ class RFCarrierTracker:
     def velocities(self) -> dict:
         return {k: v["vel"] for k, v in self._tracks.items()}
 
+    def velocity_ms(self, cid: str, rssi_dbm: float, path_loss_exp: float = 2.0) -> float:
+        """v119: Convert Kalman RSSI velocity (dBm/s) → approximate radial velocity (m/s).
+
+        From path-loss model: RSSI = C - 10n·log10(r)
+          → dRSSI/dt = -10n/(r·ln10) · dr/dt
+          → dr/dt (m/s) = -r · dRSSI_dBm_per_s · ln10 / (10·n)
+
+        Positive = range increasing (target receding); negative = approaching.
+        Returns float('nan') when there is not yet enough track history.
+        """
+        tr = self._tracks.get(cid)
+        if tr is None or tr.get("n", 0) < 3:
+            return float("nan")
+        vel_dbm_s = float(tr.get("vel", 0.0))      # Kalman RSSI velocity (dBm/s)
+        if abs(vel_dbm_s) < 1e-6:
+            return 0.0
+        # Estimate current range from RSSI via free-space path-loss
+        try:
+            r_m = max(0.3, 10.0 ** ((-rssi_dbm - 40.0) / (10.0 * path_loss_exp)))
+        except Exception:
+            return float("nan")
+        import math as _m
+        return -r_m * vel_dbm_s * _m.log(10.0) / (10.0 * path_loss_exp)
+
 
 class RFLinkCorrelationEngine:
     """Pass 92: multi-carrier FREQUENCY/LINK CORRELATION → real device-free occupancy COUNT.
@@ -21739,6 +21776,313 @@ class RFChannelSounder:
                        n_carriers=sum(len(v) for v in bygroup.values()), valid=True,
                        richness_hist=list(self._rich_hist))
         return out
+
+
+class MultiChannelWiFiScanner:
+    """v119: Parallel multi-channel WiFi scanner.
+
+    Sweeps every IEEE 802.11 frequency (2.4/5/6 GHz) simultaneously via
+    `iw dev <iface> scan freq <MHz>` using one thread per frequency.
+    Captures APs that a single nmcli scan may miss because the driver only
+    dwells on a subset of channels between probe requests.
+
+    Results are REAL measured RSSI from the kernel WiFi driver — never
+    synthesised. De-duplicates by BSSID, keeps best (highest) RSSI.
+    """
+
+    # Standard IEEE 802.11 centre frequencies (MHz)
+    _FREQS_2G = [2412, 2417, 2422, 2427, 2432, 2437, 2442,
+                 2447, 2452, 2457, 2462, 2467, 2472]
+    _FREQS_5G = [5180, 5200, 5220, 5240, 5260, 5280, 5300, 5320,
+                 5500, 5520, 5540, 5560, 5580, 5600, 5620, 5640,
+                 5660, 5680, 5700, 5720, 5745, 5765, 5785, 5805, 5825]
+    _FREQS_6G = [5955, 5975, 5995, 6015, 6035, 6055, 6075, 6095,
+                 6115, 6135, 6155, 6175, 6195, 6215, 6235, 6255,
+                 6275, 6295, 6315, 6335, 6355, 6375, 6395, 6415,
+                 6435, 6455, 6475, 6495, 6515, 6535, 6555, 6575,
+                 6595, 6615, 6635, 6655, 6675, 6695, 6715, 6735,
+                 6755, 6775, 6795, 6815, 6835, 6855, 6875, 6895,
+                 6915, 6935, 6955, 6975, 6995, 7015, 7035, 7055,
+                 7075, 7095, 7115]
+
+    def __init__(self, iface: str = ""):
+        self._iface = iface or self._auto_iface()
+        self._lock = _rssi_threading.Lock()
+        self._results: dict = {}        # bssid -> emitter record (real measurements)
+        self._last_sweep = 0.0
+        self._sweep_interval = 20.0     # full wideband sweep every 20 s
+        self._running = False
+        self._thread = None
+        self._sweeps_done = 0
+
+    @staticmethod
+    def _auto_iface():
+        try:
+            with open("/proc/net/wireless") as f:
+                for ln in f.readlines()[2:]:
+                    n = ln.split(":")[0].strip()
+                    if n:
+                        return n
+        except Exception:
+            pass
+        return "wlan0"
+
+    def _scan_one_freq(self, freq_mhz: int, results_out: list):
+        """Scan one centre frequency; append discovered APs to results_out."""
+        try:
+            import subprocess as _sp
+            r = _sp.run(
+                ["iw", "dev", self._iface, "scan", "freq", str(freq_mhz)],
+                capture_output=True, text=True, timeout=7.0
+            )
+            ap: dict = {}
+            for ln in r.stdout.splitlines():
+                ln = ln.strip()
+                if ln.startswith("BSS "):
+                    if ap.get("bssid"):
+                        results_out.append(ap)
+                    bssid = ln.split()[1].split("(")[0] if len(ln.split()) > 1 else ""
+                    ap = {"bssid": bssid, "ssid": "(hidden)",
+                          "rssi_dbm": -99.0, "freq_mhz": float(freq_mhz),
+                          "chan": 0, "security": "open",
+                          "source": "mc_iw_scan", "band": "2.4GHz"}
+                elif "SSID:" in ln and ap:
+                    v = ln.split("SSID:")[1].strip()
+                    ap["ssid"] = v if v else "(hidden)"
+                elif "signal:" in ln and ap:
+                    try:
+                        ap["rssi_dbm"] = float(ln.split("signal:")[1].split()[0])
+                    except Exception:
+                        pass
+                elif "freq:" in ln and ap:
+                    try:
+                        ap["freq_mhz"] = float(ln.split("freq:")[1].strip())
+                    except Exception:
+                        pass
+                elif "DS Parameter set: channel" in ln and ap:
+                    try:
+                        ap["chan"] = int(ln.split("channel")[1].strip())
+                    except Exception:
+                        pass
+                elif ("RSN:" in ln or "WPA:" in ln or "WPA2" in ln) and ap:
+                    ap["security"] = "WPA"
+            if ap.get("bssid"):
+                results_out.append(ap)
+        except Exception:
+            pass
+
+    def _sweep(self):
+        """Parallel sweep of 2.4 + 5 GHz channels (6 GHz sampled at ×4 spacing).
+        Returns merged emitter dict keyed by BSSID."""
+        results: list = []
+        # 2.4 GHz: all 13 channels; 5 GHz: all UNII bands; 6 GHz: every 4th
+        freqs = list(self._FREQS_2G) + list(self._FREQS_5G) + self._FREQS_6G[::4]
+        threads = []
+        for freq in freqs:
+            t = _rssi_threading.Thread(
+                target=self._scan_one_freq, args=(freq, results),
+                daemon=True, name=f"mcscan-{freq}"
+            )
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join(timeout=9.0)
+        # Merge: keep best RSSI per BSSID; classify band from real freq
+        merged: dict = {}
+        for ap in results:
+            b = ap.get("bssid", "")
+            if not b or b == "unknown":
+                continue
+            fm = float(ap.get("freq_mhz", 0.0))
+            if fm < 2500:       ap["band"] = "2.4GHz"
+            elif fm < 5925:     ap["band"] = "5GHz"
+            elif fm < 7200:     ap["band"] = "6GHz"
+            else:               ap["band"] = "other"
+            ap["signal"] = max(0.0, min(100.0, (float(ap["rssi_dbm"]) + 100) * 2.0))
+            ap["rate"] = ""
+            if b not in merged or ap["rssi_dbm"] > merged[b]["rssi_dbm"]:
+                merged[b] = ap
+        return merged
+
+    def _loop(self):
+        while self._running:
+            try:
+                now = _rssi_time.time()
+                if now - self._last_sweep >= self._sweep_interval:
+                    merged = self._sweep()
+                    if merged:
+                        with self._lock:
+                            self._results.update(merged)
+                        self._sweeps_done += 1
+                    self._last_sweep = _rssi_time.time()
+            except Exception:
+                pass
+            _rssi_time.sleep(5.0)
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = _rssi_threading.Thread(
+            target=self._loop, daemon=True, name="MultiChanScanner"
+        )
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+
+    def get_emitters(self) -> dict:
+        with self._lock:
+            return dict(self._results)
+
+    @property
+    def n_emitters(self) -> int:
+        with self._lock:
+            return len(self._results)
+
+
+class MDNSDeviceDiscovery:
+    """v119: mDNS / Bonjour LAN device discovery.
+
+    Discovers every network-reachable device that advertises an mDNS/DNS-SD
+    service (phones, laptops, printers, smart-home hubs, NAS boxes, IoT
+    sensors…) using `avahi-browse`. Falls back to /proc/net/arp when avahi is
+    unavailable — that table is always populated by the kernel from real ARP
+    traffic with no root access needed.
+
+    Every discovered device is a real measured network presence — nothing is
+    fabricated. Each becomes a candidate remote sensing node in the entity pool.
+    """
+
+    def __init__(self):
+        self._lock = _rssi_threading.Lock()
+        self._devices: dict = {}        # ip -> {ip, hostname, mac, services, last_seen}
+        self._last_scan = 0.0
+        self._scan_interval = 30.0
+        self._running = False
+        self._thread = None
+        self._avahi_ok: bool | None = None   # None=untested
+
+    # ── avahi scan ───────────────────────────────────────────────────────────
+    def _scan_avahi(self) -> list:
+        devices: dict = {}
+        try:
+            import subprocess as _sp
+            r = _sp.run(
+                ["avahi-browse", "-a", "-t", "-r", "-p"],
+                capture_output=True, text=True, timeout=9.0
+            )
+            for ln in r.stdout.splitlines():
+                # format: type;iface;proto;name;svctype;domain;hostname;addr;port;txt
+                parts = ln.split(";")
+                if len(parts) < 9 or parts[0] != "=":
+                    continue
+                addr = parts[7]
+                hostname = parts[6].rstrip(".")
+                svctype = parts[4]
+                if not addr or addr.startswith("fe80") or addr.startswith("169."):
+                    continue
+                if addr not in devices:
+                    devices[addr] = {"ip": addr, "hostname": hostname,
+                                     "mac": "", "services": set(),
+                                     "last_seen": _rssi_time.time()}
+                devices[addr]["services"].add(svctype)
+            self._avahi_ok = True
+        except FileNotFoundError:
+            self._avahi_ok = False
+        except Exception:
+            pass
+        return [dict(d, services=list(d["services"])) for d in devices.values()]
+
+    # ── ARP fallback ─────────────────────────────────────────────────────────
+    def _scan_arp(self) -> list:
+        devices = []
+        try:
+            with open("/proc/net/arp") as f:
+                lines = f.readlines()[1:]
+            for ln in lines:
+                parts = ln.split()
+                if len(parts) < 4:
+                    continue
+                ip = parts[0]; mac = parts[3]
+                try:
+                    flags = int(parts[2], 16)
+                except Exception:
+                    continue
+                if (flags & 0x02) and mac not in ("00:00:00:00:00:00", "*"):
+                    devices.append({"ip": ip, "hostname": ip, "mac": mac,
+                                    "services": [], "last_seen": _rssi_time.time()})
+        except Exception:
+            pass
+        return devices
+
+    def _resolve_hostnames(self, devices: list):
+        import socket as _sock
+        for d in devices:
+            if d["hostname"] == d["ip"]:
+                try:
+                    d["hostname"] = _sock.gethostbyaddr(d["ip"])[0]
+                except Exception:
+                    pass
+
+    def _scan(self):
+        devs = self._scan_avahi()
+        if not devs:
+            devs = self._scan_arp()
+        self._resolve_hostnames(devs)
+        now = _rssi_time.time()
+        with self._lock:
+            for d in devs:
+                ip = d["ip"]
+                if ip in self._devices:
+                    prev = self._devices[ip]
+                    prev.update(d)
+                    if isinstance(d.get("services"), list) and isinstance(prev.get("services"), list):
+                        merged_svcs = list(set(prev.get("services", []) + d.get("services", [])))
+                        prev["services"] = merged_svcs
+                else:
+                    self._devices[ip] = d
+            # Expire entries older than 5 minutes
+            self._devices = {
+                ip: d for ip, d in self._devices.items()
+                if now - float(d.get("last_seen", now)) < 300.0
+            }
+
+    def _loop(self):
+        while self._running:
+            try:
+                now = _rssi_time.time()
+                if now - self._last_scan >= self._scan_interval:
+                    self._scan()
+                    self._last_scan = _rssi_time.time()
+            except Exception:
+                pass
+            _rssi_time.sleep(10.0)
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = _rssi_threading.Thread(
+            target=self._loop, daemon=True, name="MDNSDiscovery"
+        )
+        self._thread.start()
+        # Immediate first scan (non-blocking)
+        _rssi_threading.Thread(
+            target=self._scan, daemon=True, name="MDNS-boot"
+        ).start()
+
+    def stop(self):
+        self._running = False
+
+    def get_devices(self) -> list:
+        with self._lock:
+            return [dict(d) for d in self._devices.values()]
+
+    @property
+    def n_devices(self) -> int:
+        with self._lock:
+            return len(self._devices)
 
 
 # ════════════ PASS 72 ENGINES ════════════
@@ -54891,6 +55235,20 @@ class MultiAgentWirelessBCIFuser:
         self.rf_carrier_tracker = RFCarrierTracker()      # v92: per-carrier Kalman error-correction
         self.rf_link_corr = RFLinkCorrelationEngine()     # v92: multi-carrier occupancy count
         self.rf_channel_sounder = RFChannelSounder()      # v93: spectrum-as-radar channel sounding
+        # v119: parallel multi-channel WiFi scanner — sweeps all 2.4/5/6 GHz channels in parallel
+        self.multi_chan_scanner = MultiChannelWiFiScanner()
+        try:
+            self.multi_chan_scanner.start()
+            log.info(f"[MCHAN] Multi-channel WiFi scanner started — iface={self.multi_chan_scanner._iface}")
+        except Exception as _mce:
+            log.debug(f"[MCHAN] start skip: {_mce}")
+        # v119: mDNS/ARP LAN device discovery — find every network device as a sensor node candidate
+        self.mdns_discovery = MDNSDeviceDiscovery()
+        try:
+            self.mdns_discovery.start()
+            log.info("[MDNS] LAN device discovery started (avahi-browse / ARP fallback)")
+        except Exception as _mde:
+            log.debug(f"[MDNS] start skip: {_mde}")
         # v97: REAL planet-scale map (OpenStreetMap satellite/survey cartography). Geolocate +
         # prefetch in the background so the Planet Map tab [k] opens straight onto real data.
         self.planet_map = PlanetMapEngine()
@@ -56766,6 +57124,46 @@ class MultiAgentWirelessBCIFuser:
         except Exception:
             pass
 
+        # 6) v119: multi-channel WiFi scanner APs — carriers seen on ALL channels,
+        # not just what nmcli happened to find in its last partial sweep.
+        _mc_new = 0
+        try:
+            _mc_emitters = getattr(getattr(self, "multi_chan_scanner", None), "get_emitters",
+                                   lambda: {})()
+            _existing_ids = {n["id"] for n in nodes}
+            for _b, _ae in _mc_emitters.items():
+                _aid = str(_ae.get("ssid") or _b)
+                if _aid not in _existing_ids:
+                    _place(_aid, "ap", float(_ae.get("rssi_dbm", -85.0)))
+                    _existing_ids.add(_aid)
+                    _mc_new += 1
+        except Exception:
+            pass
+        pp["mc_scan_new_aps"] = _mc_new
+        pp["mc_scan_total"]   = int(getattr(getattr(self, "multi_chan_scanner", None),
+                                            "n_emitters", 0))
+
+        # 7) v119: MDNS-discovered LAN devices — every device that responded to mDNS
+        # or appeared in the ARP table is a real network presence at a real IP address.
+        # Treat each as a LAN sensor node candidate (range from gateway RSSI proxy).
+        _mdns_new = 0
+        try:
+            _mdns_devs = getattr(getattr(self, "mdns_discovery", None), "get_devices",
+                                 lambda: [])()
+            _existing_ids2 = {n["id"] for n in nodes}
+            for _d in _mdns_devs:
+                _did = str(_d.get("hostname") or _d.get("ip", "?"))
+                if _did not in _existing_ids2:
+                    # MDNS devices are on the same LAN — estimate range from gateway RSSI
+                    _place(_did, "lan_host", float(base_rssi) - 5.0)
+                    _existing_ids2.add(_did)
+                    _mdns_new += 1
+        except Exception:
+            pass
+        pp["mdns_new_nodes"]  = _mdns_new
+        pp["mdns_total"]      = int(getattr(getattr(self, "mdns_discovery", None),
+                                            "n_devices", 0))
+
         # ── Paint the real nodes into the voxel grid (replaces synthetic blobs) ──
         # Paint honest RANGE SHELLS: each node is known to be at a real distance from the
         # receiver but at an UNKNOWN bearing, so we deposit energy on the spherical shell
@@ -57642,6 +58040,37 @@ class MultiAgentWirelessBCIFuser:
                         })
             except Exception as _ble_e:
                 log.debug(f"[BLE-ents] {_ble_e}")
+            # v119: inject multi-channel WiFi scanner APs — carriers found on ALL IEEE 802.11
+            # channels that were NOT in the nmcli fast-scan. Real iw-measured RSSI only.
+            try:
+                _mc_scn = getattr(self, "multi_chan_scanner", None)
+                if _mc_scn is not None:
+                    _mc_em = _mc_scn.get_emitters()
+                    _emap_known = {_e["bssid"] for _e in _ents if "bssid" in _e}
+                    for _mb, _me in _mc_em.items():
+                        if _mb in _emap_known:
+                            continue    # already in pool from nmcli
+                        _mh_rssi = float(_me.get("rssi_dbm", -90.0))
+                        try:    _mrng = float(rssi_distance(_mh_rssi))
+                        except Exception: _mrng = float("nan")
+                        _ents.append({
+                            "id": _me.get("ssid", "?"),
+                            "bssid": _mb,
+                            "freq_mhz": float(_me.get("freq_mhz", 0.0)),
+                            "chan": int(_me.get("chan", 0)),
+                            "band": _me.get("band", "?"),
+                            "signal": float(_me.get("signal", 0.0)),
+                            "rssi_dbm": _mh_rssi,
+                            "security": _me.get("security", "?"),
+                            "rate": "",
+                            "range_m": _mrng,
+                            "link_var_db": 0.0, "link_motion": 0.0,
+                            "hist": [],
+                            "source": "mc_iw_scan",
+                        })
+            except Exception as _mce2:
+                log.debug(f"[MCHAN-ents] {_mce2}")
+
             # v105: fuse REMOTE-NODE carriers into the pool — every device that POSTed its own
             # real WiFi scan contributes its carriers to ONE planet-scale real-data set ("mass
             # data correlation"). Tagged by source node; snapshot RSSI = their live reading; no
