@@ -1821,9 +1821,12 @@ class DetailTabWindow:
             ax4.set_xlabel("range (m)", color='#aaa', fontsize=7)
         ax4.set_title("Range profile - radar echoes", color='cyan', fontsize=10)
         ax4.tick_params(colors='#888', labelsize=6)
-        # T0-7: Spectrum survey waterfall (band power over time)
+        # T0-7: Spectrum survey — SDR bands + cognitive radio occupancy (v117)
         ax5 = fig.add_subplot(2, 3, 5); ax5.set_facecolor('#080808')
         survey = p.get("spectrum_survey", {})
+        cog_res = p.get("cog_spec_results", {})
+        cog_occ = int(p.get("cog_spec_occupied", 0))
+        cog_tot = int(p.get("cog_spec_bands", 0))
         # v88: show ONLY genuinely SDR-measured bands. Estimated/physics-model bands are
         # NOT instrument data, so they are excluded (no fabricated spectrum shown).
         real_bands = {bn: bd for bn, bd in survey.items()
@@ -1838,9 +1841,28 @@ class DetailTabWindow:
             ax5.set_title(f"Spectrum survey — {len(real_bands)} REAL SDR bands",
                           color='#00ffcc', fontsize=9)
         else:
-            ax5.text(0.5, 0.5, "NO SDR — 0 real spectrum bands\n(connect RTL-SDR / HackRF / SoapySDR)",
-                     ha='center', va='center', color='#ff8866', fontsize=9)
-            ax5.set_title("Spectrum survey — NO SDR (no fabricated bands)", color='#ff8866', fontsize=9)
+            # No SDR — show cognitive radio occupancy from RSSI-proxy IQ (v117)
+            if cog_res:
+                _cn = list(cog_res.keys())
+                _cv = [1.0 if cog_res[b].get("occupied") else 0.0 for b in _cn]
+                _cs = [float(cog_res[b].get("energy_snr_db", 0.0)) for b in _cn]
+                _cc = ['#ff6633' if v else '#226688' for v in _cv]
+                ax5.barh(range(len(_cn)), [max(s, 0.0) for s in _cs], color=_cc)
+                ax5.set_yticks(range(len(_cn)))
+                ax5.set_yticklabels(_cn, color='#ccc', fontsize=6)
+                ax5.set_xlabel("energy SNR above noise floor (dB)", color='#888', fontsize=7)
+                ax5.set_title(
+                    f"CogSpec {cog_occ}/{cog_tot} bands occupied (RSSI-proxy IQ, no SDR)",
+                    color='#ffaa33', fontsize=8)
+            else:
+                ax5.text(0.5, 0.5, "NO SDR — 0 real spectrum bands\n(connect RTL-SDR / HackRF / SoapySDR)",
+                         ha='center', va='center', color='#ff8866', fontsize=9)
+                ax5.set_title("Spectrum survey — NO SDR (no fabricated bands)", color='#ff8866', fontsize=9)
+        # Always add cog_spec annotation line when available
+        if cog_res and real_bands:
+            ax5.text(0.02, 0.02,
+                     f"CogSpec {cog_occ}/{cog_tot} occupied (energy+cyclo detectors)",
+                     transform=ax5.transAxes, color='#ffaa33', fontsize=6, va='bottom')
         ax5.tick_params(colors='#888', labelsize=6)
         # Spectrum waterfall history: rolling band-power rows from _spectrum_hist
         ax6 = fig.add_subplot(2, 3, 6); ax6.set_facecolor('#080808')
@@ -1852,9 +1874,17 @@ class DetailTabWindow:
                        extent=[0, wf.shape[0], 0, wf.shape[1]])
             ax6.set_xlabel("sweep index", color='#888', fontsize=7)
             ax6.set_ylabel("band", color='#888', fontsize=7)
+        # Annotate with cog_spec occupancy over time
+        if cog_res:
+            ax6.text(0.02, 0.98,
+                     f"CogSpec: {cog_occ}/{cog_tot} bands occupied\n"
+                     + "  ".join(f"{b[:6]}{'★' if r.get('occupied') else '·'}"
+                                 for b, r in list(cog_res.items())[:4]),
+                     transform=ax6.transAxes, color='#ffaa33', fontsize=6,
+                     va='top', family='monospace')
         ax6.set_title("Spectrum waterfall (time)", color='#00ffcc', fontsize=9)
         ax6.tick_params(colors='#888', labelsize=6)
-        fig.suptitle("SIGNAL / SPECTRUM DETAIL — CSI + wideband RF survey",
+        fig.suptitle("SIGNAL / SPECTRUM DETAIL — CSI + wideband RF + CogSpec",
                      color='#00ffcc', fontsize=12)
 
     def _draw_instrument(self, fig, p, snap):
@@ -1984,7 +2014,16 @@ class DetailTabWindow:
                 f"{n['rssi']:6.1f}dBm {n['range_m']:6.2f}m  {bearing_s}")
         if not nodes:
             lines.append("  (scanning for nodes...)")
-        lines += ["", f"  Fixes: {len(fixes)}   Instruments: {len(insts)}   Blobs: {len(blobs)}"]
+        # v117: new real-data sensors in node table
+        _lan_dev2  = int(p.get("lan_active_devices", 0)) if p else 0
+        _lan_pkt2  = float(p.get("lan_total_pkt_s", 0.0)) if p else 0.0
+        _usb_n2    = int(p.get("usb_wifi_count", 0)) if p else 0
+        _cog_occ3  = int(p.get("cog_spec_occupied", 0)) if p else 0
+        _cog_tot3  = int(p.get("cog_spec_bands", 0)) if p else 0
+        lines += ["", f"  Fixes: {len(fixes)}   Instruments: {len(insts)}   Blobs: {len(blobs)}",
+                  f"  LAN: {_lan_dev2} active ifaces @ {_lan_pkt2:.0f}pkt/s   "
+                  f"USB-WiFi adapters: {_usb_n2}   "
+                  f"CogSpec: {_cog_occ3}/{_cog_tot3} bands occupied"]
         # v114: real source is snap["sat_descriptors"] (set from p83_sat_descriptors). The old
         # `or p.get("satellite_nodes", [])` fallback read a key that is NEVER set anywhere — a
         # dead phantom-default read; removed so the panel reflects only the real descriptor list.
@@ -2543,7 +2582,34 @@ class DetailTabWindow:
                              color='#ffcc66', fontsize=8, va='top')
                     y -= 0.04
             y -= 0.02
-        ax2.text(0.03, max(y - 0.02, 0.06),
+        # v117: new real-data instruments panel
+        _usb_n   = int(p.get("usb_wifi_count", 0)) if p else 0
+        _usb_ifs = p.get("usb_wifi_adapters", []) if p else []
+        _lan_dev = int(p.get("lan_active_devices", 0)) if p else 0
+        _lan_pkt = float(p.get("lan_total_pkt_s", 0.0)) if p else 0.0
+        _lan_ifs = p.get("lan_active_ifaces", []) if p else []
+        _lan_h   = bool(p.get("lan_presence_hint", False)) if p else False
+        _cog_occ2= int(p.get("cog_spec_occupied", 0)) if p else 0
+        _cog_tot2= int(p.get("cog_spec_bands", 0)) if p else 0
+        _ble_cnt  = sum(1 for i in bus.get("instruments", [])
+                        if i.get("kind") == "bluetooth" and i.get("connected"))
+        _ble_ents = int(p.get("rf_link_entity_count", 0) or 0)
+        _esp32_fr = int(getattr(getattr(self.fuser, "esp32_csi_server", None), "_frames", 0))
+        _extra = (
+            f"  Extra WiFi adapters:  {_usb_n} ({', '.join(_usb_ifs) or 'none — plug USB dongle for 2nd receiver'})\n"
+            f"  LAN traffic sensor:  {_lan_dev} active ifaces ({', '.join(_lan_ifs) or 'quiet'})  "
+            f"{_lan_pkt:.0f} pkt/s  {'● PRESENCE' if _lan_h else '○'}\n"
+            f"  CogSpec occupancy:   {_cog_occ2}/{_cog_tot2} bands occupied "
+            f"(energy+cyclostationary, real RSSI→IQ)\n"
+            f"  BLE radio:           {'connected' if _ble_cnt else 'blocked/absent'}  "
+            f"entities in pool: {_ble_ents}\n"
+            f"  ESP32 CSI ingest:    {_esp32_fr} frames (--csi-port 5001)  "
+            f"POST /api/scan for phones (--web-viewer port 8765)"
+        )
+        ax2.text(0.03, max(y - 0.02, 0.06), _extra,
+                 transform=ax2.transAxes, color='#88ffcc', fontsize=7.5, va='top',
+                 family='monospace')
+        ax2.text(0.03, max(y - 0.16, 0.01),
                  "A router is the seed instrument. Any instrument that connects (SDR, antenna\n"
                  "array, cell modem, GNSS/satellite) adds its real data and its own view — the\n"
                  "global picture grows with the hardware. No fabricated data fills the gaps.",
@@ -5048,11 +5114,12 @@ _REMOTE_SENDER_SNIPPET = (
     "<style>body{background:#050505;color:#00ffcc;font-family:monospace;padding:14px}"
     "pre{background:#0a1014;border:1px solid #0aa5;padding:10px;white-space:pre-wrap}</style></head><body>"
     "<h2>N.E.P.A. multi-node REAL-DATA ingest</h2>"
-    "<p>Run this on ANY device (phone via Termux, laptop, Raspberry Pi) to send its OWN real WiFi"
-    " scan to this host. Replace HOST with this server's IP. Every node = a real receiver.</p>"
+    "<p>Run this on ANY device (phone/Termux, laptop, Raspberry Pi, router) to become a real sensor node.</p>"
+    "<p><b>Option A (ingest server, port 8770):</b> POST /ingest with JSON emitters list</p>"
+    "<p><b>Option B (web server, port 8765):</b> POST /api/scan — same format, also GET /api/state + /api/world for phone apps</p>"
     "<pre>"
     "import urllib.request, json, subprocess, socket, time\n"
-    "HOST = 'http://HOST_IP:INGEST_PORT/ingest'\n"
+    "HOST = 'http://HOST_IP:8765/api/scan'  # web viewer port (or :8770/ingest)\n"
     "def scan():\n"
     "    try:\n"
     "        out = subprocess.run(['nmcli','-t','-f','BSSID,SSID,FREQ,SIGNAL','dev','wifi','list'],\n"
@@ -5070,14 +5137,22 @@ _REMOTE_SENDER_SNIPPET = (
     "        except Exception: pass\n"
     "    return ems\n"
     "while True:\n"
-    "    rep = {'node_id':socket.gethostname(),'kind':'wifi','emitters':scan(),'ts':time.time()}\n"
+    "    # /api/scan uses 'ssids' key; /ingest uses 'emitters' — both accepted\n"
+    "    scans = scan()\n"
+    "    rep = {'node_id':socket.gethostname(),'kind':'phone',\n"
+    "           'ssids':scans,'emitters':scans,'ts':time.time()}\n"
     "    try:\n"
     "        urllib.request.urlopen(urllib.request.Request(HOST, data=json.dumps(rep).encode(),\n"
     "            headers={'Content-Type':'application/json'}), timeout=5)\n"
-    "        print('sent', len(rep['emitters']), 'emitters')\n"
+    "        print('sent', len(scans), 'APs')\n"
     "    except Exception as e: print('send failed', e)\n"
     "    time.sleep(5)\n"
-    "</pre><p>Connected nodes: <a href='/nodes' style='color:#0fc'>/nodes</a></p></body></html>"
+    "</pre>"
+    "<p>Phone/app GET endpoints: "
+    "<a href='/api/state' style='color:#0fc'>/api/state</a> · "
+    "<a href='/api/world' style='color:#0fc'>/api/world</a></p>"
+    "<p>Connected nodes: <a href='/nodes' style='color:#0fc'>/nodes (ingest server)</a></p>"
+    "</body></html>"
 )
 
 
@@ -5376,8 +5451,112 @@ class WebViewerServer:
                           "history":    sem.state_history(10)}
                          if sem else {"state": "N/A", "frames_in_state": 0})
                     self._send(200, "application/json", _j.dumps(d).encode())
+                elif p == "/api/state":
+                    # v118 T-PHONE: lightweight JSON state for mobile companion apps
+                    import json as _j
+                    pp = getattr(srv.fuser, "psych_profile", {})
+                    pm = getattr(srv.fuser, "planet_map", None)
+                    _pmst = pm.status() if pm is not None else {}
+                    self._send(200, "application/json", _j.dumps({
+                        "presence":        bool(pp.get("rssi_presence", False)),
+                        "motion":          round(float(pp.get("rssi_motion", 0.0)), 3),
+                        "person_count":    int(pp.get("person_count", 0)),
+                        "semantic_state":  str(pp.get("semantic_state", "ROOM_EMPTY")),
+                        "carriers":        int(pp.get("combined_carrier_count", 0)),
+                        "remote_nodes":    int(pp.get("remote_node_count", 0)),
+                        "movers":          int(pp.get("network_movers", 0)),
+                        "cog_occupied":    int(pp.get("cog_spec_occupied", 0)),
+                        "cog_bands":       int(pp.get("cog_spec_bands", 0)),
+                        "lan_pkt_s":       round(float(pp.get("lan_total_pkt_s", 0.0)), 1),
+                        "lat":             round(float(_pmst.get("lat") or 0.0), 5),
+                        "lon":             round(float(_pmst.get("lon") or 0.0), 5),
+                        "city":            str(_pmst.get("city", "?")),
+                    }).encode())
+                elif p == "/api/world":
+                    # v118 T-PHONE: full carrier list for planet-map phone overlay
+                    import json as _j
+                    pp = getattr(srv.fuser, "psych_profile", {})
+                    ents = pp.get("rf_link_entities", []) or []
+                    self._send(200, "application/json", _j.dumps({
+                        "carriers": [
+                            {"id": e.get("id","?"), "bssid": e.get("bssid","?"),
+                             "rssi_dbm": e.get("rssi_dbm",-100.0),
+                             "range_m": e.get("range_m", None),
+                             "freq_mhz": e.get("freq_mhz", 0.0),
+                             "band": e.get("band","?"),
+                             "motion": e.get("link_motion", 0.0),
+                             "source": e.get("source","wifi"),
+                             "kind": e.get("kind","AP")}
+                            for e in ents[:128]
+                        ],
+                        "movers":       int(pp.get("network_movers", 0)),
+                        "remote_nodes": int(pp.get("remote_node_count", 0)),
+                        "cog_occupied": int(pp.get("cog_spec_occupied", 0)),
+                    }).encode())
                 else:
                     self._send(404, "text/plain", b"not found")
+
+            def do_POST(self):
+                # v118 T-PHONE: POST /api/scan — phones/computers POST real WiFi + BLE scans
+                # and join the distributed sensor mesh, contributing real RF data exactly like
+                # RemoteSensorIngestServer nodes. No fabricated data — device registers only when
+                # it actually sends a real scan.
+                p = self.path.split("?")[0]
+                if p != "/api/scan":
+                    self._send(404, "text/plain", b"not found"); return
+                try:
+                    import json as _j, time as _pt
+                    n = int(self.headers.get("Content-Length", 0) or 0)
+                    body = self.rfile.read(n) if n > 0 else b"{}"
+                    data = _j.loads(body.decode("utf-8", "ignore"))
+                    node_id = str(data.get("node_id", "phone"))[:48]
+                    kind = str(data.get("kind", "phone"))[:24]
+                    ssids = data.get("ssids", []) or []
+                    ble   = data.get("ble",   []) or []
+                    rn = getattr(srv.fuser, "remote_nodes", None)
+                    if rn is None:
+                        srv.fuser.remote_nodes = {}; rn = srv.fuser.remote_nodes
+                    rec = rn.get(node_id, {"first_seen": _pt.time(), "count": 0,
+                                           "chist": {}, "kind": kind, "emitters": []})
+                    # Build unified emitter list (WiFi APs + BLE devices)
+                    emitters = [
+                        {"ssid": s.get("ssid","?"), "bssid": s.get("bssid","?"),
+                         "rssi_dbm": float(s.get("rssi_dbm",-100.0)),
+                         "freq_mhz": float(s.get("freq_mhz", 2437.0)),
+                         "signal": float(s.get("rssi_dbm",-100.0))}
+                        for s in ssids
+                    ] + [
+                        {"ssid": b.get("name", b.get("mac","BLE")),
+                         "bssid": b.get("mac","?"),
+                         "rssi_dbm": float(b.get("rssi_dbm",-90.0)),
+                         "freq_mhz": 2441.0,
+                         "signal": float(b.get("rssi_dbm",-90.0))}
+                        for b in ble
+                    ]
+                    # Accumulate RSSI history per carrier for device-free correlation
+                    chist = rec.get("chist", {})
+                    for em in emitters:
+                        bid = em.get("bssid","?")
+                        ch = chist.setdefault(bid, [])
+                        ch.append(em["rssi_dbm"])
+                        if len(ch) > 120: del ch[:-120]
+                    if len(chist) > 256:
+                        for b in list(chist.keys())[:-256]: del chist[b]
+                    rec.update({"last_seen": _pt.time(), "kind": kind,
+                                "count": rec.get("count",0) + 1,
+                                "emitter_count": len(emitters),
+                                "emitters": emitters[:128],
+                                "chist": chist,
+                                "lat": data.get("lat"), "lon": data.get("lon")})
+                    rn[node_id] = rec
+                    self._send(200, "application/json", _j.dumps({
+                        "ok": True, "node_id": node_id,
+                        "nodes": len(rn),
+                        "emitters_accepted": len(emitters),
+                    }).encode())
+                except Exception as e:
+                    self._send(400, "application/json",
+                               f'{{"ok":false,"error":"{type(e).__name__}"}}'.encode())
 
             def _send(self, code, ctype, body):
                 self.send_response(code)
@@ -20194,6 +20373,149 @@ import os as _ib_os
 import time as _ib_time
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# v118: ESP32CSIIngestServer — real per-subcarrier CSI from a $9 ESP32
+# (Examplecode5/esp-csi, Examplecode6/ESP32-CSI-Tool). Any ESP32 running the
+# esp-csi firmware POSTs its raw CSI CSV line via UDP to port 5001; we parse
+# the complex CSI vector [im0 re0 im1 re1 ...] into a numpy complex array and
+# inject it into PassiveRadarPipeline.process() as real channel-sounding data.
+# This upgrades every household WiFi router+ESP32 pair into a CSI radar node.
+# ════════════════════════════════════════════════════════════════════════════
+
+class ESP32CSIIngestServer:
+    """Receive ESP32 CSI frames via UDP, parse per-subcarrier complex IQ, inject into radar.
+
+    ESP32 sends lines of the form:
+        TYPE,ID,MAC,RSSI,RATE,...,LEN,FIRST_WORD,[im0 re0 im1 re1 ...]
+    (Examplecode5 csi_data_read_parse.py + Examplecode6 parse_csi.py).
+
+    Parsed output per frame:
+      • complex numpy array of length (NFFT) — direct CSI IQ subcarriers
+      • mac, rssi_dbm (the RSSI the ESP32 measured on receive)
+    Injected into fuser.router_csi._csi_deque for PassiveRadarPipeline consumption.
+    Also added to fuser.remote_nodes as a high-refresh-rate CSI sensor node.
+    """
+
+    # Column indices in the default ESP32 CSI CSV format (esp-csi / ESP32-CSI-Tool)
+    _COL_MAC   = 2
+    _COL_RSSI  = 3
+    _COL_LEN   = 22   # field before the raw data
+    _COL_DATA  = -1   # last field: "[im0 re0 im1 re1 ...]"
+
+    def __init__(self, fuser, port: int = 5001):
+        self.fuser  = fuser
+        self.port   = port
+        self._sock  = None
+        self._thread = None
+        self._running = False
+        self._frames  = 0
+
+    def _parse_csi_line(self, line: str):
+        """Parse one ESP32 CSI CSV line → (mac, rssi_dbm, complex_iq array) or None."""
+        try:
+            import re as _re
+            line = line.strip()
+            if not line:
+                return None
+            # Extract bracketed raw CSI data
+            m = _re.search(r"\[([^\]]+)\]", line)
+            if m is None:
+                return None
+            raw_ints = [int(x) for x in m.group(1).split() if x.strip().lstrip("-").isdigit()]
+            if len(raw_ints) < 4:
+                return None
+            # Interleaved imaginary/real from ESP32 firmware
+            n = len(raw_ints) // 2
+            iq = np.array([raw_ints[2*i+1] + 1j*raw_ints[2*i] for i in range(n)],
+                          dtype=np.complex128)
+            # Parse MAC and RSSI from CSV fields
+            fields = line.split(",")
+            mac = fields[self._COL_MAC].strip() if len(fields) > self._COL_MAC else "?"
+            rssi_dbm = float(fields[self._COL_RSSI]) if len(fields) > self._COL_RSSI else -80.0
+            return mac, rssi_dbm, iq
+        except Exception:
+            return None
+
+    def _recv_loop(self):
+        import socket as _sock_mod, time as _et
+        try:
+            self._sock = _sock_mod.socket(_sock_mod.AF_INET, _sock_mod.SOCK_DGRAM)
+            self._sock.setsockopt(_sock_mod.SOL_SOCKET, _sock_mod.SO_REUSEADDR, 1)
+            self._sock.bind(("", self.port))
+            self._sock.settimeout(1.0)
+            log.info(f"[ESP32-CSI] Listening for ESP32 CSI frames on UDP port {self.port}")
+            while self._running:
+                try:
+                    data, addr = self._sock.recvfrom(4096)
+                except _sock_mod.timeout:
+                    continue
+                try:
+                    line = data.decode("utf-8", "ignore")
+                    parsed = self._parse_csi_line(line)
+                    if parsed is None:
+                        continue
+                    mac, rssi_dbm, iq = parsed
+                    self._frames += 1
+                    node_id = f"esp32:{mac}"
+                    # Inject into RouterCSICapture._last_csi (the main CSI path — passes through
+                    # PassiveRadarPipeline on next fuser loop cycle via router_csi.capture()).
+                    rc = getattr(self.fuser, "router_csi", None)
+                    if rc is not None:
+                        n_sc = getattr(rc, "CSI_SUBCARRIERS", 64)
+                        csi_resize = np.resize(iq.astype(np.complex128), n_sc)
+                        # Apply ESP32 phase sanitization (unwrap + de-trend + Hampel)
+                        # before injecting into the radar pipeline — same processing as
+                        # the built-in esp32_udp path (ESPCSIPhaseSanitizer).
+                        san = getattr(self.fuser, "phase_sanitizer", None)
+                        if san is not None:
+                            try:
+                                csi_resize = san.sanitize(csi_resize)
+                            except Exception:
+                                pass
+                        mag = np.max(np.abs(csi_resize)) + 1e-9
+                        csi_norm = (csi_resize / mag).astype(np.complex64)
+                        with rc._lock:
+                            rc._last_csi = csi_norm
+                            rc._last_rssi_dBm = float(rssi_dbm)
+                            rc._method_used = "esp32_external"
+                    # Also register as remote node for entity/carrier display
+                    rn = getattr(self.fuser, "remote_nodes", None)
+                    if rn is None:
+                        self.fuser.remote_nodes = {}; rn = self.fuser.remote_nodes
+                    rec = rn.get(node_id, {"first_seen": _et.time(), "count": 0,
+                                           "chist": {}, "kind": "esp32_csi"})
+                    ch = rec.setdefault("chist", {}).setdefault(mac, [])
+                    ch.append(rssi_dbm)
+                    if len(ch) > 120: del ch[:-120]
+                    rec.update({
+                        "last_seen": _et.time(), "kind": "esp32_csi",
+                        "count": rec.get("count", 0) + 1,
+                        "emitters": [{"ssid": f"ESP32:{mac[-5:]}", "bssid": mac,
+                                       "rssi_dbm": rssi_dbm, "freq_mhz": 2437.0,
+                                       "signal": rssi_dbm}],
+                        "emitter_count": 1, "csi_subcarriers": int(iq.size),
+                    })
+                    rn[node_id] = rec
+                except Exception as _ef:
+                    log.debug(f"[ESP32-CSI] frame error: {_ef}")
+        except Exception as _ex:
+            log.warning(f"[ESP32-CSI] recv loop: {_ex}")
+        finally:
+            if self._sock:
+                try: self._sock.close()
+                except Exception: pass
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._recv_loop, daemon=True, name="ESP32CSIIngest")
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+
+
 class BusInstrument:
     """Base class for a real sensory data source on the multi-instrument bus.
 
@@ -20262,6 +20584,9 @@ class BluetoothInstrument(BusInstrument):
     def __init__(self):
         super().__init__("bluetooth-radio")
         self._devices = {}
+        self._ble_cache: list = []          # v118: real BLE RSSI from async scan
+        self._scan_lock = threading.Lock()
+        self._scan_running = False
 
     def probe(self) -> bool:
         # v113 ACCURACY FIX: determine adapter EXISTENCE from /sys/class/bluetooth (which lists
@@ -20310,13 +20635,116 @@ class BluetoothInstrument(BusInstrument):
         if not self.connected:
             return {}
         try:
+            # List known devices
             out = _ib_subprocess.run(["bluetoothctl", "devices"], capture_output=True,
                                      text=True, timeout=4.0).stdout
-            devs = [ln.split(" ", 2) for ln in out.splitlines() if ln.startswith("Device")]
-            self.last = {"device_count": len(devs)}
+            devs_raw = [ln.split(" ", 2) for ln in out.splitlines() if ln.startswith("Device")]
+            # For paired/connected devices, get real RSSI via bluetoothctl info
+            direct_ents = []
+            for parts in devs_raw[:6]:
+                if len(parts) < 2:
+                    continue
+                mac = parts[1].strip()
+                name = parts[2].strip() if len(parts) > 2 else mac
+                try:
+                    info_out = _ib_subprocess.run(
+                        ["bluetoothctl", "info", mac],
+                        capture_output=True, text=True, timeout=2.5
+                    ).stdout
+                    for il in info_out.splitlines():
+                        il = il.strip()
+                        if il.startswith("RSSI:"):
+                            rssi_str = il.split(":", 1)[1].strip().split()[0]
+                            rssi_dbm = float(rssi_str)
+                            if rssi_dbm > -89.0:   # real measurement, not default
+                                direct_ents.append({
+                                    "ssid": name, "mac": mac,
+                                    "rssi_dbm": rssi_dbm, "freq_mhz": 2441.0,
+                                    "kind": "BLE", "source": "bluetooth",
+                                })
+                            break
+                except Exception:
+                    pass
+            # Merge in async scan results (may have more devices with real RSSI)
+            with self._scan_lock:
+                cached = list(self._ble_cache)
+            seen_macs = {e["mac"] for e in direct_ents}
+            for c in cached:
+                if c["mac"] not in seen_macs:
+                    direct_ents.append(c)
+            # Kick off next async BLE scan if not already running
+            if not self._scan_running:
+                self._scan_running = True
+                threading.Thread(target=self._run_async_scan, daemon=True,
+                                 name="BLE-scan").start()
+            self.last = {
+                "device_count": len(devs_raw),
+                "ble_entities": direct_ents,
+                "ble_entity_count": len(direct_ents),
+            }
             return self.last
-        except Exception:
+        except Exception as e:
+            log.debug(f"[BT] poll: {e}")
             return {}
+
+    def _run_async_scan(self):
+        """v118: background 3-second BLE passive scan — captures real RSSI from nearby advertisers
+        (phones, earbuds, smart-home devices). Parses [CHG] Device MAC RSSI: -NN from bluetoothctl
+        scan output. Updates _ble_cache; poll() merges cache into entities on next cycle."""
+        try:
+            import time as _btt
+            proc = _ib_subprocess.Popen(
+                ["bluetoothctl"],
+                stdin=_ib_subprocess.PIPE,
+                stdout=_ib_subprocess.PIPE,
+                stderr=_ib_subprocess.STDOUT,
+                text=True
+            )
+            try:
+                proc.stdin.write("scan on\n"); proc.stdin.flush()
+                _btt.sleep(3.0)
+                proc.stdin.write("scan off\n"); proc.stdin.flush()
+                _btt.sleep(0.3)
+            finally:
+                proc.terminate()
+            out = proc.stdout.read()
+            ble_found: dict = {}   # mac -> (name, best_rssi)
+            for ln in out.splitlines():
+                if "Device" not in ln:
+                    continue
+                parts = ln.split()
+                mac = next((p for p in parts
+                            if len(p.split(":")) == 6 and all(len(h) <= 2 for h in p.split(":"))),
+                           None)
+                if mac is None:
+                    continue
+                if "RSSI:" in ln:
+                    try:
+                        ri = parts.index("RSSI:") + 1
+                        rssi = float(parts[ri])
+                        prev = ble_found.get(mac, (mac, -999.0))
+                        ble_found[mac] = (prev[0], max(rssi, prev[1]))
+                    except Exception:
+                        pass
+                elif "[NEW] Device" in ln and len(parts) >= 4:
+                    name = " ".join(parts[3:]) if len(parts) > 3 else mac
+                    if mac not in ble_found:
+                        ble_found[mac] = (name, -90.0)
+                    else:
+                        ble_found[mac] = (name, ble_found[mac][1])
+            new_cache = [
+                {"ssid": name, "mac": mac, "rssi_dbm": rssi,
+                 "freq_mhz": 2441.0, "kind": "BLE", "source": "bluetooth"}
+                for mac, (name, rssi) in ble_found.items()
+                if rssi > -89.0
+            ]
+            with self._scan_lock:
+                self._ble_cache = new_cache
+            log.debug(f"[BLE-scan] {len(new_cache)} devices with real RSSI")
+        except Exception as e:
+            log.debug(f"[BLE-scan] {e}")
+        finally:
+            self._scan_running = False
 
 
 class SDRInstrument(BusInstrument):
@@ -20581,6 +21009,144 @@ class SoftwareDefinedTunerInstrument(BusInstrument):
         return st
 
 
+class USBWiFiAdapterInstrument(BusInstrument):
+    """v117: Detect additional real WiFi interfaces (USB dongles, PCIe cards, etc.)
+    beyond the primary system wlo1/wlan0. Each extra adapter = an independent RSSI
+    receiver on possibly a different band — more simultaneous carrier correlation
+    channels without any extra cost. Reads /proc/net/dev + sysfs for real state."""
+    kind = "usb_wifi"
+    capabilities = {"rssi", "range", "spectrum", "multi_emitter", "second_receiver"}
+
+    def __init__(self):
+        super().__init__("usb-wifi-adapter")
+        self._ifaces: list = []
+
+    def probe(self) -> bool:
+        found = []
+        try:
+            # All wireless interfaces via sysfs — excludes loopback and ethernet
+            import os as _os2
+            wdir = "/sys/class/net"
+            for iface in _os2.listdir(wdir):
+                if iface in ("lo",):
+                    continue
+                if _os2.path.isdir(_os2.path.join(wdir, iface, "wireless")):
+                    # Skip the primary iface (usually wlo1 or wlan0 — already in WiFiInstrument)
+                    if iface not in ("wlo1", "wlan0"):
+                        found.append(iface)
+        except Exception:
+            pass
+        self._ifaces = found
+        self.connected = bool(found)
+        if found:
+            self.note = f"extra WiFi ifaces: {', '.join(found)} — independent RSSI receivers"
+        else:
+            self.note = "no extra WiFi adapters (USB dongle adds a 2nd receiver)"
+        return self.connected
+
+    def poll(self) -> dict:
+        if not self.connected:
+            return {}
+        results = {}
+        for iface in self._ifaces:
+            try:
+                import subprocess as _sp2
+                r = _sp2.run(["iw", "dev", iface, "link"], capture_output=True, text=True, timeout=3.0)
+                rssi = None
+                for ln in r.stdout.splitlines():
+                    ln = ln.strip()
+                    if "signal:" in ln:
+                        try:
+                            rssi = float(ln.split("signal:")[1].split()[0])
+                        except Exception:
+                            pass
+                results[iface] = {"rssi_dbm": rssi}
+            except Exception:
+                results[iface] = {}
+        self.last = {"adapters": self._ifaces, "count": len(self._ifaces), "links": results}
+        return self.last
+
+
+class NetworkTrafficInstrument(BusInstrument):
+    """v117: Real LAN traffic as a presence/motion indicator — reads /proc/net/dev every
+    second, computes per-interface packet and byte rate. Traffic bursts (devices sending
+    data) correlate with human presence and motion (screen-on, voice activity, etc.)
+    without needing any extra hardware. True engineering bypass: the LAN IS a sensor."""
+    kind = "nettraffic"
+    capabilities = {"presence", "activity", "lan_sensors"}
+
+    def __init__(self):
+        super().__init__("lan-traffic-sensor")
+        self._prev: dict = {}
+        self._prev_t: float = 0.0
+        self._rates: dict = {}
+
+    def probe(self) -> bool:
+        try:
+            import os as _os3
+            self.connected = _os3.path.exists("/proc/net/dev")
+            self.note = ("real LAN traffic sensor (device presence via packet rate)"
+                         if self.connected else "/proc/net/dev not available")
+        except Exception:
+            self.connected = False
+            self.note = "unavailable"
+        return self.connected
+
+    def _read_proc_net_dev(self) -> dict:
+        """Parse /proc/net/dev → {iface: {rx_bytes, tx_bytes, rx_packets, tx_packets}}."""
+        stats = {}
+        try:
+            with open("/proc/net/dev") as f:
+                for ln in f:
+                    ln = ln.strip()
+                    if ":" not in ln:
+                        continue
+                    iface, rest = ln.split(":", 1)
+                    iface = iface.strip()
+                    vals = rest.split()
+                    if len(vals) >= 9:
+                        stats[iface] = {
+                            "rx_bytes":   int(vals[0]), "rx_packets": int(vals[1]),
+                            "tx_bytes":   int(vals[8]), "tx_packets": int(vals[9]),
+                        }
+        except Exception:
+            pass
+        return stats
+
+    def poll(self) -> dict:
+        if not self.connected:
+            return {}
+        now = _ib_time.time()
+        cur = self._read_proc_net_dev()
+        dt = max(now - self._prev_t, 0.5) if self._prev_t else 1.0
+        rates = {}
+        for iface, s in cur.items():
+            if iface in ("lo",) or iface.startswith("docker") or iface.startswith("br-"):
+                continue
+            prev = self._prev.get(iface, {})
+            rx_rate = (s["rx_bytes"] - prev.get("rx_bytes", s["rx_bytes"])) / dt
+            tx_rate = (s["tx_bytes"] - prev.get("tx_bytes", s["tx_bytes"])) / dt
+            pkt_rate = (s["rx_packets"] - prev.get("rx_packets", s["rx_packets"]) +
+                        s["tx_packets"] - prev.get("tx_packets", s["tx_packets"])) / dt
+            rates[iface] = {
+                "rx_bps":  round(max(rx_rate, 0.0), 1),
+                "tx_bps":  round(max(tx_rate, 0.0), 1),
+                "pkt_s":   round(max(pkt_rate, 0.0), 1),
+                "active":  bool(pkt_rate > 2.0),
+            }
+        self._prev = cur
+        self._prev_t = now
+        self._rates = rates
+        active_ifaces = [i for i, r in rates.items() if r.get("active")]
+        self.last = {
+            "iface_count": len(rates),
+            "active_ifaces": active_ifaces,
+            "active_count": len(active_ifaces),
+            "total_pkt_s": round(sum(r["pkt_s"] for r in rates.values()), 1),
+        }
+        return self.last
+
+
 class InstrumentBus:
     """Registry + fusion layer for every connected real instrument.
 
@@ -20623,6 +21189,9 @@ class InstrumentBus:
             AntennaArrayInstrument(),
             CellModemInstrument(),
             GNSSInstrument(),
+            # v117: new real instruments — no extra hardware needed
+            USBWiFiAdapterInstrument(),      # extra WiFi interfaces (USB dongles etc.)
+            NetworkTrafficInstrument(),      # real LAN traffic as presence sensor
         ]
         if self.simulate:
             # v94: SIMULATED virtual instruments (clearly flagged) — they unlock the full vision
@@ -21068,6 +21637,16 @@ class RFLinkCorrelationEngine:
         T = min(len(hist_map[i]) for i in ids)
         T = min(T, 120)
         M = np.array([np.asarray(hist_map[i][-T:], dtype=np.float64) for i in ids])  # (L,T)
+        # v118: apply Butterworth lowpass per-link before correlation (from KrakenSDR signal_utils).
+        # Scan rate ≈ 1 Hz; motion band is 0.05–0.5 Hz; cut at 0.45 (half-Nyquist → body motion).
+        # Filters thermal + scan-interval jitter while preserving body-induced link variation.
+        if T >= 16:
+            try:
+                from scipy.signal import butter as _butter, lfilter as _lfilter
+                _b, _a = _butter(3, 0.45, btype="low", analog=False)
+                M = np.vstack([_lfilter(_b, _a, row) for row in M])
+            except Exception:
+                pass   # scipy missing or T too short — proceed without filter
         # mean-remove + unit-variance per link (correlation form; error-robust)
         M = M - M.mean(axis=1, keepdims=True)
         sd = M.std(axis=1, keepdims=True)
@@ -36730,8 +37309,11 @@ class Pass52SensorFusion:
             result['p52_pointcloud_z_max'] = 0.0
 
         # ── Synthetic person tracking ───────────────────────────────────────
-        n_persons = int(psych_profile.get('w3d_person_count', 1))
-        n_persons = max(1, min(n_persons, 6))
+        # v117: gate on body-sensing being active (w3d_person_count>0 already means
+        # vitals_mode in real/simulated — v110). With no body sensor, force to 0 so
+        # the Lissajous synthetic skeleton does not appear in the motion tab.
+        _w3d_cnt = int(psych_profile.get('w3d_person_count', 0))
+        n_persons = max(0, min(_w3d_cnt, 6))
         skel_list = []
         for pid in range(n_persons):
             person_state = self.person_tracker.update(pid, t=self._t,
@@ -46357,7 +46939,7 @@ class RouterCSICapture:
         self._passive_frames = None
         self._passive_scapy = None
         # Pass 25/30: real-capture set — methods that read genuine instrument data
-        self._real_methods = {"nexmon_udp", "esp32_udp", "passive_sniff",
+        self._real_methods = {"nexmon_udp", "esp32_udp", "esp32_external", "passive_sniff",
                               "ssh_proc_wireless", "proc_net_wireless",
                               "proc_wireless+multi_ap", "ioctl_siocgiwstats",
                               "iw_station", "iwconfig", "rtl_sdr", "hackrf", "soapy_sdr"}
@@ -47237,7 +47819,7 @@ class HighGHzSpectrumAnalyzer:
         # Cap the number of dwells so a sweep stays interactive.
         if len(centers) > 24:
             centers = np.linspace(f_lo + seg_bw / 2, f_hi - seg_bw / 2, 24)
-        all_freq, all_psd = [], []
+        all_freq, all_psd, _last_iq_burst = [], [], None
         for fc in centers:
             iq = self._capture_iq(fc)
             if iq is None or len(iq) < 256:
@@ -47245,6 +47827,7 @@ class HighGHzSpectrumAnalyzer:
             foff, psd = self._welch_psd(iq, fs)
             all_freq.append(fc + foff)
             all_psd.append(psd)
+            _last_iq_burst = iq   # save for CognitiveSpectrumSensor
         if not all_psd:
             return None
         freq = np.concatenate(all_freq)
@@ -47273,6 +47856,9 @@ class HighGHzSpectrumAnalyzer:
             "snr_db": round(peak_db - noise_floor, 2),
             "occupancy": round(occupancy, 3),
             "n_bins": int(len(psd)),
+            # v117: preserve real IQ burst so CognitiveSpectrumSensor.sense_all_bands can
+            # run energy + cyclostationary detection on the actual captured samples.
+            "_iq_raw": _last_iq_burst,
         }
 
     def _analyze_band_estimate(self, name, f_lo, f_hi, hw_note):
@@ -47568,6 +48154,10 @@ class PassiveRadarPipeline:
         n = csi_now.size
         if n < 8:
             return {}
+        # v117: accumulate slow-time history so pass-44/45/46 can read _ref_history.
+        # (The deque was declared in __init__ but process() never appended — so all
+        # downstream code that checked len(_ref_history) >= 4 always fell through.)
+        self._ref_history.append(csi_now.copy())
         # Split the subcarrier vector: low half ≈ reference (direct path dominant),
         # full vector ≈ surveillance. (Single-stream passive-radar approximation.)
         ref = csi_now.copy()
@@ -54418,6 +55008,7 @@ class MultiAgentWirelessBCIFuser:
         # Pass 32 (T2): PassiveRadarPipeline — CAF + ECA clutter cancel + MUSIC DoA +
         # holographic SAR back-projection from the live CSI stream.
         self.radar = PassiveRadarPipeline()
+        self.passive_radar = self.radar    # v117: alias — loop code uses passive_radar name
         self._radar_csi_hist = deque(maxlen=32)    # slow-time CSI history for SAR
 
         # Pass 33 (TIER 3): WorldReconstructionEngine — surface mesh, body mesh,
@@ -54615,6 +55206,12 @@ class MultiAgentWirelessBCIFuser:
             "instruments": [],
             "multilat_fixes": [],
             "multilat_fix_count": 0,
+            "usb_wifi_count": 0,          # v117: extra WiFi adapters as independent receivers
+            "usb_wifi_adapters": [],
+            "lan_active_devices": 0,      # v117: real LAN traffic presence sensor
+            "lan_total_pkt_s": 0.0,
+            "lan_active_ifaces": [],
+            "lan_presence_hint": False,
             # List 3 fields
             "lyapunov": 0.0,            # 3.1 chaos / thought-burst indicator
             "complexity_mse": 0.0,      # 3.11 multi-scale entropy
@@ -54748,6 +55345,7 @@ class MultiAgentWirelessBCIFuser:
             "movement_event":       False,
             "cog_spec_occupied":    0,
             "cog_spec_bands":       0,
+            "cog_spec_results":     {},
             "w3d_person_count":     0,
             "w3d_persons":          [],
             "phase_sanitized":      False,
@@ -56582,6 +57180,26 @@ class MultiAgentWirelessBCIFuser:
                     self.psych_profile["tuner_active"] = True
                 else:
                     self.psych_profile["tuner_active"] = False
+                # v117: USB WiFi adapter — extra independent RSSI receivers
+                _usb_wifi = self.instrument_bus.get_instrument("usb_wifi")
+                if _usb_wifi is not None and _usb_wifi.connected:
+                    self.psych_profile["usb_wifi_adapters"] = _usb_wifi._ifaces
+                    self.psych_profile["usb_wifi_count"] = len(_usb_wifi._ifaces)
+                else:
+                    self.psych_profile["usb_wifi_adapters"] = []
+                    self.psych_profile["usb_wifi_count"] = 0
+                # v117: real LAN traffic as presence/activity sensor
+                _ntraffic = self.instrument_bus.get_instrument("nettraffic")
+                if _ntraffic is not None and _ntraffic.connected and _ntraffic.last:
+                    _nl = _ntraffic.last
+                    self.psych_profile["lan_active_devices"] = int(_nl.get("active_count", 0))
+                    self.psych_profile["lan_total_pkt_s"]    = float(_nl.get("total_pkt_s", 0.0))
+                    self.psych_profile["lan_active_ifaces"]  = _nl.get("active_ifaces", [])
+                    # Integrate LAN traffic activity into presence estimation (real data bypass)
+                    if float(_nl.get("total_pkt_s", 0.0)) > 5.0:
+                        self.psych_profile.setdefault("lan_presence_hint", True)
+                    else:
+                        self.psych_profile["lan_presence_hint"] = False
             except Exception as _bpe:
                 log.debug(f"[BUS] poll {_bpe}")
             # ── v92: CARRIER ERROR-CORRECTION + MULTI-CARRIER CORRELATION ──────
@@ -57001,6 +57619,29 @@ class MultiAgentWirelessBCIFuser:
                     "range_m": _rng, "link_var_db": _var, "link_motion": _mot,
                     "hist": _ha[-64:].tolist(),
                 })
+            # v118: inject real BLE ranging entities from BluetoothInstrument — each discovered
+            # BLE device is a second-radio receiver at 2.4 GHz with genuine RSSI → range.
+            try:
+                _bt_inst = self.instrument_bus.get_instrument("bluetooth")
+                if _bt_inst is not None and _bt_inst.connected and _bt_inst.last:
+                    for _bd in (_bt_inst.last.get("ble_entities", []) or []):
+                        _br_ble = float("nan")
+                        try: _br_ble = float(rssi_distance(_bd.get("rssi_dbm", -100.0)))
+                        except Exception: pass
+                        _ents.append({
+                            "id": f"BLE:{str(_bd.get('mac','?'))[-5:]}",
+                            "bssid": _bd.get("mac", "?"),
+                            "freq_mhz": float(_bd.get("freq_mhz", 2441.0)),
+                            "chan": 0, "band": "2.4GHz",
+                            "signal": float(_bd.get("rssi_dbm", -100.0)),
+                            "rssi_dbm": float(_bd.get("rssi_dbm", -100.0)),
+                            "security": "BLE", "rate": "BT",
+                            "range_m": _br_ble, "link_var_db": 0.0, "link_motion": 0.0,
+                            "hist": [],
+                            "kind": "BLE", "source": "bluetooth",
+                        })
+            except Exception as _ble_e:
+                log.debug(f"[BLE-ents] {_ble_e}")
             # v105: fuse REMOTE-NODE carriers into the pool — every device that POSTed its own
             # real WiFi scan contributes its carriers to ONE planet-scale real-data set ("mass
             # data correlation"). Tagged by source node; snapshot RSSI = their live reading; no
@@ -59973,6 +60614,47 @@ class MultiAgentWirelessBCIFuser:
                             wf_row.append(-120.0)
                     if wf_row:
                         self._spectrum_wf_history.append(wf_row)
+                    # v117: CognitiveSpectrumSensor — energy + cyclostationary detection.
+                    # For bands with real SDR IQ (_iq_raw set by _analyze_band_real), the
+                    # detectors run on genuine captured samples. For no-SDR bands, build a
+                    # proxy IQ from real RSSI measurements: each carrier's amplitude encodes
+                    # its measured power (10^((rssi+30)/20) in mW units) at its real offset
+                    # frequency. T_y = Σ|y|² then equals the real summed linear power in the
+                    # band — energy detector threshold is calibrated to the same noise scale,
+                    # so occupancy decisions reflect genuine measured signal energy.
+                    try:
+                        _cog_ents = self.psych_profile.get("rf_link_entities", [])
+                        _cog_fs   = 2.4e6          # reference sample-rate for proxy IQ
+                        _cog_N    = 512             # samples per proxy burst
+                        _cog_t    = np.arange(_cog_N) / _cog_fs
+                        for _cbn, _cbd in _survey.items():
+                            if not isinstance(_cbd, dict):
+                                continue
+                            if _cbd.get("_iq_raw") is not None:
+                                continue   # SDR IQ already present — use it directly
+                            _cf_lo = _cbd.get("f_lo", 0.0)
+                            _cf_hi = _cbd.get("f_hi", 1.0)
+                            _cf_c  = (_cf_lo + _cf_hi) / 2.0
+                            # collect real WiFi carriers whose frequency falls in this band
+                            _band_ents = [_e for _e in _cog_ents
+                                          if _cf_lo <= _e.get("freq_mhz", 0.0) * 1e6 <= _cf_hi]
+                            if not _band_ents:
+                                continue
+                            _iq_proxy = np.zeros(_cog_N, dtype=np.complex128)
+                            for _ce in _band_ents:
+                                # linear amplitude from real measured RSSI
+                                _A = 10.0 ** ((_ce.get("rssi_dbm", -90.0) + 30.0) / 20.0)
+                                _f_off = _ce.get("freq_mhz", 0.0) * 1e6 - _cf_c
+                                _iq_proxy += _A * np.exp(1j * 2 * np.pi * _f_off * _cog_t)
+                            _cbd["_iq_raw"] = _iq_proxy
+                        _cog_res = self.cog_spectrum.sense_all_bands(_survey)
+                        _cog_occ = sum(1 for _r in _cog_res.values() if _r.get("occupied"))
+                        self.psych_profile["cog_spec_occupied"] = _cog_occ
+                        self.psych_profile["cog_spec_bands"]    = len(_cog_res)
+                        self.psych_profile["cog_spec_results"]  = _cog_res
+                        log.debug(f"[CogSpec] {_cog_occ}/{len(_cog_res)} bands occupied")
+                    except Exception as _ce:
+                        log.debug(f"[CogSpec] {_ce}")
                 except Exception as _e:
                     log.debug(f"[Spectrum] sweep skipped: {_e}")
 
@@ -61028,6 +61710,11 @@ if __name__ == "__main__":
                              '(e.g. 8770). Remote devices (phones/laptops/routers) POST their own '
                              'real WiFi scans to http://<host>:<port>/ingest; they fuse as real '
                              'distributed sensors. 0 = disabled.')
+    parser.add_argument('--csi-port', type=int, default=0,
+                        help='v118: start the ESP32 CSI ingest server on this UDP port '
+                             '(e.g. 5001). Any ESP32 running esp-csi firmware can send real '
+                             'per-subcarrier CSI frames here; they feed the passive radar pipeline '
+                             'as real channel-sounding data. 0 = disabled.')
     parser.add_argument('--lsl', action='store_true',
                         help='Pass 34 (T-LSL): Open a Lab Streaming Layer outlet named NEPA_BCI '
                              'broadcasting 10-channel BCI band powers at target_fps Hz. '
@@ -61089,6 +61776,11 @@ if __name__ == "__main__":
     if getattr(args, "ingest_port", 0):
         fuser.ingest_server = RemoteSensorIngestServer(fuser, port=args.ingest_port)
         fuser.ingest_server.start()
+
+    # v118: --csi-port ESP32 real per-subcarrier CSI ingest (any ESP32 + esp-csi firmware)
+    if getattr(args, "csi_port", 0):
+        fuser.esp32_csi_server = ESP32CSIIngestServer(fuser, port=args.csi_port)
+        fuser.esp32_csi_server.start()
 
     # Pass 34 (T-LSL): --lsl BCI band-power LSL outlet
     if args.lsl:
