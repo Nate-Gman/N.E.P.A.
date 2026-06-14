@@ -2978,7 +2978,7 @@ class DetailTabWindow:
             lmc = '#ff4466' if lm > 0.5 else ('#ffaa33' if lm > 0.15 else '#5588aa')
             ax.add_patch(plt.Rectangle((0.05, 0.45), 0.90, 0.055, color='#26111a'))
             ax.add_patch(plt.Rectangle((0.05, 0.45), 0.90 * lm, 0.055, color=lmc, alpha=0.95))
-            ax.text(0.05, 0.515, f"link-motion {lm*100:.0f}%  (var {e['link_var_db']:.2f} dB)",
+            ax.text(0.05, 0.515, f"link-motion {lm*100:.0f}%  (var {e.get('link_var_db', 0.0):.2f} dB)",
                     color=lmc, fontsize=6.8)
             # RSSI history sparkline (real)
             h = np.asarray(e.get("hist", []), dtype=np.float64)
@@ -4847,33 +4847,51 @@ except ImportError:
 
 _WEB_HTML = (
     "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-    "<title>N.E.P.A. Live World View</title>"
-    "<style>body{background:#050505;color:#00ffcc;font-family:monospace;"
-    "margin:0;display:flex;flex-direction:column;align-items:center;height:100vh}"
-    "h1{font-size:1.1em;margin:8px 0;letter-spacing:2px}"
-    "#img{border:1px solid #00ffcc33;max-width:98vw;max-height:85vh;object-fit:contain}"
-    "#status{font-size:0.75em;color:#aaa;max-width:98vw;word-break:break-all;"
-    "height:2em;overflow:hidden;margin:4px}"
-    "#sem{font-size:0.9em;color:#ffaa22;margin:4px}"
+    "<title>N.E.P.A. Live Real-Data View</title>"
+    "<style>body{background:#050505;color:#00ffcc;font-family:monospace;margin:0;padding:8px}"
+    "h1{font-size:1.1em;margin:6px 0;letter-spacing:2px;text-align:center}"
+    ".row{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}"
+    ".card{flex:1;min-width:380px;max-width:49vw;border:1px solid #0aa3;border-radius:6px;padding:6px}"
+    ".card h2{font-size:0.85em;color:#88ccaa;margin:2px 0 6px}"
+    "img{width:100%;border:1px solid #00ffcc22;background:#000;object-fit:contain}"
+    "#status,#sem{font-size:0.8em;color:#aaa;text-align:center;margin:6px;word-break:break-all}"
+    "#sem{color:#ffaa22}"
     "</style></head><body>"
-    "<h1>N.E.P.A. &mdash; RF Gaussian-Splat World</h1>"
-    "<img id='img' src='/frame.jpg' alt='splat render' />"
+    "<h1>N.E.P.A. &mdash; LIVE REAL-DATA VIEW (browser)</h1>"
+    "<div class='row'>"
+    "<div class='card'><h2>PLANET MAP &mdash; real satellite imagery @ your location</h2>"
+    "<img id='planet' src='/planet.png' alt='planet map'/></div>"
+    "<div class='card'><h2>3D VIEW (real data) &mdash; pick below</h2>"
+    "<img id='tab' src='/tab.png?kind=geo3d' alt='3d tab'/>"
+    "<div id='tabs' style='text-align:center;margin-top:6px'></div></div>"
+    "</div>"
+    "<div class='row'><div class='card'><h2>RF Gaussian-Splat world (indoor reconstruction)</h2>"
+    "<img id='img' src='/frame.jpg' alt='splat render'/></div></div>"
     "<div id='sem'>Semantic: loading...</div>"
     "<div id='status'>Status: loading...</div>"
     "<script>"
+    "var TAB='geo3d';"
+    "var TABS=['geo3d','terrain3d','city3d','planetmap','entities','carrier','instrbus','rfmap','medical','bci','raw'];"
+    "var tb=document.getElementById('tabs');"
+    "TABS.forEach(function(k){var b=document.createElement('button');b.textContent=k;"
+    "b.style.cssText='margin:2px;background:#11333a;color:#0fc;border:1px solid #0aa5;cursor:pointer';"
+    "b.onclick=function(){TAB=k;document.getElementById('tab').src='/tab.png?kind='+k+'&t='+Date.now();};"
+    "tb.appendChild(b);});"
+    "function refreshTab(){document.getElementById('tab').src='/tab.png?kind='+TAB+'&t='+Date.now();}"
     "function refresh(){"
     "document.getElementById('img').src='/frame.jpg?t='+Date.now();"
     "fetch('/status').then(r=>r.json()).then(d=>{"
     "document.getElementById('status').textContent="
-    "'persons='+d.person_count+' threat='+d.threat.toFixed(2)+"
-    "' state='+d.overseer_state+' splats='+d.splat_count;"
+    "'node='+(d.city||'?')+' ('+d.lat+','+d.lon+') | carriers='+d.carriers+"
+    "' presence='+d.presence+' motion='+(d.motion*100).toFixed(0)+'% | persons='+d.person_count+"
+    "' threat='+d.threat.toFixed(2)+' state='+d.overseer_state;"
     "}).catch(()=>{});"
     "fetch('/semantic').then(r=>r.json()).then(d=>{"
-    "document.getElementById('sem').textContent='Semantic: '+d.state+"
-    "' ('+d.frames_in_state+'f)';"
+    "document.getElementById('sem').textContent='Semantic: '+d.state+' ('+d.frames_in_state+'f)';"
     "}).catch(()=>{});"
     "}"
-    "setInterval(refresh,200);refresh();"
+    "function refreshPlanet(){document.getElementById('planet').src='/planet.png?t='+Date.now();}"
+    "setInterval(refresh,250);setInterval(refreshPlanet,3000);setInterval(refreshTab,1500);refresh();"
     "</script></body></html>"
 )
 
@@ -4903,8 +4921,34 @@ class WebViewerServer:
         self._thread  = None
         self._server  = None
         self._running = False
+        self._tab_lock = threading.Lock()   # v103: serialise headless tab renders (mpl not thread-safe)
 
     # ── frame rendering ───────────────────────────────────────────────────────
+    # v103: render ANY DetailTabWindow tab headlessly to PNG so the full real UI is browsable
+    # without a matplotlib display backend (the NixOS 'I don't see it' fix, completed).
+    _WEB_TABS = ("geo3d", "terrain3d", "city3d", "planetmap", "entities", "carrier",
+                 "instrbus", "rfmap", "medical", "bci", "raw")
+
+    def _render_tab_png(self, kind: str) -> bytes:
+        import io as _io2
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        if kind not in self._WEB_TABS:
+            kind = "geo3d"
+        try:
+            with self._tab_lock:
+                fig = Figure(figsize=(11, 8)); fig.patch.set_facecolor('#050505')
+                FigureCanvasAgg(fig)
+                tab = DetailTabWindow(self.fuser, kind=kind)
+                p = getattr(self.fuser, "psych_profile", {})
+                snap = getattr(self.fuser, "_world_snapshot", {}) or {}
+                getattr(tab, f"_draw_{kind}")(fig, p, snap)
+                buf = _io2.BytesIO()
+                fig.savefig(buf, format="png", facecolor=fig.get_facecolor(), dpi=88)
+                return buf.getvalue()
+        except Exception as e:
+            log.debug(f"[WebViewer] tab render {kind}: {e}")
+            return b""
     def _render_frame_jpeg(self) -> bytes:
         wr = getattr(self.fuser, "world_recon", None)
         if wr is None:
@@ -4940,6 +4984,42 @@ class WebViewerServer:
             return buf.getvalue()
         return b""
 
+    def _render_planet_png(self) -> bytes:
+        """v102: serve the REAL satellite/OSM map of the node's location as a browser image —
+        so the user can SEE real data even when no matplotlib display backend is available.
+        Node marker drawn at the real location; pixels are real cartography. Encoded with
+        matplotlib (PNG) so no Pillow dependency is required."""
+        pm = getattr(self.fuser, "planet_map", None)
+        if pm is None:
+            return b""
+        with pm._lock:
+            img = None if pm.map_img is None else np.array(pm.map_img)
+            meta = dict(pm.map_meta)
+        if img is None:
+            try:
+                pm.build_map_async()
+            except Exception:
+                pass
+            img = np.zeros((180, 320, 3), np.float32)     # dark placeholder while fetching
+        else:
+            try:
+                h, w = img.shape[:2]
+                px = pm.latlon_to_px(meta.get("lat", 0), meta.get("lon", 0)) or (w / 2, h / 2)
+                ix, iy = int(np.clip(px[0], 0, w - 1)), int(np.clip(px[1], 0, h - 1))
+                img = img.copy()
+                rr = 7
+                img[max(0, iy - rr):iy + rr, max(0, ix - 1):ix + 2] = [1.0, 0.1, 0.25]
+                img[max(0, iy - 1):iy + 2, max(0, ix - rr):ix + rr] = [1.0, 0.1, 0.25]
+            except Exception:
+                pass
+        try:
+            import matplotlib.image as mpimg
+            buf = _io.BytesIO()
+            mpimg.imsave(buf, np.clip(img, 0, 1), format="png")
+            return buf.getvalue()
+        except Exception:
+            return b""
+
     # ── HTTP handler factory ──────────────────────────────────────────────────
     def _make_handler(self):
         srv = self
@@ -4955,11 +5035,19 @@ class WebViewerServer:
                     self._send(200, "text/html; charset=utf-8", body)
                 elif p == "/frame.jpg":
                     self._send(200, "image/jpeg", srv._render_frame_jpeg())
+                elif p == "/planet.png":
+                    self._send(200, "image/png", srv._render_planet_png())
+                elif p == "/tab.png":
+                    from urllib.parse import parse_qs, urlparse
+                    kind = parse_qs(urlparse(self.path).query).get("kind", ["geo3d"])[0]
+                    self._send(200, "image/png", srv._render_tab_png(kind))
                 elif p == "/stream":
                     self._mjpeg(srv)
                 elif p == "/status":
                     import json as _j
                     pp = getattr(srv.fuser, "psych_profile", {})
+                    pm = getattr(srv.fuser, "planet_map", None)
+                    _pmst = pm.status() if pm is not None else {}
                     d = {
                         "person_count":   int(pp.get("person_count", 0)),
                         "threat":         float(pp.get("threat_score", 0.0)),
@@ -4967,6 +5055,13 @@ class WebViewerServer:
                         "splat_count":    int(pp.get("recon_splat_count", 0)),
                         "bci_intent":     str(pp.get("bci_motor_intent", "REST")),
                         "semantic_state": str(pp.get("semantic_state", "ROOM_EMPTY")),
+                        # v102: real node location + live device-free sensing for the browser view
+                        "city":     str(_pmst.get("city", "?")),
+                        "lat":      round(float(_pmst.get("lat") or 0.0), 4),
+                        "lon":      round(float(_pmst.get("lon") or 0.0), 4),
+                        "carriers": int(len(pp.get("rf_link_entities", []) or [])),
+                        "presence": ("Y" if pp.get("rssi_presence") else "n"),
+                        "motion":   float(pp.get("rssi_motion", 0.0)),
                     }
                     self._send(200, "application/json", _j.dumps(d).encode())
                 elif p == "/semantic":
