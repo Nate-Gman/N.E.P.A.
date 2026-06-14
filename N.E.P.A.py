@@ -237,8 +237,11 @@ _warnings.filterwarnings("ignore", message="overflow encountered in multiply",
                          category=RuntimeWarning)
 
 # ── Logging (List 1.9 / 1.11) ─────────────────────────────────────────────────
+# v112: level is env-configurable (NEPA_LOGLEVEL=DEBUG surfaces swallowed-exception paths for
+# diagnostics). Defaults to INFO. Accepts DEBUG/INFO/WARNING/ERROR (case-insensitive).
+_NEPA_LVL = getattr(logging, str(os.environ.get("NEPA_LOGLEVEL", "INFO")).upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=_NEPA_LVL,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler(sys.stdout),
               logging.FileHandler('nepa_session.log', mode='a')]
@@ -1714,10 +1717,11 @@ class DetailTabWindow:
     Each tab can be opened in its own window. They share the fuser's live state.
     """
 
-    def __init__(self, fuser, kind="raw", entity_idx=None):
+    def __init__(self, fuser, kind="raw", entity_idx=None, entity_key=None):
         self.fuser = fuser
         self.kind = kind
-        self.entity_idx = entity_idx     # v101: which entity this window details (per-entity windows)
+        self.entity_idx = entity_idx     # v101: positional fallback
+        self.entity_key = entity_key     # v108: STABLE id (bssid/body-id) — fixes miscorrelation
         self._fig = None
         self._ani = None
 
@@ -1739,10 +1743,12 @@ class DetailTabWindow:
                  "terrain3d": "3D TERRAIN (REAL DEM)",
                  "city3d": "3D CITY (REAL OSM BUILDINGS)",
                  "geo3d": "UNIFIED 3D GEO-WORLD (REAL)",
+                 "remote": "REMOTE SENSOR NODES",
+                 "netspectrum": "PLANET MULTISPECTRUM OVERLAY",
                  "entitydetail": "ENTITY DETAIL",
                  "info": "SYSTEM INFO & ABOUT"}.get(self.kind, self.kind)
-        if self.kind == "entitydetail" and self.entity_idx is not None:
-            title = f"ENTITY #{self.entity_idx} DETAIL"
+        if self.kind == "entitydetail":
+            title = f"ENTITY {self.entity_key or ('#' + str(self.entity_idx))} DETAIL"
         self._fig = plt.figure(f"N.E.P.A. - {title}", figsize=(16, 10))
         self._fig.patch.set_facecolor('#050505')
         self._ani = FuncAnimation(self._fig, self._draw, interval=200,
@@ -1979,7 +1985,10 @@ class DetailTabWindow:
         if not nodes:
             lines.append("  (scanning for nodes...)")
         lines += ["", f"  Fixes: {len(fixes)}   Instruments: {len(insts)}   Blobs: {len(blobs)}"]
-        sat_nodes = snap.get("sat_descriptors", []) or p.get("satellite_nodes", [])
+        # v114: real source is snap["sat_descriptors"] (set from p83_sat_descriptors). The old
+        # `or p.get("satellite_nodes", [])` fallback read a key that is NEVER set anywhere — a
+        # dead phantom-default read; removed so the panel reflects only the real descriptor list.
+        sat_nodes = snap.get("sat_descriptors", []) or []
         if sat_nodes:
             lines += ["", "SATELLITE NODES:"]
             for sn in sat_nodes[:6]:
@@ -2811,7 +2820,8 @@ class DetailTabWindow:
         fig.suptitle(
             f"CARRIER CORRELATION + ERROR CORRECTION   ·   LIVE feed {_sr:.0f} Hz "
             f"({_sb} samp, {_ct} carriers, scan age {_age:.0f}s)   ·   "
-            f"device-free movers (RSSI subspace): {cnt if valid else '—'}   ·   coherence {coh*100:.0f}%",
+            f"device-free movers (RSSI subspace): {cnt if valid else '—'}   ·   "
+            f"coherence {(f'{coh*100:.0f}%' if valid else '— (need ≥3 live carriers)')}",
             color='#00ffcc', fontsize=11, fontweight='bold')
 
         # Panel 1 — live spectrum (refreshing)
@@ -3524,9 +3534,9 @@ class DetailTabWindow:
         gets its own pop-up detail window. 100% from the live profile; nothing invented."""
         ents = []
         for b in (p.get("person_entities", []) or []):
-            ents.append({"_t": "body", **b})
+            ents.append({"_t": "body", "_key": f"body:{b.get('id','?')}", **b})
         for e in (p.get("rf_link_entities", []) or []):
-            ents.append({"_t": "rf", **e})
+            ents.append({"_t": "rf", "_key": f"rf:{e.get('bssid', e.get('id','?'))}", **e})
         return ents
 
     def _draw_entitydetail(self, fig, p, snap):
@@ -3534,14 +3544,20 @@ class DetailTabWindow:
         instrument in its own tab/pop-up'. Body → vitals/position/gait/skeleton (provenance
         watermarked). RF carrier → band/freq/RSSI/range + real link-motion + RSSI-history."""
         ents = self._entity_list(p)
-        idx = self.entity_idx if self.entity_idx is not None else 0
-        if not ents or idx >= len(ents):
+        # v108: resolve by STABLE key so this window always tracks the SAME entity even as the
+        # carrier list re-sorts every frame (fixes the per-window miscorrelation). Positional
+        # index is only a fallback for windows opened before keys existed.
+        e = None
+        if self.entity_key is not None:
+            e = next((x for x in ents if x.get("_key") == self.entity_key), None)
+        if e is None and self.entity_idx is not None and self.entity_idx < len(ents):
+            e = ents[self.entity_idx]
+        if e is None:
             ax = fig.add_subplot(111); ax.axis('off')
-            ax.text(0.5, 0.5, f"Entity #{idx} no longer detected.\n"
+            ax.text(0.5, 0.5, f"Entity '{self.entity_key or self.entity_idx}' no longer detected.\n"
                     f"({len(ents)} entities currently live)", ha='center', va='center',
                     color='#ff8866', fontsize=13, transform=ax.transAxes)
             return
-        e = ents[idx]
         if e["_t"] == "body":
             _prov = e.get("provenance", "?")
             _col = '#ffaa00' if _prov == "SIMULATED" else '#00ffcc'
@@ -3598,8 +3614,131 @@ class DetailTabWindow:
                 axr.axis('off')
                 axr.text(0.5, 0.5, "building RSSI history…", ha='center', va='center',
                          color='#556', transform=axr.transAxes)
-        fig.text(0.5, 0.02, f"Entity #{idx} of {len(ents)} live.  Open all per-entity windows with key [P].",
+        fig.text(0.5, 0.02, f"Entity '{e.get('_key','?')}' · {len(ents)} entities live.  "
+                 f"This window tracks this exact entity (stable key — no re-sort drift).  "
+                 f"Open all per-entity windows with key [P].",
                  ha='center', color='#678', fontsize=8)
+
+    def _draw_netspectrum(self, fig, p, snap):
+        """v107: PLANET-SCALE MULTISPECTRUM OVERLAY — every real carrier from this node AND
+        every connected remote node, binned into one fine wideband spectrum (2.4–7.2 GHz,
+        ~2.5 MHz bins = thousands of sections). The honest 'multispectrum overlay, mass data
+        correlation': real measured carriers only; occupancy/power are from genuine RSSI."""
+        ents = p.get("rf_link_entities", []) if p else []
+        _nn = int(p.get("remote_node_count", 0)) if p else 0
+        _comb = int(p.get("combined_carrier_count", len(ents))) if p else len(ents)
+        fig.suptitle(f"PLANET-SCALE MULTISPECTRUM OVERLAY — {_comb} real carriers · "
+                     f"{_nn} remote nodes (all measured)", color='#00ffcc', fontsize=13, fontweight='bold')
+        FMIN, FMAX, NB = 2400.0, 7200.0, 1920          # ~2.5 MHz bins
+        freqs = np.linspace(FMIN, FMAX, NB)
+        power = np.full(NB, -110.0); occ = np.zeros(NB); nper = np.zeros(NB)
+        chan_w = 20.0
+        for e in ents:
+            try:
+                f = float(e.get("freq_mhz", 0.0)); rssi = float(e.get("rssi_dbm", -100.0))
+            except Exception:
+                continue
+            if f < FMIN or f > FMAX:
+                continue
+            mask = np.abs(freqs - f) < chan_w
+            power[mask] = np.maximum(power[mask], rssi)
+            occ[mask] = 1.0; nper[mask] += 1
+        # main spectrum plot
+        ax1 = fig.add_subplot(2, 1, 1); ax1.set_facecolor('#05080d')
+        bandcol = np.where(freqs < 2500, 0, np.where(freqs < 5925, 1, np.where(freqs < 7125, 2, 3)))
+        cols = ['#ff5544', '#33ccff', '#cc66ff', '#888888']
+        ax1.fill_between(freqs, -110, power, where=power > -109, color='#22ff88', alpha=0.5, step='mid')
+        ax1.plot(freqs, power, color='#22ff88', lw=0.6)
+        for bi, (lo, hi, nm) in enumerate([(2400, 2500, "2.4G"), (5150, 5925, "5G"), (5925, 7125, "6G")]):
+            ax1.axvspan(lo, hi, color=cols[bi], alpha=0.06)
+            ax1.text((lo + hi) / 2, -42, nm, color=cols[bi], fontsize=8, ha='center')
+        ax1.set_xlim(FMIN, FMAX); ax1.set_ylim(-110, -35)
+        ax1.set_xlabel("frequency (MHz)", color='#789', fontsize=8)
+        ax1.set_ylabel("peak RSSI (dBm)", color='#789', fontsize=8)
+        ax1.tick_params(colors='#456', labelsize=7)
+        ax1.set_title(f"combined network spectrum · {NB} bins · "
+                      f"{int(occ.sum())} occupied ({100*occ.mean():.1f}%)",
+                      color='#88ccaa', fontsize=9)
+        # per-band occupancy bars
+        ax2 = fig.add_subplot(2, 1, 2); ax2.set_facecolor('#05080d')
+        bands = [("2.4 GHz", 2400, 2500), ("5 GHz", 5150, 5925), ("6 GHz", 5925, 7125)]
+        names = []; occs = []; cnts = []
+        for nm, lo, hi in bands:
+            m = (freqs >= lo) & (freqs < hi)
+            names.append(nm); occs.append(100 * occ[m].mean() if m.any() else 0)
+            cnts.append(int(sum(1 for e in ents if lo <= float(e.get("freq_mhz", 0)) < hi)))
+        x = np.arange(len(names))
+        ax2.bar(x - 0.2, occs, 0.4, color='#33ccff', label='occupancy %')
+        ax2b = ax2.twinx()
+        ax2b.bar(x + 0.2, cnts, 0.4, color='#ffaa33', label='carriers')
+        ax2.set_xticks(x); ax2.set_xticklabels(names, color='#ccc')
+        ax2.set_ylabel("occupancy %", color='#33ccff', fontsize=8)
+        ax2b.set_ylabel("carrier count", color='#ffaa33', fontsize=8)
+        ax2.tick_params(colors='#456', labelsize=7); ax2b.tick_params(colors='#456', labelsize=7)
+        ax2.set_title("per-band occupancy + carrier count (local + all remote nodes)",
+                      color='#88ccaa', fontsize=9)
+        fig.text(0.5, 0.01, "Every bin is REAL: a carrier appears only because a real receiver measured it. "
+                 "More connected receivers → denser real spectrum.  No fabricated emitters.",
+                 ha='center', color='#6a8', fontsize=7.5)
+
+    def _draw_remote(self, fig, p, snap):
+        """v104: REMOTE SENSOR NODES — every real device that POSTed its OWN real receiver data
+        to the ingest endpoint, shown live. Honest distributed sensing: each node is a real
+        receiver; their carriers sum into a planet-scale real-data pool. No fabricated nodes."""
+        import time as _t
+        nodes = getattr(self.fuser, "remote_nodes", {}) or {}
+        fig.suptitle(f"REMOTE SENSOR NODES — {len(nodes)} real devices sending live data",
+                     color='#00ffcc', fontsize=13, fontweight='bold')
+        if not nodes:
+            ax = fig.add_subplot(111); ax.axis('off')
+            ax.text(0.5, 0.58, "No remote nodes connected yet.", ha='center', va='center',
+                    color='#88ccff', fontsize=15, transform=ax.transAxes)
+            ax.text(0.5, 0.40, "Start N.E.P.A. with  --ingest-port 8770 , then on any phone/laptop/Pi open\n"
+                    "http://<this-host>:8770/  and run the sender snippet shown there. Each device sends\n"
+                    "its OWN real WiFi scan — they fuse here as real distributed sensors (mass correlation).",
+                    ha='center', va='center', color='#aaa', fontsize=10, transform=ax.transAxes)
+            return
+        now = _t.time()
+        ax1 = fig.add_subplot(1, 2, 1); ax1.axis('off')
+        ax1.text(0.02, 0.97, f"{'NODE':18s} {'kind':6s} {'emit':>5s} {'age':>5s} {'rpts':>6s}",
+                 color='#88ccaa', fontsize=9, family='monospace', transform=ax1.transAxes)
+        for i, (nid, rec) in enumerate(list(nodes.items())[:20]):
+            age = now - rec.get("last_seen", now)
+            col = '#00ffcc' if age < 15 else '#778899'
+            ax1.text(0.02, 0.92 - i * 0.044,
+                     f"{nid[:18]:18s} {str(rec.get('kind','?'))[:6]:6s} "
+                     f"{int(rec.get('emitter_count',0)):5d} {age:4.0f}s {int(rec.get('count',0)):6d}",
+                     color=col, fontsize=8, family='monospace', transform=ax1.transAxes)
+        total = sum(int(v.get('emitter_count', 0)) for v in nodes.values())
+        _netmov = int(p.get("network_movers", 0)) if p else 0
+        _nodemov = p.get("node_movers", {}) if p else {}
+        ax1.text(0.02, 0.08, f"TOTAL real carriers across all nodes: {total}",
+                 color='#22ff88', fontsize=11, weight='bold', transform=ax1.transAxes)
+        ax1.text(0.02, 0.02, f"NETWORK device-free movers (subspace, MP-gated): {_netmov}"
+                 + (f"  ·  per-node {dict(list(_nodemov.items())[:4])}" if _nodemov else ""),
+                 color=('#ff8866' if _netmov else '#5aa'), fontsize=9, weight='bold',
+                 transform=ax1.transAxes)
+        ax2 = fig.add_subplot(1, 2, 2)
+        pm = getattr(self.fuser, "planet_map", None)
+        located = [(r.get("lat"), r.get("lon"), nid) for nid, r in nodes.items()
+                   if r.get("lat") and r.get("lon")]
+        if pm is not None and getattr(pm, "map_img", None) is not None and located:
+            with pm._lock:
+                img = np.array(pm.map_img)
+            ax2.imshow(img, origin='upper')
+            for la, lo, nid in located:
+                px = pm.latlon_to_px(la, lo)
+                if px:
+                    ax2.plot(px[0], px[1], 'o', color='#ff3355', ms=8)
+                    ax2.text(px[0] + 5, px[1], str(nid)[:8], color='#ff88aa', fontsize=7)
+            ax2.set_title("node locations on real map", color='#88ccaa', fontsize=9); ax2.axis('off')
+        else:
+            ax2.axis('off')
+            ax2.text(0.5, 0.5, "node geolocations appear here\nwhen nodes send lat/lon",
+                     ha='center', va='center', color='#778899', fontsize=10, transform=ax2.transAxes)
+        fig.text(0.5, 0.02, "Each node is a REAL remote receiver POSTing its own measurements, fused live. "
+                 "No fabricated nodes — a node appears only when a real device sends.",
+                 ha='center', color='#6a8', fontsize=8)
 
     def _draw_geo3d(self, fig, p, snap):
         """v100: UNIFIED 3D GEO-WORLD — the 'total vision construct': real DEM terrain (draped
@@ -4221,6 +4360,13 @@ class DetailTabWindow:
         # Panel 3: 3D person trajectories + skeletons
         ax3 = fig.add_subplot(2, 3, 3, projection='3d'); ax3.set_facecolor('#050505')
         persons = p.get("w3d_persons", [])
+        # v110: explicit honest state when there is no real body-sensing channel (persons gated
+        # off at source). No phantom skeletons/positions — show why instead.
+        _bs_motion = bool(p.get("body_sensing_active", False)) if p else False
+        if not persons and not _bs_motion:
+            ax3.text2D(0.5, 0.5, "NO BODY SENSOR\n\nPerson skeletons/positions need\nCSI / mmWave radar — "
+                       "none attached.\nNo fabricated bodies shown.", transform=ax3.transAxes,
+                       ha='center', va='center', color='#ff8866', fontsize=9, weight='bold')
         bone_pairs = WiFi3DFusionEngine.BONES
         for pi, person in enumerate(persons[:6]):
             sk  = np.asarray(person.get("skeleton", []), dtype=np.float32)
@@ -4895,6 +5041,158 @@ _WEB_HTML = (
     "</script></body></html>"
 )
 
+# v104: copy-paste sender any phone(Termux)/laptop/SBC runs to contribute its OWN real WiFi
+# scan to a N.E.P.A. host — turning every device into a real data sender (no fabricated nodes).
+_REMOTE_SENDER_SNIPPET = (
+    "<!DOCTYPE html><html><head><meta charset='utf-8'><title>N.E.P.A. Sensor Node</title>"
+    "<style>body{background:#050505;color:#00ffcc;font-family:monospace;padding:14px}"
+    "pre{background:#0a1014;border:1px solid #0aa5;padding:10px;white-space:pre-wrap}</style></head><body>"
+    "<h2>N.E.P.A. multi-node REAL-DATA ingest</h2>"
+    "<p>Run this on ANY device (phone via Termux, laptop, Raspberry Pi) to send its OWN real WiFi"
+    " scan to this host. Replace HOST with this server's IP. Every node = a real receiver.</p>"
+    "<pre>"
+    "import urllib.request, json, subprocess, socket, time\n"
+    "HOST = 'http://HOST_IP:INGEST_PORT/ingest'\n"
+    "def scan():\n"
+    "    try:\n"
+    "        out = subprocess.run(['nmcli','-t','-f','BSSID,SSID,FREQ,SIGNAL','dev','wifi','list'],\n"
+    "                             capture_output=True, text=True, timeout=8).stdout\n"
+    "    except Exception:\n"
+    "        return []\n"
+    "    ems = []\n"
+    "    for ln in out.splitlines():\n"
+    "        f = ln.replace('\\\\:','%').split(':')\n"
+    "        if len(f) < 4: continue\n"
+    "        try:\n"
+    "            ems.append({'bssid':f[0].replace('%',':'),'ssid':f[1],\n"
+    "                        'freq_mhz':float(f[2].split()[0]) if f[2] else 0.0,\n"
+    "                        'rssi_dbm':-100.0+float(f[3])*0.5 if f[3] else -100.0})\n"
+    "        except Exception: pass\n"
+    "    return ems\n"
+    "while True:\n"
+    "    rep = {'node_id':socket.gethostname(),'kind':'wifi','emitters':scan(),'ts':time.time()}\n"
+    "    try:\n"
+    "        urllib.request.urlopen(urllib.request.Request(HOST, data=json.dumps(rep).encode(),\n"
+    "            headers={'Content-Type':'application/json'}), timeout=5)\n"
+    "        print('sent', len(rep['emitters']), 'emitters')\n"
+    "    except Exception as e: print('send failed', e)\n"
+    "    time.sleep(5)\n"
+    "</pre><p>Connected nodes: <a href='/nodes' style='color:#0fc'>/nodes</a></p></body></html>"
+)
+
+
+class RemoteSensorIngestServer:
+    """v104: MULTI-NODE REAL-DATA INGEST — the honest 'millions of routers/devices connected as
+    data senders'. Any remote device that can HTTP POST becomes a real sensor node: it sends its
+    OWN real receiver readings (WiFi scan RSSI, GNSS, etc.) to /ingest and N.E.P.A. fuses them
+    into the live multi-instrument world. Every node contributes ONLY its own real measurements;
+    a node registers only when it actually sends. No fabricated nodes, no synthetic data.
+    GET / serves a copy-paste sender; GET /nodes lists every connected real node."""
+
+    def __init__(self, fuser, port: int = 8770):
+        self.fuser = fuser
+        self.port = port
+        self._server = None; self._thread = None; self._running = False
+        if not hasattr(fuser, "remote_nodes"):
+            fuser.remote_nodes = {}
+
+    def _ingest(self, report: dict) -> dict:
+        import time as _t
+        nid = str(report.get("node_id", "anon"))[:48]
+        nodes = self.fuser.remote_nodes
+        rec = nodes.get(nid, {"first_seen": _t.time(), "count": 0, "chist": {}})
+        ems = report.get("emitters", []) or []
+        # v106: accumulate per-carrier RSSI HISTORY across this node's repeated reports, so each
+        # remote device becomes a real device-free SENSOR (its carriers' RSSI variance → motion),
+        # not just a snapshot list. Real time-series only — capped, no fabricated samples.
+        chist = rec.get("chist", {})
+        for e in ems:
+            b = str(e.get("bssid", "?"))
+            h = chist.setdefault(b, [])
+            try:
+                h.append(float(e.get("rssi_dbm", -100.0)))
+            except Exception:
+                continue
+            if len(h) > 120:
+                del h[:-120]
+        # forget carriers a node stops reporting (bounded memory for many nodes)
+        if len(chist) > 256:
+            for b in list(chist.keys())[:-256]:
+                del chist[b]
+        rec["chist"] = chist
+        rec.update({"last_seen": _t.time(), "count": rec.get("count", 0) + 1,
+                    "lat": report.get("lat"), "lon": report.get("lon"),
+                    "kind": str(report.get("kind", "generic"))[:24],
+                    "emitter_count": len(ems), "emitters": ems[:128],
+                    "rssi_dbm": report.get("rssi_dbm")})
+        nodes[nid] = rec
+        return {"ok": True, "node_id": nid, "nodes_connected": len(nodes),
+                "total_emitters": sum(int(v.get("emitter_count", 0)) for v in nodes.values())}
+
+    def _make_handler(self):
+        srv = self
+
+        class _H(_http_server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                if self.path.split("?")[0] != "/ingest":
+                    self._send(404, "text/plain", b"not found"); return
+                try:
+                    import json as _j
+                    n = int(self.headers.get("Content-Length", 0) or 0)
+                    body = self.rfile.read(n) if n > 0 else b"{}"
+                    out = srv._ingest(_j.loads(body.decode("utf-8", "ignore")))
+                    self._send(200, "application/json", _j.dumps(out).encode())
+                except Exception as e:
+                    self._send(400, "application/json",
+                               ('{"ok":false,"err":"%s"}' % type(e).__name__).encode())
+
+            def do_GET(self):
+                import json as _j
+                p = self.path.split("?")[0]
+                if p in ("/", "/index.html"):
+                    self._send(200, "text/html; charset=utf-8", _REMOTE_SENDER_SNIPPET.encode())
+                elif p == "/nodes":
+                    nodes = srv.fuser.remote_nodes
+                    out = {"count": len(nodes),
+                           "nodes": {k: {kk: vv for kk, vv in v.items() if kk != "emitters"}
+                                     for k, v in nodes.items()}}
+                    self._send(200, "application/json", _j.dumps(out).encode())
+                else:
+                    self._send(404, "text/plain", b"not found")
+
+            def _send(self, code, ctype, body):
+                self.send_response(code); self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*"); self.end_headers()
+                self.wfile.write(body)
+
+        return _H
+
+    def start(self):
+        if self._running:
+            return
+        try:
+            self._server = _http_server.HTTPServer(("", self.port), self._make_handler())
+            self._running = True
+            self._thread = threading.Thread(target=self._server.serve_forever,
+                                            daemon=True, name="IngestServer")
+            self._thread.start()
+            log.info(f"[Ingest] Multi-node REAL-DATA ingest at http://0.0.0.0:{self.port}/  "
+                     f"(POST /ingest · sender snippet at GET /  · nodes at /nodes)")
+        except Exception as e:
+            log.warning(f"[Ingest] start failed: {e}")
+
+    def stop(self):
+        self._running = False
+        try:
+            self._server.shutdown()
+        except Exception:
+            pass
+
+
 class WebViewerServer:
     """Pass 34: Serve the live Gaussian-splat world render as an MJPEG stream.
 
@@ -4927,7 +5225,7 @@ class WebViewerServer:
     # v103: render ANY DetailTabWindow tab headlessly to PNG so the full real UI is browsable
     # without a matplotlib display backend (the NixOS 'I don't see it' fix, completed).
     _WEB_TABS = ("geo3d", "terrain3d", "city3d", "planetmap", "entities", "carrier",
-                 "instrbus", "rfmap", "medical", "bci", "raw")
+                 "instrbus", "rfmap", "medical", "bci", "remote", "netspectrum", "raw")
 
     def _render_tab_png(self, kind: str) -> bytes:
         import io as _io2
@@ -5059,7 +5357,12 @@ class WebViewerServer:
                         "city":     str(_pmst.get("city", "?")),
                         "lat":      round(float(_pmst.get("lat") or 0.0), 4),
                         "lon":      round(float(_pmst.get("lon") or 0.0), 4),
-                        "carriers": int(len(pp.get("rf_link_entities", []) or [])),
+                        "carriers": int(pp.get("combined_carrier_count",
+                                               len(pp.get("rf_link_entities", []) or []))),
+                        "local_carriers":  int(pp.get("local_carrier_count", 0)),
+                        "remote_carriers": int(pp.get("remote_carrier_count", 0)),
+                        "remote_nodes":    int(pp.get("remote_node_count", 0)),
+                        "network_movers":  int(pp.get("network_movers", 0)),
                         "presence": ("Y" if pp.get("rssi_presence") else "n"),
                         "motion":   float(pp.get("rssi_motion", 0.0)),
                     }
@@ -5561,7 +5864,11 @@ class WiFi3DFusionEngine:
         # Per-channel amplitude history buffer: channel_id → deque of (ts, amp_vec)
         self._chan_bufs: dict = {}
         self._last_trigger = 0.0
-        self._movement_score = 0.0
+        # v112 BUGFIX: was `self._movement_score = 0.0` — that attribute SHADOWED the method
+        # `_movement_score()` (line ~5877), so every update() call raised "'float' object is not
+        # callable" and the whole W3D engine silently failed every frame. The scalar lives in
+        # `_movement_score_val` (set in update()); init it under that name.
+        self._movement_score_val = 0.0
         # Person tracker: pid → {pos, vel, traj, skeleton, color, last_seen}
         self._persons: dict = {}
         self._next_pid  = 0
@@ -5743,7 +6050,16 @@ class WiFi3DFusionEngine:
         # 4. Person tracking from blobs
         for blob in (blobs or []):
             cent = np.asarray(blob.get("centroid", [12, 12, 12]), dtype=np.float32)
-            ext  = float(blob.get("extent", 3.0))
+            # v115 BUGFIX: different blob producers set "extent" as either a scalar OR a 3-vector
+            # (per-axis extent). float() on a tuple/list/array raised "float() argument must be...
+            # not 'tuple'" → W3D update failed every frame in sim-validate. Coerce either form to
+            # a scalar (mean of the magnitude) so the consumer is robust to both.
+            _ext_raw = blob.get("extent", 3.0)
+            try:
+                _ea = np.asarray(_ext_raw, dtype=np.float32)
+                ext = float(_ea) if _ea.ndim == 0 else float(np.mean(np.abs(_ea)))
+            except Exception:
+                ext = 3.0
             pid  = self._assign_person(cent, ext)
             # P4T-lite skeleton estimate
             self._persons[pid]["skeleton"] = self._p4t_lite_skeleton(
@@ -12008,17 +12324,20 @@ class IPHitchingEngineNP:
 
     # ── GeoIP (offline hash fallback) ──────────────────────────────────────
     def geoip(self, ip: str) -> dict:
-        """Reproducible simulated GeoIP from IP hash. No internet needed."""
+        """v110 DATA HONESTY: do NOT fabricate coordinates. Private/LAN IPs (10/172.16-31/192.168/
+        127/169.254) are LOCAL — they have no geolocation at all, so return unknown coords rather
+        than hash-derived fake positions (the old behaviour was false data). Public IPs are marked
+        unknown until a real lookup service is wired; no invented lat/lon ever enters the profile."""
         if ip in self._geo_cache:
             return self._geo_cache[ip]
-        import hashlib
-        h = int(hashlib.md5(ip.encode()).hexdigest()[:8], 16)
-        geo = {
-            "lat": float((h % 18000 - 9000) / 100.0),
-            "lon": float((h // 18000 % 36000 - 18000) / 100.0),
-            "country": f"C{h%99:02d}", "city": f"Node-{h%9999}",
-            "org": f"AS{h%65535}", "isp": f"NET-{h%200}",
-        }
+        a = ip or ""
+        _priv = (a.startswith("10.") or a.startswith("192.168.") or a.startswith("127.")
+                 or a.startswith("169.254.") or a in ("", "0.0.0.0", "::1")
+                 or any(a.startswith(f"172.{x}.") for x in range(16, 32)))
+        geo = {"lat": None, "lon": None,
+               "country": "LAN" if _priv else "?",
+               "city": "local" if _priv else "unknown",
+               "org": "", "isp": "", "located": False, "scope": "private" if _priv else "public"}
         self._geo_cache[ip] = geo
         return geo
 
@@ -14946,13 +15265,15 @@ class WorldSpectrumMapperNP77:
         n = 0
         for dev in hitch_summary.get("devices", []):
             nid = dev.get("ip", f"dev_{n}")
-            # Use heuristic lat/lon from GeoIP placeholder
-            lat = dev.get("geo_lat", 0.0)
-            lon = dev.get("geo_lon", 0.0)
+            # v110 DATA HONESTY: only place a node on the map if it has a REAL geolocation.
+            # LAN devices have none → skip rather than pin them at fabricated (0,0) null-island.
+            lat = dev.get("geo_lat"); lon = dev.get("geo_lon")
+            if lat is None or lon is None or (lat == 0.0 and lon == 0.0):
+                continue
             freq_hz = 2.4e9  # WiFi default
             rssi = dev.get("rssi", -70)
             power = rssi + 30  # rough dBm estimate
-            self.register_node(nid, lat, lon, 0.0, freq_hz, 20e6, power, "wifi_router")
+            self.register_node(nid, float(lat), float(lon), 0.0, freq_hz, 20e6, power, "wifi_router")
             n += 1
         return n
 
@@ -19943,24 +20264,46 @@ class BluetoothInstrument(BusInstrument):
         self._devices = {}
 
     def probe(self) -> bool:
+        # v113 ACCURACY FIX: determine adapter EXISTENCE from /sys/class/bluetooth (which lists
+        # hciN regardless of rfkill/power state), not from `hcitool dev` (which is EMPTY when the
+        # adapter is soft-blocked) — the old logic reported "no adapter" for a present-but-blocked
+        # radio (this machine: hci0 exists, soft-blocked). Now it reports the real state.
         try:
-            out = _ib_subprocess.run(["hcitool", "dev"], capture_output=True, text=True,
-                                     timeout=3.0).stdout
-            has_adapter = any(line.strip().startswith("hci") for line in out.splitlines())
+            adapters = []
+            try:
+                adapters = [d for d in _ib_os.listdir("/sys/class/bluetooth") if d.startswith("hci")]
+            except Exception:
+                pass
             blocked = False
             try:
                 rk = _ib_subprocess.run(["rfkill", "list", "bluetooth"], capture_output=True,
                                         text=True, timeout=3.0).stdout
-                blocked = "Soft blocked: yes" in rk or "Hard blocked: yes" in rk
+                blocked = ("Soft blocked: yes" in rk) or ("Hard blocked: yes" in rk)
+                if not adapters and "Bluetooth" in rk:        # rfkill sees it even if /sys didn't
+                    adapters = ["hci?"]
             except Exception:
                 pass
-            self.connected = has_adapter and not blocked
-            self.note = ("adapter present" if has_adapter else "no adapter")
-            if has_adapter and blocked:
-                self.note = "adapter present but rfkill-blocked (enable: rfkill unblock bluetooth)"
+            # adapter is usable only if present AND not blocked AND it actually enumerates
+            up = False
+            if adapters and not blocked:
+                try:
+                    out = _ib_subprocess.run(["hcitool", "dev"], capture_output=True, text=True,
+                                             timeout=3.0).stdout
+                    up = any(ln.strip().startswith("hci") for ln in out.splitlines())
+                except Exception:
+                    up = True   # present+unblocked but hcitool missing — assume usable
+            self.connected = bool(adapters and not blocked and up)
+            if not adapters:
+                self.note = "no adapter"
+            elif blocked:
+                self.note = f"adapter present ({adapters[0]}) but rfkill-blocked — enable: rfkill unblock bluetooth"
+            elif not up:
+                self.note = f"adapter present ({adapters[0]}) but down — enable: hciconfig {adapters[0]} up"
+            else:
+                self.note = f"adapter {adapters[0]} present + scanning"
         except Exception:
             self.connected = False
-            self.note = "hcitool unavailable"
+            self.note = "bluetooth probe unavailable"
         return self.connected
 
     def poll(self) -> dict:
@@ -42580,13 +42923,27 @@ class ProfileStore:
                          float(np.percentile(g, 90))], dtype=np.float32)
 
     def match_or_create(self, sig_vec, tol=0.08):
-        """Match signature against stored profiles; create new if no match within tolerance."""
+        """v112 STABILITY FIX: match by NEAREST stored profile (not first-within-tol), use an
+        adaptive tolerance that scales with signature magnitude, and EMA-track the matched
+        profile so it follows slow drift. The old logic (first match < fixed 0.08) never
+        re-matched as the scene signature varied frame-to-frame, so it spawned a NEW id every
+        frame (person_1→4→8 flicker = a visible miscorrelation). Now the same scene keeps ONE
+        stable id."""
+        sig_vec = np.asarray(sig_vec, dtype=np.float32)
+        best_pid, best_d = None, float("inf")
         for pid, prof in self.profiles.items():
-            if np.linalg.norm(prof["sig"] - sig_vec) < tol:
-                return pid, False
-        pid = f"person_{len(self.profiles)+1}"
+            d = float(np.linalg.norm(np.asarray(prof["sig"], dtype=np.float32) - sig_vec))
+            if d < best_d:
+                best_pid, best_d = pid, d
+        thr = max(tol, 0.18 * (float(np.linalg.norm(sig_vec)) + 1e-6))
+        if best_pid is not None and best_d < thr:
+            p = self.profiles[best_pid]
+            p["sig"] = 0.85 * np.asarray(p["sig"], dtype=np.float32) + 0.15 * sig_vec
+            p["last_seen"] = time.time()
+            return best_pid, False
+        pid = f"person_{len(self.profiles) + 1}"
         self.profiles[pid] = {"sig": sig_vec, "first_seen": time.time(),
-                              "baseline_stress": 0.5}
+                              "last_seen": time.time(), "baseline_stress": 0.5}
         return pid, True
 
     def save(self):
@@ -45676,20 +46033,18 @@ class NEPANetworkLocator:
             if len(self.connection_log) > 500:
                 self.connection_log = self.connection_log[-500:]
 
-    def geoip_lookup_sim(self, ip):
-        """Simulated GeoIP lookup (uses cached data or generates plausible placeholder).
-        In production, replace with Hitch.py's GeoIPCache.lookup()."""
+    def geoip_lookup(self, ip):
+        """v110 DATA HONESTY: no fabricated coordinates. Private/LAN IPs are local (no geo);
+        public IPs are unknown until a real lookup is wired. Never returns hash-derived fake
+        lat/lon. (Was geoip_lookup_sim — a placeholder that invented 'plausible' positions.)"""
         if ip in self.geoip_cache:
             return self.geoip_cache[ip]
-        # Simulate: generate reproducible location from IP hash
-        import hashlib
-        h = int(hashlib.md5(ip.encode()).hexdigest()[:8], 16)
-        result = {
-            "lat": float((h % 18000 - 9000) / 100.0),
-            "lon": float((h // 18000 % 36000 - 18000) / 100.0),
-            "country": "SIM", "city": f"Node-{h % 999}",
-            "org": f"ISP-{h % 50}", "isp": f"NET-{h % 20}",
-        }
+        a = ip or ""
+        _priv = (a.startswith("10.") or a.startswith("192.168.") or a.startswith("127.")
+                 or a.startswith("169.254.") or a in ("", "0.0.0.0", "::1")
+                 or any(a.startswith(f"172.{x}.") for x in range(16, 32)))
+        result = {"lat": None, "lon": None, "country": "LAN" if _priv else "?",
+                  "city": "local" if _priv else "unknown", "org": "", "isp": "", "located": False}
         with self._lock:
             self.geoip_cache[ip] = result
         return result
@@ -46908,6 +47263,11 @@ class HighGHzSpectrumAnalyzer:
             "real": True,
             "noise_floor_db": round(noise_floor, 2),
             "peak_db": round(peak_db, 2),
+            # v113 KEY-MISMATCH FIX: the signal-tab band chart + waterfall read "peak_power_dbm"
+            # (line ~1833 / ~59934) but the analyzer only set "peak_db" → real measured peaks
+            # were shown as the −120 dBm default (real data hidden). Provide the alias so the
+            # displays get the genuine measured peak.
+            "peak_power_dbm": round(peak_db, 2),
             "peak_hz": peak_hz,
             "peak_ghz": round(peak_hz / 1e9, 4),
             "snr_db": round(peak_db - noise_floor, 2),
@@ -46933,7 +47293,7 @@ class HighGHzSpectrumAnalyzer:
             "reason": reason,
             "fspl_1m_db": fspl_1m_db,
             "f_mid_ghz": round(f_mid / 1e9, 4),
-            "peak_db": None, "occupancy": None, "noise_floor_db": None,
+            "peak_db": None, "peak_power_dbm": None, "occupancy": None, "noise_floor_db": None,
         }
 
     def sweep(self):
@@ -55298,6 +55658,8 @@ class MultiAgentWirelessBCIFuser:
                  ("Terrain [y]", "terrain3d"),
                  ("City [u]", "city3d"),
                  ("GeoWorld [h]", "geo3d"),
+                 ("Nodes [n]", "remote"),
+                 ("Spectrum [o]", "netspectrum"),
                  ("Info [i]", "info")]
         try:
             _nbtn = len(_tabs)
@@ -55397,6 +55759,10 @@ class MultiAgentWirelessBCIFuser:
             self._open_tab("city3d")
         elif key == "h":
             self._open_tab("geo3d")
+        elif key == "n":
+            self._open_tab("remote")
+        elif key == "o":
+            self._open_tab("netspectrum")
         elif key in ("V",):
             # v94: toggle SIMULATE-HARDWARE live (virtual instruments). Watermarked SIMULATED.
             _on = not bool(getattr(self, "sim_hardware", False))
@@ -55421,11 +55787,12 @@ class MultiAgentWirelessBCIFuser:
                 return
             if not hasattr(self, "_detail_tabs"):
                 self._detail_tabs = {}
-            for i in range(min(len(ents), max_windows)):
-                key = f"entitydetail:{i}"
-                if key not in self._detail_tabs:
-                    w = DetailTabWindow(self, kind="entitydetail", entity_idx=i)
-                    self._detail_tabs[key] = w
+            for ent in ents[:max_windows]:
+                ekey = ent.get("_key", "?")
+                tabkey = f"entitydetail:{ekey}"     # v108: keyed by STABLE entity id, not index
+                if tabkey not in self._detail_tabs:
+                    w = DetailTabWindow(self, kind="entitydetail", entity_key=ekey)
+                    self._detail_tabs[tabkey] = w
                     w.launch()
             log.info(f"[TAB] opened {min(len(ents), max_windows)} per-entity windows "
                      f"({len(ents)} entities live)")
@@ -56634,9 +57001,65 @@ class MultiAgentWirelessBCIFuser:
                     "range_m": _rng, "link_var_db": _var, "link_motion": _mot,
                     "hist": _ha[-64:].tolist(),
                 })
+            # v105: fuse REMOTE-NODE carriers into the pool — every device that POSTed its own
+            # real WiFi scan contributes its carriers to ONE planet-scale real-data set ("mass
+            # data correlation"). Tagged by source node; snapshot RSSI = their live reading; no
+            # fabricated history (link_motion left 0 since we have no time-series from that node).
+            _rn = getattr(self, "remote_nodes", {}) or {}
+            _local_carriers = len(_ents)
+            _remote_carriers = 0
+            _net_movers = 0
+            _node_movers = {}
+            for _nid, _rec in _rn.items():
+                _ch = _rec.get("chist", {}) or {}
+                for _re in (_rec.get("emitters", []) or []):
+                    try:
+                        _b = str(_re.get("bssid", "?"))
+                        _f = float(_re.get("freq_mhz", 0.0))
+                        _band = (("2.4GHz" if _f < 2500 else "5GHz" if _f < 5925 else
+                                  "6GHz" if _f < 7125 else "other") if _f > 0 else "?")
+                        _rssi = float(_re.get("rssi_dbm", -100.0))
+                        try:    _rrng = float(rssi_distance(_rssi))
+                        except Exception: _rrng = float("nan")
+                        # v106: REAL device-free motion from this carrier's RSSI history on its node
+                        _hh = _ch.get(_b, [])
+                        _ha2 = np.asarray(_hh[-64:], dtype=np.float64) if len(_hh) >= 4 else np.zeros(0)
+                        if _ha2.size >= 4:
+                            _rvar = float(np.std(_ha2)); _rmot = float(np.clip((_rvar - 0.5) / 4.0, 0, 1))
+                        else:
+                            _rvar = 0.0; _rmot = 0.0
+                        _ents.append({
+                            "id": f"{str(_re.get('ssid','?'))[:14]}@{str(_nid)[:8]}",
+                            "bssid": _b, "freq_mhz": _f, "chan": 0,
+                            "band": _band, "signal": float(_re.get("signal", 0.0)),
+                            "rssi_dbm": _rssi, "security": "?", "rate": "",
+                            "range_m": _rrng, "link_var_db": _rvar, "link_motion": _rmot,
+                            "hist": _ha2[-64:].tolist(), "node": str(_nid),
+                        })
+                        _remote_carriers += 1
+                    except Exception:
+                        pass
+                # v106: per-node multi-carrier subspace correlation → real device-free occupancy
+                # at that node's location, using the SAME Marchenko-Pastur noise floor (no false
+                # positives). Network movers = sum over all nodes (honest distributed sensing).
+                try:
+                    _hmapn = {b: h for b, h in _ch.items() if h and len(h) >= 8}
+                    if len(_hmapn) >= 3:
+                        _rc = self.rf_link_corr.analyze(_hmapn)
+                        if _rc.get("valid"):
+                            _node_movers[str(_nid)] = int(_rc["count"])
+                            _net_movers += int(_rc["count"])
+                except Exception:
+                    pass
+            pp["remote_node_count"]    = len(_rn)
+            pp["remote_carrier_count"] = _remote_carriers
+            pp["local_carrier_count"]  = _local_carriers
+            pp["network_movers"]       = int(_net_movers)
+            pp["node_movers"]          = _node_movers
             _ents.sort(key=lambda d: d["rssi_dbm"], reverse=True)
             pp["rf_link_entities"]     = _ents
             pp["rf_link_entity_count"] = len(_ents)
+            pp["combined_carrier_count"] = len(_ents)
             if _ents:
                 pp["link_motion_max"]  = max(e["link_motion"] for e in _ents)
                 pp["link_motion_mean"] = float(np.mean([e["link_motion"] for e in _ents]))
@@ -57421,10 +57844,16 @@ class MultiAgentWirelessBCIFuser:
                 channel=1,
             )
             self._wifi3d_result = _w3d
-            self.psych_profile["movement_score"]  = _w3d["movement_score"]
+            self.psych_profile["movement_score"]  = _w3d["movement_score"]   # scalar motion energy (RSSI-derived, OK)
             self.psych_profile["movement_event"]  = _w3d["movement_event"] is not None
-            self.psych_profile["w3d_person_count"] = _w3d["person_count"]
-            self.psych_profile["w3d_persons"]      = _w3d["persons"][:4]   # cap for profile size
+            # v110 DATA HONESTY: w3d_persons are SKELETONS + 3D POSITIONS — a "person" with a
+            # position is only real when a real (or explicitly simulated) body-sensing channel
+            # exists. With RSSI-only / no CSI the voxel field is link noise and its blobs are NOT
+            # people; populating w3d_persons there is the phantom-body-position bug ("filler
+            # nonsense" the user sees in the Motion tab). Gate persons on a real body channel.
+            _bs_w3d = self.vitals_mode in ("real", "simulated")
+            self.psych_profile["w3d_person_count"] = int(_w3d["person_count"]) if _bs_w3d else 0
+            self.psych_profile["w3d_persons"]      = (_w3d["persons"][:4] if _bs_w3d else [])
         except Exception as _w3e:
             log.debug(f"[W3D] update error: {_w3e}")
 
@@ -59200,6 +59629,17 @@ class MultiAgentWirelessBCIFuser:
                 r = stress_anxiety_episode_replayer(hist_arr)
                 pp["anxiety_episode_detected"] = r["episode_detected"]
             except Exception: pass
+        # v111 DATA HONESTY: the List 56-60 tier above infers BODY/medical state (organ motion,
+        # perfusion, glucose, fall, victim, sleep, anxiety, body mesh) from the CSI history — which
+        # is RSSI noise when no real body sensor is attached. Those fields are dumped by the Raw
+        # Data tab, so they are visible FALSE data. Strip them unless a real (or explicitly
+        # simulated) body-sensing channel exists. Pure signal-processing metrics (replay/branch/
+        # prediction) are left as honest CSI statistics.
+        if self.vitals_mode not in ("real", "simulated"):
+            for _k in ("organ_motion_m", "perfusion_percent", "rescue_victim_detected",
+                       "fall_detected", "glucose_trend", "toxin_detected", "sleep_stage",
+                       "anxiety_episode_detected", "mesh_vertices"):
+                pp.pop(_k, None)
 
     def _recover_vitals(self, trace, fs):
         """v85: robust FFT+beat recovery of HR/BR/HRV from the chest-displacement window.
@@ -59496,6 +59936,25 @@ class MultiAgentWirelessBCIFuser:
             # hardware is present; otherwise a [ESTIMATED] band table. Runs on a slow
             # cadence so it never stalls the live display loop.
             _fc = int(t * SAMPLING_RATE)
+            # v116: --record-splat — actually SAVE rendered splat frames (the feature created a
+            # recorder but never called it). Refresh the splat cloud from the live voxel field and
+            # write a frame on a slow cadence so it never stalls the display loop. Real data only
+            # (the voxel field is what the live sensors built); nothing fabricated.
+            _rec = getattr(self, "splat_recorder", None)
+            if _rec is not None and (_fc % 10 == 0):
+                try:
+                    _wr = getattr(self, "world_recon", None)
+                    if _wr is not None:
+                        _wr.update_splats(self.voxel_grid)
+                        _res = float(getattr(_wr, "voxel_res", 24))
+                        _ctr = np.array([_res / 2, _res / 2, _res / 2])
+                        _ang = (t * 0.2) % (2 * np.pi)
+                        _cam = _ctr + np.array([np.cos(_ang) * _res * 1.1,
+                                                np.sin(_ang) * _res * 1.1, _res * 0.4])
+                        _img = _wr.render_splats(_cam, _ctr, width=320, height=240, fov=65.0)
+                        _rec.save_frame((np.clip(_img, 0, 1) * 255).astype(np.uint8))
+                except Exception as _re:
+                    log.debug(f"[RECORD] splat frame skip: {_re}")
             if _fc - self._spectrum_last_frame >= self._spectrum_interval:
                 self._spectrum_last_frame = _fc
                 try:
@@ -60468,7 +60927,14 @@ NEPA — REAL-DATA ONLY. No fabricated vitals/pose/BCI. Humanitarian sensing."""
         self.fig.suptitle(f"N.E.P.A.  |  {_real_net}   ·   {_vphys}",
                           color=_bc, fontsize=12, fontweight='bold', y=0.995)
 
-        plt.tight_layout(rect=[0, 0, 1, 0.985])
+        # v111: tight_layout is INCOMPATIBLE with 3D axes (ax3d) — it warns "results might be
+        # incorrect" and can clip/overlap panels (an inaccurate-display symptom). Use a manual,
+        # deterministic margin layout that works correctly with mixed 2D/3D axes.
+        try:
+            self.fig.subplots_adjust(left=0.045, right=0.985, top=0.95, bottom=0.05,
+                                     wspace=0.28, hspace=0.38)
+        except Exception:
+            pass
         return (self.ax2d, self.ax_doppler, self.ax3d, self.ax_heatmap,
                 self.ax_vitals, self.ax_bci, self.ax_diag,
                 self.ax_img_amp, self.ax_img_holo, self.ax_img_voxel, self.ax_img_comp)
@@ -60557,6 +61023,11 @@ if __name__ == "__main__":
                              'world. Open http://localhost:<--web-port>/ in any browser.')
     parser.add_argument('--web-port', type=int, default=8765,
                         help='Pass 34: Port for the --web-viewer HTTP server (default 8765).')
+    parser.add_argument('--ingest-port', type=int, default=0,
+                        help='v104: start the multi-node REAL-DATA ingest server on this port '
+                             '(e.g. 8770). Remote devices (phones/laptops/routers) POST their own '
+                             'real WiFi scans to http://<host>:<port>/ingest; they fuse as real '
+                             'distributed sensors. 0 = disabled.')
     parser.add_argument('--lsl', action='store_true',
                         help='Pass 34 (T-LSL): Open a Lab Streaming Layer outlet named NEPA_BCI '
                              'broadcasting 10-channel BCI band powers at target_fps Hz. '
@@ -60591,6 +61062,10 @@ if __name__ == "__main__":
                                        sim_validate=args.sim_validate)
     fuser.enable_world = not args.no_world   # Pass 25: walkable 3D world toggle
     fuser.target_fps = max(5, min(60, args.fps))  # Pass 26: live refresh rate
+    # v116 BUGFIX: --record-splat created a SplatFrameRecorder + dir but was never wired to the
+    # fuser and save_frame() was never called → it recorded ZERO frames (non-implemented feature).
+    # Wire it so the main loop actually saves rendered splat frames.
+    fuser.splat_recorder = _splat_recorder_global
     # v94: simulate-hardware (virtual instruments). Watermarked SIMULATED everywhere.
     if getattr(args, "simulate_hardware", False):
         fuser.sim_hardware = True
@@ -60609,6 +61084,11 @@ if __name__ == "__main__":
     if args.web_viewer:
         fuser.web_viewer = WebViewerServer(fuser, port=args.web_port)
         fuser.web_viewer.start()
+
+    # v104: --ingest-port multi-node REAL-DATA ingest server (distributed real sensors)
+    if getattr(args, "ingest_port", 0):
+        fuser.ingest_server = RemoteSensorIngestServer(fuser, port=args.ingest_port)
+        fuser.ingest_server.start()
 
     # Pass 34 (T-LSL): --lsl BCI band-power LSL outlet
     if args.lsl:
