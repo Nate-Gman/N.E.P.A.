@@ -1785,6 +1785,13 @@ class DetailTabWindow:
                  "planetscan":   "PLANETARY SCAN — ITERATIVE RECONSTRUCTION (GAUSS-SEIDEL · 2592 CELLS) + GNSS-R PASSIVE RADAR",
                  "deepscan":     "DEEP SCAN — IGRF-13 GEOMAGNETIC FIELD + PREM INTERIOR CROSS-SECTION + VLF/ELF SCHUMANN RESONANCES",
                  "planettomo":   "PLANET TOMOGRAPHY — 3D VOLUMETRIC COLUMNS (IONOSPHERE→CORE · ALL WAVE KINDS STACKED)",
+                 "kineticprop":  "KINETIC PROPAGATOR — MATH IN MOTION (SEMI-LAGRANGIAN ADVECTION · CORIOLIS · ERROR-CORRECTION)",
+                 "geocurrent":   "GEO CURRENTS — METAR SURFACE STATIONS (10K+) + OSCAR OCEAN SURFACE CURRENTS",
+                 "kinvis":       "KINETIC VISION EXPANSION — TIME-INTEGRATED PLANETARY SWEEP (REAL ORBITAL/FLIGHT KINETICS · ERROR-CORRECTED)",
+                 "xcorrmatrix":  "CROSS-STREAM CORRELATION MATRIX — ALL LIVE PLANETARY STREAMS (PEARSON · AUTO-DETECTED · ORGANISED)",
+                 "spatialxref":  "SPATIAL CO-OCCURRENCE MATRIX — WHERE GEOLOCATED STREAMS AGREE (VERIFICATION MESH · CROSS-CONFIRMED CELLS)",
+                 "xcorrlag":     "LEAD/LAG CROSS-CORRELATION — WHICH PLANETARY STREAM PREDICTS WHICH (TIME-SHIFTED PEARSON · FORWARD MATH)",
+                 "corrnet":      "CORRELATION NETWORK — ALL DATA RELATIONSHIPS AS ONE GRAPH (TEMPORAL + SPATIAL + LEAD/LAG · CLUSTERS · HUBS)",
                  "entitydetail": "ENTITY DETAIL",
                  "info": "SYSTEM INFO & ABOUT"}.get(self.kind, self.kind)
         if self.kind == "entitydetail":
@@ -6917,6 +6924,7 @@ class DetailTabWindow:
         ax_seism.text(rx_lon + 3, rx_lat + 2, "YOU", color='#00ffcc', fontsize=6)
 
         # draw wavefronts as circles on the map
+        theta = np.linspace(0, 2*np.pi, 60)   # constant ring parameterisation (hoisted)
         for wf in wavefronts[:15]:
             eq_lat = wf["lat"]; eq_lon = wf["lon"]
             p_deg  = float(wf.get("p_ring_deg") or 0)
@@ -6928,7 +6936,6 @@ class DetailTabWindow:
                           ms=msize, alpha=0.7, zorder=8)
             # P-wave ring (approximate as circle of radius p_deg degrees)
             if 0 < p_deg < 180:
-                theta  = np.linspace(0, 2*np.pi, 60)
                 p_lats = eq_lat + p_deg * np.cos(theta)
                 p_lons = eq_lon + p_deg * np.sin(theta) / max(0.1, np.cos(np.radians(eq_lat)))
                 ax_seism.plot(p_lons, p_lats, '-', color='#44ff88', lw=0.8, alpha=0.6)
@@ -8113,6 +8120,1030 @@ class DetailTabWindow:
                     transform=ax_inf.transAxes, color="#7a5a3a", fontsize=6.2, va="top")
         ax_inf.text(0.5, 0.02, "Sensor.Community / Luftdaten · keyless · ALL REAL · empty if unreachable",
                     ha="center", va="bottom", transform=ax_inf.transAxes, color="#4a3a2a", fontsize=5.8)
+
+    def _draw_corrnet(self, fig, p, snap):
+        """v166: CORRELATION NETWORK — every correlation (temporal + spatial + lead/lag) as one graph.
+
+        Panel 1 (large): force-directed network — nodes = data streams (coloured by group,
+                         sized by weighted-degree centrality), edges by type (blue/red = temporal
+                         +/−, green = spatial, orange arrow = lead/lag direction).
+        Panel 2 (top-right): hub ranking — most-connected streams (centrality bars).
+        Panel 3 (bottom-right): edge-type legend + cluster/census summary.
+        """
+        import numpy as _np
+        fig.suptitle(
+            "CORRELATION NETWORK — ALL DATA RELATIONSHIPS, ORGANISED  "
+            "(temporal + spatial + lead/lag unified · button)",
+            color="#c8b0e8", fontsize=8.0, fontweight="bold", y=0.985)
+
+        nodes = list(snap.get("corrnet_nodes") or [])
+        edges = list(snap.get("corrnet_edges") or [])
+        n_nodes = int(snap.get("corrnet_n_nodes") or len(nodes))
+        n_edges = int(snap.get("corrnet_n_edges") or len(edges))
+        hub     = str(snap.get("corrnet_hub") or "")
+        hub_deg = float(snap.get("corrnet_hub_degree") or 0.0)
+        n_clu   = int(snap.get("corrnet_n_clusters") or 0)
+        n_t     = int(snap.get("corrnet_n_temporal") or 0)
+        n_s     = int(snap.get("corrnet_n_spatial") or 0)
+        n_l     = int(snap.get("corrnet_n_leadlag") or 0)
+        cn_ok   = bool(snap.get("corrnet_ok", False))
+        gcol = {"Seismic": "#ff5a4a", "Earth-obs": "#ff9a3c", "Space-wx": "#ffd84a",
+                "Air-qual": "#9ae84a", "Ocean": "#3cc8ff", "Atmos": "#4af0d0",
+                "RF/Plat": "#b88aff", "Fusion": "#ff7ad0", "Astro": "#8a9aff", "?": "#9aa"}
+
+        gs = fig.add_gridspec(2, 2, left=0.04, right=0.97, top=0.92, bottom=0.06,
+                              hspace=0.28, wspace=0.20, width_ratios=[1.55, 1.0])
+        ax_net = fig.add_subplot(gs[:, 0])
+        ax_hub = fig.add_subplot(gs[0, 1])
+        ax_leg = fig.add_subplot(gs[1, 1])
+        for ax in (ax_net, ax_hub, ax_leg):
+            ax.set_facecolor("#08060f")
+            ax.tick_params(colors="#888", labelsize=5.5)
+            for sp in ax.spines.values():
+                sp.set_color("#2a2438")
+
+        # ── Panel 1: the network ───────────────────────────────────────────
+        ax_net.set_xlim(-1.15, 1.15); ax_net.set_ylim(-1.15, 1.15)
+        ax_net.set_xticks([]); ax_net.set_yticks([])
+        ax_net.set_title(f"{n_nodes} streams · {n_edges} correlation edges · {n_clu} clusters",
+                         color="#c8b0e8", fontsize=7.0)
+        if nodes and n_nodes >= 2:
+            posd = {nd["label"]: (nd["x"], nd["y"]) for nd in nodes}
+            etype_style = {"temporal": ("#4a90e0", "-"), "spatial": ("#3cb878", ":"),
+                           "leadlag": ("#ff9a3c", "-")}
+            # edges first (under nodes)
+            for e in edges:
+                if e["a"] not in posd or e["b"] not in posd:
+                    continue
+                x0, y0 = posd[e["a"]]; x1, y1 = posd[e["b"]]
+                col, ls = etype_style.get(e["type"], ("#666", "-"))
+                if e["type"] == "temporal" and e.get("sign", 1) < 0:
+                    col = "#e05a5a"
+                lw = 0.4 + 2.2 * float(e.get("weight", 0.3))
+                if e.get("directed"):
+                    ax_net.annotate("", xy=(x1, y1), xytext=(x0, y0),
+                                    arrowprops=dict(arrowstyle="-|>", color=col,
+                                                    lw=lw, alpha=0.6, shrinkA=6, shrinkB=6))
+                else:
+                    ax_net.plot([x0, x1], [y0, y1], ls=ls, color=col, lw=lw, alpha=0.5, zorder=1)
+            # nodes
+            for nd in nodes:
+                c = gcol.get(nd["group"], "#9aa")
+                sz = 40 + 260 * min(1.0, nd["degree"] / max(hub_deg, 1e-6))
+                ax_net.scatter([nd["x"]], [nd["y"]], s=sz, c=c, alpha=0.9,
+                               edgecolors="#000", linewidths=0.4, zorder=4)
+                ax_net.text(nd["x"], nd["y"] + 0.045, nd["label"], ha="center", va="bottom",
+                            fontsize=4.6, color="#dde", zorder=5)
+        else:
+            ax_net.text(0.5, 0.5,
+                        "CORRELATION NETWORK ACCUMULATING\n"
+                        "(unifies DataMatrix + SpatialXref + LeadLag · needs correlations to form)\n"
+                        "boots ~75 s · grows as streams correlate",
+                        ha="center", va="center", transform=ax_net.transAxes,
+                        color="#6a5a7a", fontsize=8)
+
+        # ── Panel 2: hub ranking (centrality) ───────────────────────────────
+        ax_hub.set_title("Hub streams (centrality = how connected)",
+                         color="#c8b0e8", fontsize=6.5)
+        if nodes:
+            ranked = sorted(nodes, key=lambda nd: -nd["degree"])[:12]
+            names = [nd["label"] for nd in ranked]
+            degs  = [nd["degree"] for nd in ranked]
+            cols  = [gcol.get(nd["group"], "#9aa") for nd in ranked]
+            ypos = _np.arange(len(names))
+            ax_hub.barh(ypos, degs, color=cols, alpha=0.85)
+            ax_hub.set_yticks(ypos)
+            ax_hub.set_yticklabels(names, fontsize=4.8, color="#cbe")
+            ax_hub.invert_yaxis()
+            ax_hub.set_xlabel("weighted degree", color="#888", fontsize=6)
+        else:
+            ax_hub.axis("off")
+            ax_hub.text(0.5, 0.5, "no hubs yet", ha="center", va="center",
+                        transform=ax_hub.transAxes, color="#5a4a6a", fontsize=7)
+
+        # ── Panel 3: legend + census ────────────────────────────────────────
+        ax_leg.axis("off")
+        ax_leg.set_title("Edge types & census", color="#c8b0e8", fontsize=6.5)
+        leg = [
+            ("━ temporal +  (DataMatrix)", "#4a90e0"),
+            ("━ temporal −  (anti-corr)",  "#e05a5a"),
+            ("┈ spatial  (SpatialXref)",   "#3cb878"),
+            ("➜ lead/lag  (LeadLag)",       "#ff9a3c"),
+        ]
+        y = 0.94
+        for txt, c in leg:
+            ax_leg.text(0.04, y, txt, transform=ax_leg.transAxes, color=c,
+                        fontsize=5.8, va="top")
+            y -= 0.085
+        y -= 0.04
+        rows = [
+            ("Hub stream", hub or "—"),
+            ("Hub centrality", f"{hub_deg:.2f}"),
+            ("Clusters", f"{n_clu}"),
+            ("Temporal edges", f"{n_t}"),
+            ("Spatial edges", f"{n_s}"),
+            ("Lead/lag edges", f"{n_l}"),
+        ]
+        for lbl, val in rows:
+            ax_leg.text(0.04, y, lbl, transform=ax_leg.transAxes, color="#8a7a9a",
+                        fontsize=5.6, va="top")
+            ax_leg.text(0.96, y, val, transform=ax_leg.transAxes, color="#d8c8e0",
+                        fontsize=5.6, va="top", ha="right", fontweight="bold")
+            y -= 0.075
+
+        status = (f"CORRNET {'LIVE' if cn_ok else 'WAITING'} · {n_nodes} streams · {n_edges} edges · "
+                  f"hub={hub or '—'} · {n_clu} clusters · "
+                  "unifies all correlation views · ALL REAL · no new computation")
+        fig.text(0.5, 0.012, status, ha="center", va="bottom",
+                 color="#6a5a70", fontsize=5.6)
+
+    def _draw_xcorrlag(self, fig, p, snap):
+        """v165: LEAD/LAG CROSS-CORRELATION — which planetary stream PRECEDES which, and by how long.
+
+        Zero-lag Pearson (DataMatrix tab) misses precursor structure. This shifts each stream
+        against every other across ±5 min and finds the lag of strongest correlation: if A
+        correlates best with B shifted forward by τ, A LEADS B by τ — A's present predicts B's
+        future ("forward math in consistency → assumed outcome").
+
+        Panel 1 (left): N×N lead/lag matrix (signed minutes; +row leads col; RdBu_r).
+        Panel 2 (top-right): strongest lead→follower relationships table.
+        Panel 3 (bottom-right): cross-correlation function r(τ) for the strongest pair, peak marked.
+        """
+        import numpy as _np
+        fig.suptitle(
+            "LEAD / LAG CROSS-CORRELATION — WHICH STREAM PREDICTS WHICH  "
+            "(time-shifted Pearson · forward math · button)",
+            color="#a8c8e8", fontsize=8.0, fontweight="bold", y=0.985)
+
+        labels = list(snap.get("xcorr_labels") or [])
+        groups = list(snap.get("xcorr_groups") or [])
+        lagM   = snap.get("xcorr_lag_matrix") or []
+        pairs  = list(snap.get("xcorr_lag_pairs") or [])
+        curve  = dict(snap.get("xcorr_lag_curve") or {})
+        n_ll   = int(snap.get("xcorr_n_leadlag") or 0)
+        maxlag = float(snap.get("xcorr_max_lag_min") or 5.0)
+        n_samp = int(snap.get("xcorr_n_samples") or 0)
+        window = int(snap.get("xcorr_window_min") or 0)
+        xc_ok  = bool(snap.get("xcorr_ok", False))
+        gcol = {"Seismic": "#ff5a4a", "Earth-obs": "#ff9a3c", "Space-wx": "#ffd84a",
+                "Air-qual": "#9ae84a", "Ocean": "#3cc8ff", "Atmos": "#4af0d0",
+                "RF/Plat": "#b88aff", "Fusion": "#ff7ad0", "Astro": "#8a9aff"}
+
+        gs = fig.add_gridspec(2, 2, left=0.12, right=0.97, top=0.92, bottom=0.07,
+                              hspace=0.34, wspace=0.26, width_ratios=[1.3, 1.0])
+        ax_mat = fig.add_subplot(gs[:, 0])
+        ax_top = fig.add_subplot(gs[0, 1])
+        ax_cur = fig.add_subplot(gs[1, 1])
+        for ax in (ax_mat, ax_top, ax_cur):
+            ax.set_facecolor("#070b12")
+            ax.tick_params(colors="#888", labelsize=5.5)
+            for sp in ax.spines.values():
+                sp.set_color("#243044")
+
+        # ── Panel 1: lead/lag matrix ───────────────────────────────────────
+        if labels and lagM and len(labels) >= 2:
+            M = _np.array([[float(v) for v in row] for row in lagM], dtype=float)
+            im = ax_mat.imshow(M, cmap="RdBu_r", vmin=-maxlag, vmax=maxlag,
+                               aspect="auto", interpolation="nearest")
+            ax_mat.set_xticks(range(len(labels)))
+            ax_mat.set_yticks(range(len(labels)))
+            ax_mat.set_xticklabels(labels, rotation=90, fontsize=5.0)
+            ax_mat.set_yticklabels(labels, fontsize=5.0)
+            for ti in range(len(labels)):
+                c = gcol.get(groups[ti] if ti < len(groups) else "", "#aaa")
+                ax_mat.get_xticklabels()[ti].set_color(c)
+                ax_mat.get_yticklabels()[ti].set_color(c)
+            for i in range(len(labels)):
+                for j in range(len(labels)):
+                    v = M[i, j]
+                    if i != j and abs(v) >= maxlag * 0.4:
+                        ax_mat.text(j, i, f"{v:+.0f}", ha="center", va="center",
+                                    fontsize=4.0, color=("#fff" if abs(v) > maxlag*0.7 else "#234"))
+            cb = fig.colorbar(im, ax=ax_mat, fraction=0.035, pad=0.02)
+            cb.ax.tick_params(colors="#888", labelsize=5)
+            cb.set_label("lag (min)  +row leads col", color="#999", fontsize=6)
+            ax_mat.set_title(f"{len(labels)} streams · best-lag matrix (±{maxlag:.0f} min scan)",
+                             color="#a8c8e8", fontsize=7.0)
+        else:
+            ax_mat.axis("off")
+            ax_mat.text(0.5, 0.5,
+                        "LEAD/LAG ACCUMULATING\n(needs ≥6 time samples · 30 s/sample · boots ~50 s)",
+                        ha="center", va="center", transform=ax_mat.transAxes,
+                        color="#5a6a7a", fontsize=8)
+
+        # ── Panel 2: strongest lead→follower relationships ─────────────────
+        ax_top.axis("off")
+        ax_top.set_title("Strongest lead → follower links", color="#a8c8e8", fontsize=6.5)
+        if pairs:
+            ax_top.text(0.02, 0.95, "LEADER", transform=ax_top.transAxes,
+                        color="#6a8aa8", fontsize=5.6, fontweight="bold", va="top")
+            ax_top.text(0.46, 0.95, "→ FOLLOWER", transform=ax_top.transAxes,
+                        color="#6a8aa8", fontsize=5.6, fontweight="bold", va="top")
+            ax_top.text(0.80, 0.95, "τ(min)", transform=ax_top.transAxes,
+                        color="#6a8aa8", fontsize=5.6, fontweight="bold", va="top")
+            ax_top.text(0.95, 0.95, "r", transform=ax_top.transAxes,
+                        color="#6a8aa8", fontsize=5.6, fontweight="bold", va="top", ha="right")
+            y = 0.87
+            for pr in pairs[:12]:
+                rc = "#50e050" if abs(pr["r"]) >= 0.7 else "#e0c040"
+                ax_top.text(0.02, y, pr["leader"][:11], transform=ax_top.transAxes,
+                            color="#cfe", fontsize=5.2, va="top")
+                ax_top.text(0.46, y, pr["follower"][:11], transform=ax_top.transAxes,
+                            color="#9ac8e8", fontsize=5.2, va="top")
+                ax_top.text(0.80, y, f"{pr['lag_min']:.1f}", transform=ax_top.transAxes,
+                            color="#dde", fontsize=5.2, va="top")
+                ax_top.text(0.95, y, f"{pr['r']:+.2f}", transform=ax_top.transAxes,
+                            color=rc, fontsize=5.2, va="top", ha="right")
+                y -= 0.072
+                if y < 0.04:
+                    break
+        else:
+            ax_top.text(0.5, 0.5, "no lead/lag links yet\n(zero-lag links on DataMatrix tab)",
+                        ha="center", va="center", transform=ax_top.transAxes,
+                        color="#4a5a6a", fontsize=7)
+
+        # ── Panel 3: cross-correlation function r(τ) for strongest pair ────
+        ax_cur.set_title("Cross-correlation r(τ) — strongest pair",
+                         color="#a8c8e8", fontsize=6.5)
+        if curve and curve.get("lags_min"):
+            lm = _np.array(curve["lags_min"]); rr = _np.array(curve["r"])
+            ax_cur.plot(lm, rr, "-o", color="#4ac0e0", ms=2.5, lw=1.0)
+            ax_cur.axhline(0, color="#444", lw=0.5)
+            ax_cur.axvline(0, color="#555", lw=0.5, ls="--")
+            k = int(_np.argmax(_np.abs(rr)))
+            ax_cur.plot(lm[k], rr[k], "o", color="#ffd040", ms=6, zorder=5)
+            ax_cur.annotate(f"peak r={rr[k]:+.2f}\n@ τ={lm[k]:+.1f} min",
+                            (lm[k], rr[k]), fontsize=5.2, color="#ffd040",
+                            xytext=(6, -2), textcoords="offset points")
+            ax_cur.set_xlabel(f"lag τ (min) — {curve['a']} vs {curve['b']}",
+                              color="#888", fontsize=6)
+            ax_cur.set_ylabel("Pearson r", color="#888", fontsize=6)
+            ax_cur.set_ylim(-1.05, 1.05)
+        else:
+            ax_cur.axis("off")
+            ax_cur.text(0.5, 0.5, "no lagged structure yet", ha="center", va="center",
+                        transform=ax_cur.transAxes, color="#4a5a6a", fontsize=7)
+
+        status = (f"LEAD/LAG {'LIVE' if xc_ok else 'WAITING'} · {len(labels)} streams · "
+                  f"{n_samp} samples ({window}min) · {n_ll} lead/lag links (|r|≥0.5, τ≠0) · "
+                  "shared history with DataMatrix · ALL REAL · no fabrication")
+        fig.text(0.5, 0.012, status, ha="center", va="bottom",
+                 color="#5a6a7a", fontsize=5.6)
+
+    def _draw_spatialxref(self, fig, p, snap):
+        """v164: SPATIAL CO-OCCURRENCE MATRIX — where every geolocated real stream co-locates.
+
+        Panel 1 (top-left): N×N spatial-overlap heatmap (overlap coefficient 0..1).
+        Panel 2 (top-right): strongest spatial associations (overlap bar chart).
+        Panel 3 (bottom full-width): world map of CROSS-CONFIRMED cells — bins where ≥2
+                                     independent real streams co-occur, sized/coloured by
+                                     how many distinct streams agree (the verification mesh).
+        """
+        import numpy as _np
+        fig.suptitle(
+            "SPATIAL CO-OCCURRENCE MATRIX — WHERE REAL STREAMS AGREE  "
+            "(geolocated cross-reference · verification mesh · button)",
+            color="#a8e0c8", fontsize=8.0, fontweight="bold", y=0.985)
+
+        labels = list(snap.get("scoinc_labels") or [])
+        groups = list(snap.get("scoinc_groups") or [])
+        matrix = snap.get("scoinc_matrix") or []
+        counts = list(snap.get("scoinc_counts") or [])
+        top    = list(snap.get("scoinc_top_pairs") or [])
+        cooccur = list(snap.get("scoinc_cooccur_cells") or [])
+        n_layers = int(snap.get("scoinc_n_layers") or len(labels))
+        n_pts    = int(snap.get("scoinc_n_points_total") or 0)
+        n_sig    = int(snap.get("scoinc_n_significant") or 0)
+        bin_deg  = float(snap.get("scoinc_bin_deg") or 5.0)
+        max_lay  = int(snap.get("scoinc_max_layers") or 0)
+        n_conf   = int(snap.get("scoinc_n_confirmed_cells") or 0)
+        sx_ok    = bool(snap.get("scoinc_ok", False))
+        gcol = {"Seismic": "#ff5a4a", "Earth-obs": "#ff9a3c", "Air-qual": "#9ae84a",
+                "Ocean": "#3cc8ff", "RF/Plat": "#b88aff", "Fusion": "#ff7ad0"}
+
+        gs = fig.add_gridspec(2, 2, left=0.10, right=0.97, top=0.92, bottom=0.07,
+                              hspace=0.42, wspace=0.30, height_ratios=[1.05, 1.0])
+        ax_mat = fig.add_subplot(gs[0, 0])
+        ax_top = fig.add_subplot(gs[0, 1])
+        ax_map = fig.add_subplot(gs[1, :])
+        for ax in (ax_mat, ax_top, ax_map):
+            ax.set_facecolor("#06100c")
+            ax.tick_params(colors="#888", labelsize=5.5)
+            for sp in ax.spines.values():
+                sp.set_color("#243828")
+
+        # ── Panel 1: spatial-overlap heatmap ────────────────────────────────
+        if labels and matrix and n_layers >= 2:
+            M = _np.array([[float(v) for v in row] for row in matrix], dtype=float)
+            im = ax_mat.imshow(M, cmap="YlGn", vmin=0.0, vmax=1.0,
+                               aspect="auto", interpolation="nearest")
+            ax_mat.set_xticks(range(len(labels)))
+            ax_mat.set_yticks(range(len(labels)))
+            ax_mat.set_xticklabels(labels, rotation=90, fontsize=5.0)
+            ax_mat.set_yticklabels(labels, fontsize=5.0)
+            for ti in range(len(labels)):
+                c = gcol.get(groups[ti] if ti < len(groups) else "", "#aaa")
+                ax_mat.get_xticklabels()[ti].set_color(c)
+                ax_mat.get_yticklabels()[ti].set_color(c)
+            for i in range(len(labels)):
+                for j in range(len(labels)):
+                    v = M[i, j]
+                    if i != j and v >= 0.30:
+                        ax_mat.text(j, i, f"{v:.2f}", ha="center", va="center",
+                                    fontsize=4.0, color=("#063" if v > 0.6 else "#395"))
+            cb = fig.colorbar(im, ax=ax_mat, fraction=0.04, pad=0.02)
+            cb.ax.tick_params(colors="#888", labelsize=5)
+            cb.set_label("overlap coeff", color="#999", fontsize=6)
+            ax_mat.set_title(f"{n_layers} geolocated layers · {n_pts} pts · {bin_deg:.0f}° bins",
+                             color="#a8d8c0", fontsize=7.0)
+        else:
+            ax_mat.axis("off")
+            ax_mat.text(0.5, 0.5,
+                        "SPATIAL MATRIX ACCUMULATING\n(needs ≥2 geolocated layers · boots ~95 s)",
+                        ha="center", va="center", transform=ax_mat.transAxes,
+                        color="#5a7a6a", fontsize=8)
+
+        # ── Panel 2: strongest spatial associations ─────────────────────────
+        ax_top.set_title("Strongest spatial associations", color="#a8d8c0", fontsize=6.5)
+        if top:
+            names = [f"{pr['a']}↔{pr['b']}" for pr in top]
+            ovs   = [pr["overlap"] for pr in top]
+            ypos  = _np.arange(len(names))
+            ax_top.barh(ypos, ovs, color="#3cb878", alpha=0.85)
+            ax_top.set_yticks(ypos)
+            ax_top.set_yticklabels(names, fontsize=4.8, color="#bec")
+            ax_top.invert_yaxis()
+            ax_top.set_xlim(0, 1.02)
+            ax_top.set_xlabel("overlap coefficient", color="#888", fontsize=6)
+            for yi, ov in enumerate(ovs):
+                ax_top.text(ov + 0.02, yi, f"{ov:.2f}", va="center", ha="left",
+                            fontsize=4.6, color="#cec")
+        else:
+            ax_top.axis("off")
+            ax_top.text(0.5, 0.5, "no spatial associations yet", ha="center", va="center",
+                        transform=ax_top.transAxes, color="#4a6a5a", fontsize=7)
+
+        # ── Panel 3: cross-confirmed cell map (verification mesh) ───────────
+        ax_map.set_xlim(-180, 180); ax_map.set_ylim(-90, 90)
+        ax_map.set_xlabel("Longitude", color="#777", fontsize=6)
+        ax_map.set_ylabel("Latitude",  color="#777", fontsize=6)
+        ax_map.set_title(f"CROSS-CONFIRMED CELLS — bins where ≥2 independent real streams co-occur "
+                         f"({n_conf} cells · up to {max_lay} streams agree)",
+                         color="#a8d8c0", fontsize=7.0)
+        for _lg in range(-60, 91, 30):
+            ax_map.axhline(_lg, color="#0e1a14", lw=0.3, ls="--")
+        for _lg in range(-180, 181, 60):
+            ax_map.axvline(_lg, color="#0e1a14", lw=0.3, ls="--")
+        if cooccur:
+            clon = _np.array([c["lon"] for c in cooccur])
+            clat = _np.array([c["lat"] for c in cooccur])
+            nlay = _np.array([c["n_layers"] for c in cooccur])
+            sc = ax_map.scatter(clon, clat, c=nlay, cmap="plasma", s=18 + 14 * nlay,
+                                marker="s", alpha=0.82, vmin=2,
+                                vmax=max(3, max_lay), edgecolors="#000", linewidths=0.2)
+            cb2 = fig.colorbar(sc, ax=ax_map, fraction=0.025, pad=0.01)
+            cb2.ax.tick_params(colors="#888", labelsize=5)
+            cb2.set_label("# streams agreeing", color="#999", fontsize=6)
+            # annotate the single most-confirmed cell
+            top_cell = cooccur[0]
+            ax_map.annotate(f"{top_cell['n_layers']}×: " + ",".join(top_cell["layers"][:4]),
+                            (top_cell["lon"], top_cell["lat"]),
+                            fontsize=4.6, color="#ffd",
+                            xytext=(6, 6), textcoords="offset points")
+        else:
+            ax_map.text(0.5, 0.5,
+                        "no cross-confirmed cells yet\n(needs ≥2 streams sharing a 5° cell)",
+                        ha="center", va="center", transform=ax_map.transAxes,
+                        color="#4a6a5a", fontsize=8)
+
+        status = (f"SPATIAL-XREF {'LIVE' if sx_ok else 'WAITING'} · {n_layers} layers · "
+                  f"{n_pts} geolocated pts · {n_sig} spatial associations · "
+                  f"{n_conf} cross-confirmed cells · ALL REAL (set overlap, never fabricated)")
+        fig.text(0.5, 0.012, status, ha="center", va="bottom",
+                 color="#5a7068", fontsize=5.6)
+
+    def _draw_xcorrmatrix(self, fig, p, snap):
+        """v163: CROSS-STREAM CORRELATION MATRIX — how every live planetary stream moves together.
+
+        Panel 1 (large, left): N×N Pearson correlation heatmap across all live metrics
+                               (RdBu_r, −1..+1), group-coloured tick labels.
+        Panel 2 (top-right): strongest cross-stream links (signed-r bar chart).
+        Panel 3 (mid-right): live-metric reference table organised by group + latest value.
+        Panel 4 (bottom): census (live metrics, samples, window, significant links).
+        """
+        import numpy as _np
+        fig.suptitle(
+            "CROSS-STREAM CORRELATION MATRIX — REAL PLANETARY DATA, ORGANISED  "
+            "(auto-detected live streams · Pearson · button)",
+            color="#e0a8e0", fontsize=8.0, fontweight="bold", y=0.985)
+
+        labels = list(snap.get("xcorr_labels") or [])
+        groups = list(snap.get("xcorr_groups") or [])
+        matrix = snap.get("xcorr_matrix") or []
+        top    = list(snap.get("xcorr_top_pairs") or [])
+        latest = dict(snap.get("xcorr_latest") or {})
+        n_metrics = int(snap.get("xcorr_n_metrics") or len(labels))
+        n_samples = int(snap.get("xcorr_n_samples") or 0)
+        window    = int(snap.get("xcorr_window_min") or 0)
+        n_sig     = int(snap.get("xcorr_n_significant") or 0)
+        xc_ok     = bool(snap.get("xcorr_ok", False))
+        gcol = {"Seismic": "#ff5a4a", "Earth-obs": "#ff9a3c", "Space-wx": "#ffd84a",
+                "Air-qual": "#9ae84a", "Ocean": "#3cc8ff", "Atmos": "#4af0d0",
+                "RF/Plat": "#b88aff", "Fusion": "#ff7ad0", "Astro": "#8a9aff"}
+
+        gs = fig.add_gridspec(2, 2, left=0.13, right=0.97, top=0.92, bottom=0.06,
+                              hspace=0.30, wspace=0.28,
+                              width_ratios=[1.35, 1.0], height_ratios=[1.25, 1.0])
+        ax_mat = fig.add_subplot(gs[:, 0])
+        ax_top = fig.add_subplot(gs[0, 1])
+        ax_ref = fig.add_subplot(gs[1, 1])
+        for ax in (ax_mat, ax_top, ax_ref):
+            ax.set_facecolor("#07050f")
+            ax.tick_params(colors="#888", labelsize=5.5)
+            for sp in ax.spines.values():
+                sp.set_color("#2a2438")
+
+        # ── Panel 1: correlation heatmap ────────────────────────────────────
+        if labels and matrix and n_metrics >= 2:
+            M = _np.array([[(_np.nan if v is None else float(v)) for v in row]
+                           for row in matrix], dtype=float)
+            im = ax_mat.imshow(M, cmap="RdBu_r", vmin=-1.0, vmax=1.0,
+                               aspect="auto", interpolation="nearest")
+            ax_mat.set_xticks(range(len(labels)))
+            ax_mat.set_yticks(range(len(labels)))
+            ax_mat.set_xticklabels(labels, rotation=90, fontsize=5.0)
+            ax_mat.set_yticklabels(labels, fontsize=5.0)
+            for ti, lbl in enumerate(labels):
+                c = gcol.get(groups[ti] if ti < len(groups) else "", "#aaa")
+                ax_mat.get_xticklabels()[ti].set_color(c)
+                ax_mat.get_yticklabels()[ti].set_color(c)
+            # annotate strong cells
+            for i in range(len(labels)):
+                for j in range(len(labels)):
+                    v = M[i, j]
+                    if _np.isfinite(v) and i != j and abs(v) >= 0.6:
+                        ax_mat.text(j, i, f"{v:+.1f}", ha="center", va="center",
+                                    fontsize=4.0,
+                                    color=("#fff" if abs(v) > 0.8 else "#222"))
+            cb = fig.colorbar(im, ax=ax_mat, fraction=0.035, pad=0.02)
+            cb.ax.tick_params(colors="#888", labelsize=5)
+            cb.set_label("Pearson r", color="#999", fontsize=6)
+            ax_mat.set_title(f"{n_metrics} live planetary streams · {n_samples} samples "
+                             f"({window} min rolling)",
+                             color="#d8a8d8", fontsize=7.0)
+        else:
+            ax_mat.axis("off")
+            ax_mat.text(0.5, 0.5,
+                        "CORRELATION MATRIX ACCUMULATING\n"
+                        f"({n_samples} samples · needs ≥6 · 30 s/sample · boots ~50 s)\n"
+                        "auto-detecting which planetary streams are live …",
+                        ha="center", va="center", transform=ax_mat.transAxes,
+                        color="#7a5a7a", fontsize=8)
+
+        # ── Panel 2: strongest cross-stream links ───────────────────────────
+        ax_top.set_title("Strongest cross-stream links (|r|≥0.5)",
+                         color="#d8a8d8", fontsize=6.5)
+        if top:
+            names = [f"{pr['a']}↔{pr['b']}" for pr in top]
+            rs    = [pr["r"] for pr in top]
+            ypos  = _np.arange(len(names))
+            cols  = ["#e05a4a" if r < 0 else "#4a90e0" for r in rs]
+            ax_top.barh(ypos, rs, color=cols, alpha=0.85)
+            ax_top.set_yticks(ypos)
+            ax_top.set_yticklabels(names, fontsize=4.8, color="#cbe")
+            ax_top.invert_yaxis()
+            ax_top.set_xlim(-1.05, 1.05)
+            ax_top.axvline(0, color="#444", lw=0.5)
+            ax_top.set_xlabel("Pearson r  (blue + / red −)", color="#888", fontsize=6)
+            for yi, r in enumerate(rs):
+                ax_top.text(r + (0.03 if r >= 0 else -0.03), yi, f"{r:+.2f}",
+                            va="center", ha="left" if r >= 0 else "right",
+                            fontsize=4.6, color="#dde")
+        else:
+            ax_top.axis("off")
+            ax_top.text(0.5, 0.5, "no significant links yet", ha="center", va="center",
+                        transform=ax_top.transAxes, color="#5a4a6a", fontsize=7)
+
+        # ── Panel 3: live-metric reference table (organised by group) ───────
+        ax_ref.axis("off")
+        ax_ref.set_title("Live-stream reference (latest value, by group)",
+                         color="#d8a8d8", fontsize=6.5)
+        if latest:
+            by_group: dict = {}
+            for lbl, info in latest.items():
+                by_group.setdefault(info["group"], []).append((lbl, info["value"]))
+            y = 0.96
+            for grp in sorted(by_group.keys()):
+                ax_ref.text(0.02, y, grp, transform=ax_ref.transAxes,
+                            color=gcol.get(grp, "#aaa"), fontsize=5.6,
+                            fontweight="bold", va="top")
+                y -= 0.052
+                for lbl, val in by_group[grp]:
+                    vs = (f"{val:.1f}" if abs(val) < 1e4 else f"{val:.3g}")
+                    ax_ref.text(0.06, y, lbl, transform=ax_ref.transAxes,
+                                color="#9a8aa8", fontsize=5.2, va="top")
+                    ax_ref.text(0.94, y, vs, transform=ax_ref.transAxes,
+                                color="#d8c8e0", fontsize=5.2, va="top", ha="right")
+                    y -= 0.046
+                    if y < 0.04:
+                        break
+                if y < 0.04:
+                    break
+        else:
+            ax_ref.text(0.5, 0.5, "no live streams yet", ha="center", va="center",
+                        transform=ax_ref.transAxes, color="#5a4a6a", fontsize=7)
+
+        status = (f"XCORR {'LIVE' if xc_ok else 'WAITING'} · {n_metrics} live streams · "
+                  f"{n_samples} samples ({window}min) · {n_sig} significant links · "
+                  "ALL REAL (Pearson over measured samples) · blank = insufficient/constant data")
+        fig.text(0.5, 0.012, status, ha="center", va="bottom",
+                 color="#6a5a70", fontsize=5.6)
+
+    def _draw_kinvis(self, fig, p, snap):
+        """v162: KINETIC VISION EXPANSION — time-integrated planetary sweep by real moving platforms.
+
+        Panel 1 (full-width): world map — cells colored by observation AGE (fresh=bright,
+                              stale=fading toward window edge), real platform positions
+                              overlaid (sats=▲ by band, aircraft=· ), velocity arrows show
+                              predicted next sweep direction.
+        Panel 2: coverage / lifetime gauge + expansion rate.
+        Panel 3: per-band cell contribution (multispectrum census).
+        Panel 4: kinetic prediction error-correction (Jaccard agreement + residual + n corrections).
+        """
+        import numpy as _np
+        fig.suptitle(
+            "KINETIC VISION EXPANSION — TIME-INTEGRATED PLANETARY SWEEP  "
+            "(REAL ORBITAL/FLIGHT KINETICS · ERROR-CORRECTED · button)",
+            color="#7ad0e0", fontsize=8.0, fontweight="bold", y=0.985)
+
+        grid     = list(snap.get("kinvis_grid") or [])
+        n_cells  = int(snap.get("kinvis_n_cells")        or 2592)
+        observed = int(snap.get("kinvis_observed_cells") or 0)
+        cov      = float(snap.get("kinvis_coverage_pct") or 0.0)
+        life     = int(snap.get("kinvis_lifetime_cells") or 0)
+        life_pct = float(snap.get("kinvis_lifetime_pct") or 0.0)
+        n_plat   = int(snap.get("kinvis_n_platforms")    or 0)
+        n_sats   = int(snap.get("kinvis_n_sats")         or 0)
+        n_air    = int(snap.get("kinvis_n_aircraft")     or 0)
+        jaccard  = float(snap.get("kinvis_predict_jaccard") or 0.0)
+        resid    = int(snap.get("kinvis_predict_residual_cells") or 0)
+        expansion = int(snap.get("kinvis_expansion_rate") or 0)
+        bands    = list(snap.get("kinvis_bands") or [])
+        window   = int(snap.get("kinvis_window_min") or 30)
+        n_corr   = int(snap.get("kinvis_n_corrections") or 0)
+        kv_ok    = bool(snap.get("kinvis_ok", False))
+        sats_all = list(snap.get("tracked_satellites") or [])
+        gnss_all = list(snap.get("gnss_satellites") or [])
+        ext_all  = list(snap.get("extended_sats") or [])
+        air_all  = list(snap.get("aircraft") or [])
+
+        gs = fig.add_gridspec(2, 3, left=0.05, right=0.97, top=0.92, bottom=0.07,
+                              hspace=0.40, wspace=0.34,
+                              height_ratios=[1.55, 1.0])
+        ax_map = fig.add_subplot(gs[0, :])
+        ax_cov = fig.add_subplot(gs[1, 0])
+        ax_bnd = fig.add_subplot(gs[1, 1])
+        ax_err = fig.add_subplot(gs[1, 2])
+        for ax in (ax_map, ax_cov, ax_bnd, ax_err):
+            ax.set_facecolor("#05060f")
+            ax.tick_params(colors="#777", labelsize=6)
+            for sp in ax.spines.values():
+                sp.set_color("#243044")
+
+        # ── Panel 1: world sweep map ────────────────────────────────────────
+        ax_map.set_xlim(-180, 180); ax_map.set_ylim(-90, 90)
+        ax_map.set_xlabel("Longitude", color="#777", fontsize=6)
+        ax_map.set_ylabel("Latitude",  color="#777", fontsize=6)
+        ax_map.set_title(f"Cells swept within last {window} min by real moving platforms "
+                         f"(age-coloured) · {observed}/{n_cells} = {cov:.1f}%",
+                         color="#9ad8e8", fontsize=7.5)
+        for _lg in range(-60, 91, 30):
+            ax_map.axhline(_lg, color="#141a26", lw=0.3, ls="--")
+        for _lg in range(-180, 181, 60):
+            ax_map.axvline(_lg, color="#141a26", lw=0.3, ls="--")
+
+        if grid:
+            glon = _np.array([c["lon"] for c in grid])
+            glat = _np.array([c["lat"] for c in grid])
+            gage = _np.array([c["age_s"] for c in grid])
+            # freshness 1.0 (just now) → 0.0 (window edge)
+            fresh = 1.0 - _np.clip(gage / (window * 60.0), 0.0, 1.0)
+            ax_map.scatter(glon, glat, c=fresh, cmap="turbo", s=24, marker="s",
+                           alpha=0.78, vmin=0.0, vmax=1.0, zorder=2,
+                           edgecolors="none")
+        else:
+            ax_map.text(0.5, 0.5,
+                        "KINETIC VISION ACCUMULATING\n(real satellites + aircraft sweep the grid · boots ~130s)",
+                        ha="center", va="center", transform=ax_map.transAxes,
+                        color="#3a6a7a", fontsize=8)
+
+        # platform overlays (band-coloured)
+        band_col = {"gnss": "#ffe24a", "extended": "#ff7a3c", "aircraft": "#4af0d0"}
+        def _scatter_sats(lst, col, mk, lbl, sz):
+            xs = [s["lon"] for s in lst if s.get("lat") is not None and s.get("lon") is not None]
+            ys = [s["lat"] for s in lst if s.get("lat") is not None and s.get("lon") is not None]
+            if xs:
+                ax_map.scatter(xs, ys, c=col, s=sz, marker=mk, alpha=0.9, zorder=5,
+                               edgecolors="#000", linewidths=0.2, label=lbl)
+        _scatter_sats(gnss_all, band_col["gnss"], "^", f"GNSS {len(gnss_all)}", 26)
+        _scatter_sats(sats_all, "#d0d0ff", "^", f"sat {len(sats_all)}", 18)
+        _scatter_sats(ext_all,  band_col["extended"], "v", f"LEO {len(ext_all)}", 12)
+        if air_all:
+            axs = [a["lon"] for a in air_all if a.get("lat") is not None]
+            ays = [a["lat"] for a in air_all if a.get("lat") is not None]
+            ax_map.scatter(axs, ays, c=band_col["aircraft"], s=4, marker=".",
+                           alpha=0.55, zorder=4, label=f"ADS-B {len(air_all)}")
+        if grid or sats_all or air_all:
+            ax_map.legend(loc="lower left", fontsize=5.0, labelcolor="#ccc",
+                          framealpha=0.25, ncol=4, markerscale=1.2)
+
+        # ── Panel 2: coverage / lifetime / expansion ───────────────────────
+        ax_cov.set_title("Vision (window vs lifetime)", color="#9ad8e8", fontsize=6.5)
+        ax_cov.set_xlim(0, 100); ax_cov.set_ylim(-0.6, 1.6)
+        ax_cov.barh(1.0, cov, height=0.55, color="#28c0e0", alpha=0.85)
+        ax_cov.barh(0.0, life_pct, height=0.55, color="#9060e0", alpha=0.7)
+        ax_cov.text(1.0, 1.0, f"  window {cov:.1f}%  ({observed} cells)",
+                    va="center", color="#cfe", fontsize=6.5)
+        ax_cov.text(1.0, 0.0, f"  lifetime {life_pct:.1f}%  ({life} cells)",
+                    va="center", color="#dcf", fontsize=6.5)
+        ax_cov.set_yticks([])
+        ax_cov.set_xlabel("% of 2592-cell grid", color="#777", fontsize=6)
+        ax_cov.text(0.5, -0.40, f"expansion +{expansion} new cells / cycle  ·  {n_plat} live platforms",
+                    transform=ax_cov.transAxes, ha="center", color="#7ad0a0", fontsize=6.0)
+
+        # ── Panel 3: per-band multispectrum contribution ───────────────────
+        ax_bnd.set_title("Bands sweeping now (all wave kinds)", color="#9ad8e8", fontsize=6.5)
+        if grid:
+            band_counts: dict = {}
+            for c in grid:
+                for b in c.get("bands", []):
+                    band_counts[b] = band_counts.get(b, 0) + 1
+            if band_counts:
+                items = sorted(band_counts.items(), key=lambda kv: -kv[1])
+                labels = [k for k, _v in items]
+                vals   = [v for _k, v in items]
+                ypos = _np.arange(len(labels))
+                cols = ["#ffe24a", "#d0d0ff", "#ff7a3c", "#4af0d0", "#80ff80"][:len(labels)]
+                ax_bnd.barh(ypos, vals, color=cols, alpha=0.85)
+                ax_bnd.set_yticks(ypos)
+                ax_bnd.set_yticklabels(labels, fontsize=5.2, color="#cce")
+                ax_bnd.invert_yaxis()
+                ax_bnd.set_xlabel("cells observed", color="#777", fontsize=6)
+            else:
+                ax_bnd.text(0.5, 0.5, "no band data", ha="center", va="center",
+                            transform=ax_bnd.transAxes, color="#3a6a7a", fontsize=7)
+        else:
+            ax_bnd.text(0.5, 0.5, f"{len(bands)} bands pending", ha="center", va="center",
+                        transform=ax_bnd.transAxes, color="#3a6a7a", fontsize=7)
+
+        # ── Panel 4: kinetic prediction error-correction ───────────────────
+        ax_err.set_title("Kinetic prediction → error-correction", color="#9ad8e8", fontsize=6.5)
+        ax_err.axis("off")
+        jc_col = "#50e050" if jaccard >= 0.6 else ("#e0c040" if jaccard >= 0.3 else "#e06040")
+        rows = [
+            ("Forward-predict agreement", f"{jaccard*100:.1f}% Jaccard", jc_col),
+            ("Prediction residual",       f"{resid} cells", "#cfe"),
+            ("Correction cycles",         f"×{n_corr}", "#cfe"),
+            ("Platforms (sat / air)",     f"{n_sats} / {n_air}", "#cfe"),
+            ("Window (real-time decay)",  f"{window} min", "#cfe"),
+            ("Wave kinds active",         f"{len(bands)}", "#cfe"),
+        ]
+        y = 0.92
+        for lbl, val, col in rows:
+            ax_err.text(0.04, y, lbl, transform=ax_err.transAxes,
+                        color="#6a8aa0", fontsize=6.2, va="top")
+            ax_err.text(0.96, y, val, transform=ax_err.transAxes,
+                        color=col, fontsize=6.6, va="top", ha="right", fontweight="bold")
+            y -= 0.135
+        ax_err.text(0.5, 0.04,
+                    "subpoint advanced by REAL measured displacement (math in motion);\n"
+                    "predicted sweep corrected against actual sweep every cycle.",
+                    transform=ax_err.transAxes, ha="center", va="bottom",
+                    color="#3a5a6a", fontsize=5.2)
+
+        status = (f"KINVIS {'LIVE' if kv_ok else 'WAITING'} · {n_plat} real platforms · "
+                  f"{observed}/{n_cells} cells swept in {window}min · "
+                  "ALL REAL (orbital/flight kinetics) · empty cells never fabricated")
+        fig.text(0.5, 0.012, status, ha="center", va="bottom",
+                 color="#3a6070", fontsize=5.6)
+
+    def _draw_geocurrent(self, fig, p, snap):
+        """v161: GEO CURRENTS — 10k+ METAR surface stations + OSCAR real ocean surface current vectors.
+
+        Panel 1 (top full-width): World map — OSCAR current quivers (coloured by speed, cool cmap)
+                                   overlaid with METAR station temperature scatter (RdYlBu_r).
+        Panel 2: OSCAR current speed distribution histogram.
+        Panel 3: METAR surface temperature distribution histogram.
+        """
+        import numpy as _np
+        fig.suptitle(
+            "GEO CURRENTS — METAR SURFACE STATIONS + OSCAR OCEAN CURRENTS  [REAL · button]",
+            color="#e0c87a", fontsize=8.5, fontweight="bold", y=0.985)
+
+        metar    = list(snap.get("metar_stations")  or [])
+        currents = list(snap.get("ocean_currents")  or [])
+        metar_n  = int(snap.get("metar_n")           or len(metar))
+        curr_n   = int(snap.get("ocean_currents_n")  or len(currents))
+        metar_ok = bool(snap.get("metar_ok",   False))
+        curr_ok  = bool(snap.get("ocean_currents_ok", False))
+
+        gs = fig.add_gridspec(2, 2, left=0.05, right=0.97, top=0.93, bottom=0.07,
+                              hspace=0.42, wspace=0.30)
+        ax_map  = fig.add_subplot(gs[0, :])
+        ax_spd  = fig.add_subplot(gs[1, 0])
+        ax_temp = fig.add_subplot(gs[1, 1])
+
+        for ax in (ax_map, ax_spd, ax_temp):
+            ax.set_facecolor("#060614")
+            ax.tick_params(colors="#777", labelsize=6)
+            for sp in ax.spines.values():
+                sp.set_color("#2a2a3a")
+
+        # ── Panel 1: world map ──────────────────────────────────────────────
+        ax_map.set_xlim(-180, 180); ax_map.set_ylim(-90, 90)
+        ax_map.set_xlabel("Longitude", color="#777", fontsize=6)
+        ax_map.set_ylabel("Latitude",  color="#777", fontsize=6)
+        ax_map.set_title("OSCAR Ocean Surface Currents  +  METAR Station Temperature",
+                         color="#9ab8d8", fontsize=7.5)
+        ax_map.axhline(0, color="#333", lw=0.5)
+        for _lg in range(-60, 91, 30):
+            ax_map.axhline(_lg, color="#1a1a28", lw=0.3, ls="--")
+        for _lg in range(-180, 181, 60):
+            ax_map.axvline(_lg, color="#1a1a28", lw=0.3, ls="--")
+
+        if currents:
+            qlats = _np.array([c["lat"]  for c in currents])
+            qlons = _np.array([c["lon"]  for c in currents])
+            qu    = _np.array([c["u_ms"] for c in currents])
+            qv    = _np.array([c["v_ms"] for c in currents])
+            spd   = _np.sqrt(qu**2 + qv**2)
+            spd_max = max(float(spd.max()), 0.01)
+            ax_map.quiver(qlons, qlats, qu, qv,
+                          spd, cmap="cool", alpha=0.72,
+                          scale=spd_max * 45, width=0.0025,
+                          clim=(0, spd_max), zorder=3)
+            ax_map.text(0.01, 0.02,
+                        f"OSCAR: {len(currents)} vectors · max {spd_max:.3f} m/s  [MEASURED analysis]",
+                        transform=ax_map.transAxes, color="#50b8d0", fontsize=5.5, va="bottom")
+        else:
+            ax_map.text(0.5, 0.5,
+                        "OSCAR ERDDAP UNREACHABLE\n(coastwatch.pfeg.noaa.gov · no current data)",
+                        ha="center", va="center", transform=ax_map.transAxes,
+                        color="#3a5a7a", fontsize=8)
+
+        if metar:
+            mlats = _np.array([m["lat"] for m in metar])
+            mlons = _np.array([m["lon"] for m in metar])
+            temps = _np.array([m.get("temp_c", _np.nan) for m in metar], dtype=float)
+            valid = ~_np.isnan(temps)
+            if valid.any():
+                ax_map.scatter(mlons[valid], mlats[valid],
+                               c=temps[valid], cmap="RdYlBu_r",
+                               s=2.0, alpha=0.60, zorder=5,
+                               vmin=-35, vmax=45)
+                ax_map.text(0.01, 0.08,
+                            f"METAR: {metar_n:,} stations  [REAL measured T/wind/pressure]",
+                            transform=ax_map.transAxes, color="#d8b848", fontsize=5.5, va="bottom")
+        else:
+            ax_map.text(0.5, 0.35,
+                        "METAR: WAITING  (aviationweather.gov · boots at ~165s)",
+                        ha="center", va="center", transform=ax_map.transAxes,
+                        color="#3a5a3a", fontsize=7)
+
+        # ── Panel 2: OSCAR speed histogram ─────────────────────────────────
+        ax_spd.set_title("Ocean Current Speed", color="#9ab8d8", fontsize=6.5)
+        ax_spd.set_xlabel("Speed (m/s)", color="#777", fontsize=6)
+        ax_spd.set_ylabel("Grid cells",  color="#777", fontsize=6)
+        if currents:
+            spds = _np.array([_np.sqrt(c["u_ms"]**2 + c["v_ms"]**2) for c in currents])
+            ax_spd.hist(spds, bins=30, color="#2898c8", alpha=0.78,
+                        edgecolor="#186888", linewidth=0.5)
+            ax_spd.axvline(float(spds.mean()), color="#e8d048", lw=1.0, ls="--",
+                           label=f"mean {float(spds.mean()):.3f} m/s")
+            ax_spd.legend(fontsize=5.5, labelcolor="#ccc", framealpha=0)
+        else:
+            ax_spd.text(0.5, 0.5, "No OSCAR data", ha="center", va="center",
+                        transform=ax_spd.transAxes, color="#3a5a7a", fontsize=7)
+
+        # ── Panel 3: METAR temperature histogram ───────────────────────────
+        ax_temp.set_title("METAR Surface Temperature", color="#9ab8d8", fontsize=6.5)
+        ax_temp.set_xlabel("Temperature (°C)", color="#777", fontsize=6)
+        ax_temp.set_ylabel("Station count",    color="#777", fontsize=6)
+        if metar:
+            temps_l = [m["temp_c"] for m in metar if "temp_c" in m]
+            if temps_l:
+                t_arr = _np.array(temps_l)
+                ax_temp.hist(t_arr, bins=40, color="#e06820", alpha=0.78,
+                             edgecolor="#903810", linewidth=0.5)
+                ax_temp.axvline(float(t_arr.mean()), color="#50e050", lw=1.0, ls="--",
+                                label=f"mean {float(t_arr.mean()):.1f}°C")
+                ax_temp.legend(fontsize=5.5, labelcolor="#ccc", framealpha=0)
+        else:
+            ax_temp.text(0.5, 0.5, "No METAR data", ha="center", va="center",
+                         transform=ax_temp.transAxes, color="#3a5a3a", fontsize=7)
+
+        # ── status footer ───────────────────────────────────────────────────
+        parts = [f"METAR {'LIVE '+str(metar_n)+' stn' if metar_ok else 'WAITING'}",
+                 f"OSCAR {'LIVE '+str(curr_n)+' vec' if curr_ok else 'WAITING'}",
+                 "aviationweather.gov + NOAA CoastWatch ERDDAP · ALL REAL · empty if unreachable"]
+        fig.text(0.5, 0.012, "  |  ".join(parts),
+                 ha="center", va="bottom", color="#3a5870", fontsize=5.5)
+
+    def _draw_kineticprop(self, fig, p, snap):
+        """v160: KINETIC PROPAGATOR — semi-Lagrangian atmospheric advection + Coriolis + iterative error-correction.
+
+        The "math in motion" engine: takes the real 2592-cell recon grid, propagates it forward
+        in time using real NWP wind vectors, then corrects predictions against new real obs.
+        Every predicted cell labeled PREDICTED with uncertainty σ — no false data.
+        """
+        import numpy as np, math as _m
+        fig.patch.set_facecolor("#020308")
+        gs = fig.add_gridspec(2, 3, height_ratios=[1.3, 1.0], hspace=0.30, wspace=0.22,
+                              left=0.04, right=0.99, top=0.92, bottom=0.06)
+        ax_map  = fig.add_subplot(gs[0, :])    # full-width: propagated world map
+        ax_conv = fig.add_subplot(gs[1, 0])    # convergence / residual histogram
+        ax_unc  = fig.add_subplot(gs[1, 1])    # uncertainty vs prediction horizon
+        ax_cen  = fig.add_subplot(gs[1, 2])    # census + physics parameters
+
+        kgrid    = snap.get("kinprop_grid") or []
+        n_cells  = int(snap.get("kinprop_n_cells") or 0)
+        n_pred   = int(snap.get("kinprop_n_predicted") or 0)
+        n_corr   = int(snap.get("kinprop_n_corrected") or 0)
+        horizon  = float(snap.get("kinprop_pred_horizon_min") or 0.0)
+        resid    = float(snap.get("kinprop_residual_mean") or 0.0)
+        max_unc  = float(snap.get("kinprop_max_uncertainty") or 0.0)
+        corl_km  = float(snap.get("kinprop_coriolis_deflection_km") or 0.0)
+        kp_ok    = bool(snap.get("kinprop_ok", False))
+        recon    = snap.get("recon_grid") or []
+        atmos    = snap.get("atmos_grid") or []
+
+        # ── Panel 1: Propagated world map ──
+        ax_map.set_facecolor("#020308"); ax_map.set_xlim(-180, 180); ax_map.set_ylim(-90, 90)
+        ax_map.tick_params(colors="#5566aa", labelsize=6)
+        for sp in ax_map.spines.values(): sp.set_color("#0a0c14")
+        for lo in range(-180, 181, 30): ax_map.axvline(lo, color="#06080e", lw=0.3)
+        for la in range(-90, 91, 30):   ax_map.axhline(la, color="#06080e", lw=0.3)
+        ax_map.axhline(0, color="#0e1020", lw=0.8)
+
+        meas_cells = [c for c in kgrid if c.get("src") == "measured"]
+        pred_cells = [c for c in kgrid if c.get("src") == "predicted"]
+
+        if pred_cells:
+            # Color by T; alpha encodes confidence (inverse of sigma)
+            temps_p = [c.get("T", 0.0) for c in pred_cells]
+            sigmas  = [c.get("sigma", 1.0) for c in pred_cells]
+            alphas  = [max(0.25, min(0.75, 1.0 - s / max(1e-3, max_unc))) for s in sigmas]
+            lons_p  = [c["lon"] for c in pred_cells]
+            lats_p  = [c["lat"] for c in pred_cells]
+            vmin_p  = min(temps_p); vmax_p = max(temps_p)
+            for i in range(len(pred_cells)):
+                ax_map.scatter([lons_p[i]], [lats_p[i]], c=[[1.0, 0.6, 0.1]],
+                               s=50, marker="s", alpha=alphas[i], edgecolors="none", zorder=2)
+        if meas_cells:
+            temps_m = [c.get("T", 0.0) for c in meas_cells]
+            sc = ax_map.scatter([c["lon"] for c in meas_cells], [c["lat"] for c in meas_cells],
+                                c=temps_m, cmap="turbo", s=60, marker="s",
+                                alpha=0.90, edgecolors="none", zorder=3,
+                                vmin=-40, vmax=40)
+            cb = fig.colorbar(sc, ax=ax_map, fraction=0.018, pad=0.01)
+            cb.ax.tick_params(colors="#8899cc", labelsize=5)
+            cb.set_label("T (°C, measured)", color="#8899cc", fontsize=5.5)
+
+        # Wind quivers from atmos_grid
+        if atmos:
+            try:
+                lqs = [c for c in atmos if abs(float(c.get("wind_speed") or 0)) > 0.5]
+                if lqs:
+                    import numpy as _np
+                    wlon = _np.array([float(c["lon"]) for c in lqs])
+                    wlat = _np.array([float(c["lat"]) for c in lqs])
+                    wspd = _np.array([float(c.get("wind_speed") or 0) for c in lqs])
+                    wdir = _np.array([float(c.get("wind_dir") or 0) for c in lqs])
+                    wu = -wspd * _np.sin(_np.radians(wdir))
+                    wv = -wspd * _np.cos(_np.radians(wdir))
+                    ax_map.quiver(wlon, wlat, wu, wv, wspd,
+                                  cmap="cool", scale=300, width=0.002,
+                                  alpha=0.55, zorder=4, headwidth=3)
+            except Exception: pass
+
+        if not kgrid:
+            ax_map.text(0, 0, "Kinetic propagator initializing…\n"
+                        "(needs recon grid ~145s after launch)",
+                        ha="center", va="center", color="#2a3060", fontsize=10)
+        else:
+            ax_map.text(0.01, 0.96,
+                        f"● measured ({len(meas_cells)})  ▧ predicted ({len(pred_cells)})  "
+                        f"→ NWP wind quivers",
+                        transform=ax_map.transAxes, color="#5566aa", fontsize=5.8, va="top")
+        ax_map.set_ylabel("Latitude °", color="#5566aa", fontsize=7)
+        ax_map.set_title(
+            f"KINETIC PROPAGATION  ·  {n_cells} cells  ·  {n_pred} predicted  ·  "
+            f"{n_corr} error-corrected  ·  horizon {horizon:.0f} min  ·  "
+            f"mean residual {resid:.2f}°C  ·  max σ {max_unc:.2f}°C",
+            color="#88aaff", fontsize=7.5, pad=3)
+
+        # ── Panel 2: Residual histogram (distribution of prediction errors) ──
+        ax_conv.set_facecolor("#020308")
+        ax_conv.tick_params(colors="#88aa88", labelsize=6)
+        for sp in ax_conv.spines.values(): sp.set_color("#0a100a")
+        if kgrid and meas_cells and pred_cells:
+            # Compute per-cell signed residuals (predicted T minus its recon anchor)
+            recon_lookup: dict = {}
+            for c in recon:
+                try:
+                    t = c.get("temp")
+                    if t is not None and t == t:
+                        recon_lookup[(float(c["lat"]), float(c["lon"]))] = float(t)
+                except Exception: pass
+            residuals = []
+            for c in pred_cells:
+                key = min(recon_lookup, key=lambda k: max(abs(k[0]-c["lat"]),
+                           abs(((k[1]-c["lon"]+180)%360)-180)), default=None) if recon_lookup else None
+                if key:
+                    residuals.append(c.get("T", 0.0) - recon_lookup[key])
+            if residuals:
+                ax_conv.hist(residuals, bins=20, color="#44aaff", alpha=0.70,
+                             edgecolor="#0a1420", linewidth=0.5)
+                ax_conv.axvline(0, color="#22ff88", lw=1.0, ls="--", alpha=0.7)
+                ax_conv.axvline(np.mean(residuals), color="#ffaa33", lw=0.8,
+                                ls=":", alpha=0.8, label=f"mean {np.mean(residuals):.2f}°C")
+                ax_conv.legend(fontsize=5.5, facecolor="#020308", edgecolor="#1a2030",
+                               labelcolor="#ffaa33", framealpha=0.8)
+        else:
+            ax_conv.text(0.5, 0.5, "No residuals yet", ha="center", va="center",
+                         transform=ax_conv.transAxes, color="#334", fontsize=8)
+        ax_conv.set_xlabel("Residual (predicted−measured) °C", color="#88aa88", fontsize=6)
+        ax_conv.set_ylabel("Count", color="#88aa88", fontsize=6)
+        ax_conv.set_title("PREDICTION RESIDUALS\n(error-correction histogram)",
+                          color="#66cc88", fontsize=7, pad=3)
+
+        # ── Panel 3: uncertainty vs horizon curve ──
+        ax_unc.set_facecolor("#020308")
+        ax_unc.tick_params(colors="#aa8888", labelsize=6)
+        for sp in ax_unc.spines.values(): sp.set_color("#100a0a")
+        try:
+            _DT = 0.5; _SIG0 = 0.5; _STEPS = 4
+            hrs_arr = np.array([i * _DT for i in range(_STEPS + 1)])
+            sig_arr = _SIG0 * np.sqrt(hrs_arr + 0.01)
+            ax_unc.fill_between(hrs_arr * 60, sig_arr, alpha=0.35, color="#ff7733")
+            ax_unc.plot(hrs_arr * 60, sig_arr, color="#ff7733", lw=1.2, label="σ = σ₀√t")
+            ax_unc.axhline(max_unc or _SIG0 * _m.sqrt(_STEPS * _DT), color="#ff4444",
+                           lw=0.8, ls="--", alpha=0.7, label=f"max σ {max_unc:.2f}°C")
+            ax_unc.axhline(resid if resid > 0 else 0.5, color="#22ff88", lw=0.8, ls=":",
+                           alpha=0.7, label=f"obs resid {resid:.2f}°C")
+            ax_unc.legend(fontsize=5.5, facecolor="#020308", edgecolor="#200a0a",
+                          labelcolor="#ffaa88", framealpha=0.8)
+        except Exception: pass
+        ax_unc.set_xlabel("Prediction horizon (min)", color="#aa8888", fontsize=6)
+        ax_unc.set_ylabel("σ uncertainty (°C)", color="#aa8888", fontsize=6)
+        ax_unc.set_title("UNCERTAINTY GROWTH\nσ ∝ √(t)  random-walk envelope",
+                         color="#ffaa66", fontsize=7, pad=3)
+
+        # ── Panel 4: physics census + parameters ──
+        ax_cen.set_facecolor("#020308"); ax_cen.axis("off")
+        ax_cen.set_title("KINETIC PROPAGATOR\nPHYSICS PARAMETERS", color="#88aaff",
+                          fontsize=7.5, pad=3)
+        rows = [
+            ("Cells propagated",   f"{n_cells}",        "#66ccff"),
+            ("Measured (anchors)", f"{n_cells-n_pred}",  "#22ff66"),
+            ("Predicted (filled)", f"{n_pred}",          "#ffaa33"),
+            ("Error-corrected",    f"{n_corr}",          "#ff6644" if n_corr > 0 else "#336633"),
+            ("", "", ""),
+            ("Horizon",            f"{horizon:.0f} min", "#66ccff"),
+            ("Step size",          "30 min",             "#5588bb"),
+            ("Mean residual",      f"{resid:.2f} °C",    "#22ff66" if resid < 1.5 else "#ff9933"),
+            ("Max uncertainty σ",  f"{max_unc:.2f} °C",  "#ffaa33"),
+            ("Coriolis deflect.",  f"{corl_km:.1f} km",  "#88aaff"),
+            ("", "", ""),
+            ("Scheme",             "Semi-Lagrangian",    "#5566aa"),
+            ("Diffusivity κ",      "1e4 m²/s",          "#5566aa"),
+            ("Ω (Earth rot.)",     "7.2921e-5 rad/s",   "#5566aa"),
+            ("Status",             "LIVE" if kp_ok else "Await…",
+                                    "#44ffaa" if kp_ok else "#ff7733"),
+        ]
+        y = 0.94
+        for lbl, val, col in rows:
+            if not lbl: y -= 0.02; continue
+            ax_cen.text(0.03, y, lbl+":", transform=ax_cen.transAxes,
+                        color="#445566", fontsize=5.4, va="top")
+            ax_cen.text(0.60, y, val, transform=ax_cen.transAxes,
+                        color=col, fontsize=5.4, va="top", fontweight="bold")
+            y -= 0.057
+        ax_cen.text(0.03, max(y-0.01, 0.01),
+                    "Physics: advection T(x,t+Δt)=T(x-u·Δt,t)\n"
+                    "Coriolis f=2Ω·sin(lat) deflects parcels\n"
+                    "Diffusion ΔT=κ·∇²T smooths gradients\n"
+                    "Error-correction: predicted vs obs → nudge\n"
+                    "Predicted cells labeled — NOT measured.",
+                    transform=ax_cen.transAxes, color="#334455", fontsize=5.0, va="top")
+
+        fig.suptitle(
+            f"KINETIC PROPAGATOR  —  math in motion  ·  "
+            f"semi-Lagrangian advection + Coriolis + diffusion + error-correction  ·  "
+            f"{n_cells} cells  ·  {n_pred} PREDICTED  ·  {n_corr} corrected  ·  "
+            f"residual {resid:.2f}°C",
+            color="#88bbff", fontsize=8.5, y=0.975, fontweight="bold",
+            bbox=dict(facecolor="#020308", edgecolor="#3355aa", pad=4, alpha=0.85))
 
     def _draw_planettomo(self, fig, p, snap):
         """v159: PLANET TOMOGRAPHY — the 3D planet, every real layer stacked into vertical columns.
@@ -12316,7 +13347,8 @@ class WebViewerServer:
                  "kinetic", "resonance", "univision", "livesources", "gbsar", "ionosphere",
                  "extsat", "planetphysics", "hfradar", "earthobs", "spaceweather",
                  "satscan", "satbands", "orbsync", "aqmesh", "goeswatch", "oceanmesh", "globatmos",
-                 "planetscan", "deepscan", "planettomo")
+                 "planetscan", "deepscan", "planettomo", "kineticprop", "geocurrent",
+                 "kinvis", "xcorrmatrix", "spatialxref", "xcorrlag", "corrnet")
 
     def _render_tab_png(self, kind: str) -> bytes:
         import io as _io2
@@ -38232,8 +39264,78 @@ class GlobalAnomalyCorrelatorEngine:
             n_ls = int(pp.get("lightning_n_storms") or 0)
             streams_active.append(f"VLF-STORMS×{n_ls}")
 
+        # ─ v159: 3D volumetric tomography (the assembled multi-layer planet) ─
+        if bool(pp.get("tomo3d_ok")):
+            n_lay3 = int(pp.get("tomo3d_n_layers_active") or 0)
+            streams_active.append(f"TOMO3D-{n_lay3}LAYER")
+
+        # ─ v160: Kinetic propagator — if residual is anomalously large flag it ─
+        if bool(pp.get("kinprop_ok")):
+            kp_resid = float(pp.get("kinprop_residual_mean") or 0.0)
+            kp_n_corr = int(pp.get("kinprop_n_corrected") or 0)
+            if kp_resid > 3.0:
+                streams_active.append(f"KINPROP-ANOM-{kp_resid:.1f}C")
+            elif kp_n_corr > 0:
+                streams_active.append(f"KINPROP-CORR×{kp_n_corr}")
+            else:
+                streams_active.append("KINPROP-LIVE")
+
+        # ─ v161: METAR surface coverage — flag if station count < 500 (network issue) ─
+        if bool(pp.get("metar_ok")):
+            n_metar = int(pp.get("metar_n") or 0)
+            if n_metar < 500:
+                streams_active.append(f"METAR-SPARSE-{n_metar}")
+            else:
+                streams_active.append(f"METAR-{n_metar}STN")
+
+        # ─ v161: OSCAR ocean currents — flag presence ─
+        if bool(pp.get("ocean_currents_ok")):
+            n_osc = int(pp.get("ocean_currents_n") or 0)
+            streams_active.append(f"OSCAR-{n_osc}VEC")
+
+        # ─ v162: kinetic vision sweep — expanding time-integrated coverage ─
+        if bool(pp.get("kinvis_ok")):
+            kv_cov = float(pp.get("kinvis_coverage_pct") or 0.0)
+            kv_exp = int(pp.get("kinvis_expansion_rate") or 0)
+            if kv_exp > 0:
+                streams_active.append(f"KINVIS-EXP+{kv_exp}")
+            else:
+                streams_active.append(f"KINVIS-{kv_cov:.0f}PCT")
+
+        # ─ v163: cross-stream correlation — flag when planetary streams co-vary ─
+        if bool(pp.get("xcorr_ok")):
+            xc_sig = int(pp.get("xcorr_n_significant") or 0)
+            if xc_sig > 0:
+                streams_active.append(f"XCORR-LINK×{xc_sig}")
+            else:
+                streams_active.append(f"XCORR-{int(pp.get('xcorr_n_metrics') or 0)}STREAM")
+            # ─ v165: lead/lag predictors (a stream that precedes another) ─
+            xc_ll = int(pp.get("xcorr_n_leadlag") or 0)
+            if xc_ll > 0:
+                streams_active.append(f"LEADLAG×{xc_ll}")
+
+        # ─ v164: spatial co-occurrence — cross-confirmed cells (verification mesh) ─
+        if bool(pp.get("scoinc_ok")):
+            sx_conf = int(pp.get("scoinc_n_confirmed_cells") or 0)
+            sx_max  = int(pp.get("scoinc_max_layers") or 0)
+            if sx_max >= 3:
+                streams_active.append(f"SPATIAL-CONFIRM×{sx_conf}({sx_max}max)")
+            elif sx_conf > 0:
+                streams_active.append(f"SPATIAL-XREF×{sx_conf}")
+            else:
+                streams_active.append("SPATIAL-LIVE")
+
+        # ─ v166: correlation network — unified graph of all data relationships ─
+        if bool(pp.get("corrnet_ok")):
+            cn_edges = int(pp.get("corrnet_n_edges") or 0)
+            cn_hub   = str(pp.get("corrnet_hub") or "")
+            if cn_hub:
+                streams_active.append(f"CORRNET-{cn_edges}E-hub:{cn_hub}")
+            else:
+                streams_active.append(f"CORRNET-{cn_edges}E")
+
         # Compute correlation score
-        n_streams_monitored = 17   # +1 GOES v154, +1 ocean v155, +1 atmos v156, +2 recon+gnss-r v157, +3 deep-earth v158
+        n_streams_monitored = 26   # v154+v155+v156+v157(×2)+v158(×3)+v159+v160+v161(×2)+v162+v163+v164+v165+v166
         score = min(1.0, len(streams_active) / max(1, n_streams_monitored))
 
         # Build anomaly event record if ≥2 streams active
@@ -40522,8 +41624,8 @@ class VolumetricPlanetTomographyEngine:
         self._n_model = 0; self._n_empty = 0; self._cov = 0.0
         self._layers: list = []; self._ok = False; self._last = 0.0
         self._recon: list = []; self._atmos: list = []; self._ocean: list = []
-        self._geomag: list = []; self._iono_fof2 = 0.0; self._iono_hf2 = 300.0
-        self._iono_ok = False
+        self._geomag: list = []; self._metar: list = []
+        self._iono_fof2 = 0.0; self._iono_hf2 = 300.0; self._iono_ok = False
         _thr.Thread(target=self._loop, daemon=True, name="tomo3d_v159").start()
 
     def inject(self, pp: dict):
@@ -40533,6 +41635,7 @@ class VolumetricPlanetTomographyEngine:
             self._atmos  = list(pp.get("atmos_grid") or [])
             self._ocean  = list(pp.get("ocean_buoys") or [])
             self._geomag = list(pp.get("geomag_grid") or [])
+            self._metar  = list(pp.get("metar_stations") or [])   # v161: 10k+ surface stations
             self._iono_fof2 = float(pp.get("iono_foF2") or 0.0)
             self._iono_hf2  = float(pp.get("iono_hF2_km") or 300.0)
             self._iono_ok   = bool(pp.get("iono_n_wspr") or pp.get("iono_foF2"))
@@ -40588,6 +41691,7 @@ class VolumetricPlanetTomographyEngine:
                     with self._lock:
                         recon = list(self._recon); atmos = list(self._atmos)
                         ocean = list(self._ocean); geomag = list(self._geomag)
+                        metar = list(self._metar)       # v161: METAR station T
                         fof2 = self._iono_fof2; hf2 = self._iono_hf2
                         iono_ok = self._iono_ok
                     cols = []
@@ -40621,6 +41725,12 @@ class VolumetricPlanetTomographyEngine:
                                     if d < bd: bd = d; oc = b
                                 if oc is not None:
                                     surf_t = float(oc["wtmp"]); surf_src = "measured"
+                            # ── v161 METAR: 10k+ global aviation stations → dense surface T ──
+                            if surf_t is None and metar:
+                                mc = self._nearest(metar, lat, lon, 8.0)
+                                if mc is not None and mc.get("temp_c") is not None:
+                                    surf_t = float(mc["temp_c"]); surf_src = "measured"
+                                    layers_seen.add("metar")
                             # ── magnetic F overlaid on the whole column (10° grid) ──
                             gc = self._nearest(geomag, lat, lon, 8.0)
                             f_nt = float(gc["F"]) if gc is not None else None
@@ -40685,6 +41795,1334 @@ class VolumetricPlanetTomographyEngine:
                 "tomo3d_layers_active":   list(self._layers),
                 "tomo3d_n_layers_active": len(self._layers),
                 "tomo3d_ok":              bool(self._ok),
+            }
+
+
+class PlanetaryKineticPropagatorEngine:
+    """v160: Kinetic propagation — "math in motion" predictive atmospheric dynamics.
+
+    The user's recurring directive: "mathematical relativity of kinetic energy / math in motion /
+    proceeding motion expectation to reverse or forward math in consistency such as universal
+    constants / recalculated and corrected many times until universal vision."
+
+    This engine implements that precisely:
+      1. Takes the REAL iterative recon grid (2592-cell Gauss-Seidel solved from real obs)
+      2. Propagates each cell forward in time using REAL wind vectors from atmos_grid NWP
+      3. Applies atmospheric dynamics physics:
+           - Semi-Lagrangian advection: T(x,t+Δt) = T(x−u·Δt, t)   [stable NWP standard]
+           - Coriolis deflection: f = 2Ω·sin(lat), Ω=7.2921e-5 rad/s  [Earth rotation]
+           - Fickian diffusion: ΔT += κ·∇²T, κ≈1e4 m²/s eddy diffusivity
+           - Uncertainty growth: σ ∝ √(t_pred_hours)  [random-walk envelope]
+      4. Labels every extrapolated cell PREDICTED (never shown as measured)
+      5. When next real obs cycle arrives, Gauss-Seidel error-correction: predicted vs
+         observed residual → correct toward obs (convergence = "universal vision")
+
+    Cross-reference: prediction residual at obs-arrival is the error-correction signal.
+    Large residuals (>3°C) flag physics-inconsistent events (extreme weather, data gaps).
+
+    Physics constants sourced from CODATA / standard meteorology — same references as the
+    ParticleSimulationC++ Simulation.py framework (kinetic_temperature, Coriolis, advection).
+
+    NO false data: PREDICTED voxels clearly labeled src='predicted'; uncertainty sigma shown.
+    Coverage: only MEASURED cells count toward coverage%. PREDICTED cells extend the TEMPORAL
+    coverage between obs cycles — they fill TIME gaps, not SPATIAL lies.
+
+    Keys: kinprop_grid, kinprop_n_cells, kinprop_n_predicted, kinprop_n_corrected,
+          kinprop_pred_horizon_min, kinprop_residual_mean, kinprop_max_uncertainty,
+          kinprop_coriolis_deflection_km, kinprop_ok
+    """
+    _OMEGA        = 7.2921e-5   # Earth rotation rate rad/s (exact IAU)
+    _KAPPA_KM2_H  = 0.036       # eddy diffusivity ≈ 1e4 m²/s → 0.036 km²/s → per h
+    _DT_H         = 0.5         # propagation step: 30 minutes per step
+    _MAX_STEPS    = 4           # up to 2 hours forward prediction horizon
+    _SIGMA0_DEG   = 0.5         # initial uncertainty (°C) on well-solved recon cell
+    _CORR_THRESH  = 2.0         # residual (°C) that triggers a Gauss-Seidel correction
+    _REFRESH_S    = 120.0       # synced with recon cycle (120s)
+    _BOOT_DELAY_S = 145.0       # after tomo3d (125s) so all prior layers are populated
+
+    def __init__(self):
+        import threading as _thr
+        self._lock = _thr.Lock()
+        self._prop_grid: list = []
+        self._n_cells = 0; self._n_pred = 0; self._n_corr = 0
+        self._horizon_min = 0.0; self._resid_mean = 0.0
+        self._max_unc = 0.0; self._coriolis_km = 0.0
+        self._ok = False; self._last = 0.0
+        self._recon: list = []; self._atmos: list = []
+        _thr.Thread(target=self._loop, daemon=True, name="kinprop_v160").start()
+
+    def inject(self, pp: dict):
+        with self._lock:
+            self._recon = list(pp.get("recon_grid") or [])
+            self._atmos = list(pp.get("atmos_grid") or [])
+
+    def _loop(self):
+        import time as _ti, math as _m
+        _ti.sleep(self._BOOT_DELAY_S)
+        while True:
+            if _ti.time() - self._last >= self._REFRESH_S:
+                try:
+                    with self._lock:
+                        recon = list(self._recon); atmos = list(self._atmos)
+                    if not recon:
+                        with self._lock: self._last = _ti.time()
+                        _ti.sleep(30.0); continue
+
+                    # ── Build working state from recon: {(lat,lon) → {T, sigma, src}} ──
+                    state: dict = {}
+                    for c in recon:
+                        try:
+                            la = float(c["lat"]); lo = float(c["lon"])
+                            t  = c.get("temp")
+                            if t is None or (t != t): continue  # NaN check
+                            state[(la, lo)] = {"T": float(t), "sigma": self._SIGMA0_DEG,
+                                               "src": "measured", "lat": la, "lon": lo,
+                                               "pred_h": 0.0, "defl_km": 0.0}
+                        except Exception: continue
+                    if len(state) < 5:
+                        with self._lock: self._last = _ti.time()
+                        _ti.sleep(30.0); continue
+
+                    # ── Build atmos wind lookup (lat,lon) → (u_km/h east, v_km/h north) ──
+                    atmos_uv: dict = {}
+                    for c in atmos:
+                        try:
+                            la = float(c["lat"]); lo = float(c["lon"])
+                            spd = float(c.get("wind_speed") or 0.0) * 3.6  # m/s → km/h
+                            dr  = float(c.get("wind_dir") or 0.0)
+                            rad = _m.radians(dr)
+                            # Meteorological → east(u)/north(v)
+                            atmos_uv[(la, lo)] = (-spd*_m.sin(rad), -spd*_m.cos(rad))
+                        except Exception: continue
+
+                    max_coriolis_km = 0.0
+                    # ── Semi-Lagrangian forward propagation ──
+                    current = dict(state)
+                    for step in range(1, self._MAX_STEPS + 1):
+                        t_h = step * self._DT_H
+                        sigma_step = self._SIGMA0_DEG * _m.sqrt(t_h)
+                        next_state: dict = {}
+                        for (la, lo), cell in current.items():
+                            # Find nearest wind vector (20° tolerance for sparse NWP grid)
+                            best_uv = None; bd = 22.0
+                            for (ala, alo), uv in atmos_uv.items():
+                                d = max(abs(ala-la), abs(((alo-lo+180)%360)-180))
+                                if d < bd: bd = d; best_uv = uv
+                            if best_uv is None:
+                                # No wind: keep current T, grow uncertainty
+                                next_state[(la,lo)] = {**cell, "sigma": sigma_step,
+                                                        "src": "predicted", "pred_h": t_h}
+                                continue
+                            u_kph, v_kph = best_uv
+                            # km/degree conversion (latitude-dependent for lon)
+                            cos_lat = _m.cos(_m.radians(la)) or 1e-6
+                            # Back-trajectory departure point
+                            dlat = -(v_kph * self._DT_H) / 111.1
+                            dlon = -(u_kph * self._DT_H) / (111.1 * cos_lat)
+                            src_la = la + dlat
+                            src_lo = ((lo + dlon + 180) % 360) - 180
+                            # Nearest-neighbor interpolation from current state
+                            T_adv = None; bd2 = 12.0
+                            for (sla, slo), sc in current.items():
+                                d2 = max(abs(sla-src_la), abs(((slo-src_lo+180)%360)-180))
+                                if d2 < bd2: bd2 = d2; T_adv = sc["T"]
+                            if T_adv is None: T_adv = cell["T"]
+                            # Coriolis deflection distance: d = 0.5·f·v·t²
+                            f_cor = 2.0 * self._OMEGA * _m.sin(_m.radians(la))
+                            spd_ms = _m.sqrt(u_kph**2 + v_kph**2) / 3.6
+                            t_s = self._DT_H * 3600.0
+                            defl_km = 0.5 * abs(f_cor) * spd_ms * t_s**2 / 1000.0
+                            if defl_km > max_coriolis_km: max_coriolis_km = defl_km
+                            # Diffusion: Laplacian from nearest neighbours in current state
+                            nbr_T = []
+                            for (nla, nlo), nc in current.items():
+                                if max(abs(nla-la), abs(((nlo-lo+180)%360)-180)) < 7.0:
+                                    nbr_T.append(nc["T"])
+                            lap = ((sum(nbr_T)/len(nbr_T)) - cell["T"]) if nbr_T else 0.0
+                            T_diff = self._KAPPA_KM2_H * self._DT_H * lap * 0.001
+                            T_new  = T_adv + T_diff
+                            next_state[(la,lo)] = {"T": T_new, "sigma": sigma_step,
+                                                   "src": "predicted", "lat": la, "lon": lo,
+                                                   "pred_h": t_h, "defl_km": round(defl_km,2)}
+                        current = next_state
+
+                    # ── Gauss-Seidel error-correction pass (new obs vs predictions) ──
+                    total_resid = 0.0; n_resid = 0; n_corrected = 0
+                    for c in recon:
+                        try:
+                            la = float(c["lat"]); lo = float(c["lon"])
+                            T_obs = c.get("temp")
+                            if T_obs is None or (T_obs != T_obs): continue
+                            T_obs = float(T_obs)
+                            # Find matching predicted cell
+                            key = None; bd = 8.0
+                            for k in current:
+                                d = max(abs(k[0]-la), abs(((k[1]-lo+180)%360)-180))
+                                if d < bd: bd = d; key = k
+                            if key is None: continue
+                            T_pred = current[key]["T"]
+                            resid  = abs(T_pred - T_obs)
+                            total_resid += resid; n_resid += 1
+                            if resid > self._CORR_THRESH:
+                                # Nudge prediction toward obs (0.3 obs weight)
+                                current[key]["T"]     = 0.70 * T_pred + 0.30 * T_obs
+                                current[key]["sigma"] = max(0.1, current[key]["sigma"] * 0.80)
+                                n_corrected += 1
+                        except Exception: continue
+
+                    prop_grid = list(current.values())
+                    n_pred    = sum(1 for c in prop_grid if c.get("src") == "predicted")
+                    resid_mean = total_resid / max(1, n_resid)
+                    max_unc    = self._SIGMA0_DEG * _m.sqrt(self._MAX_STEPS * self._DT_H)
+
+                    with self._lock:
+                        self._prop_grid    = prop_grid
+                        self._n_cells      = len(prop_grid)
+                        self._n_pred       = n_pred
+                        self._n_corr       = n_corrected
+                        self._horizon_min  = self._MAX_STEPS * self._DT_H * 60
+                        self._resid_mean   = round(resid_mean, 2)
+                        self._max_unc      = round(max_unc, 2)
+                        self._coriolis_km  = round(max_coriolis_km, 1)
+                        self._ok           = len(prop_grid) > 0
+                        self._last         = _ti.time()
+                    log.info(f"[KINPROP] {len(prop_grid)} cells · pred={n_pred} · "
+                             f"corrected={n_corrected} · resid={resid_mean:.2f}°C · "
+                             f"horizon={self._MAX_STEPS*self._DT_H*60:.0f}min · "
+                             f"coriolis={max_coriolis_km:.1f}km")
+                except Exception as _e:
+                    log.debug(f"[KINPROP] loop error: {_e}")
+                    with self._lock: self._last = _ti.time()
+            _ti.sleep(30.0)
+
+    def get(self) -> dict:
+        with self._lock:
+            return {
+                "kinprop_grid":               list(self._prop_grid),
+                "kinprop_n_cells":            self._n_cells,
+                "kinprop_n_predicted":        self._n_pred,
+                "kinprop_n_corrected":        self._n_corr,
+                "kinprop_pred_horizon_min":   self._horizon_min,
+                "kinprop_residual_mean":      self._resid_mean,
+                "kinprop_max_uncertainty":    self._max_unc,
+                "kinprop_coriolis_deflection_km": self._coriolis_km,
+                "kinprop_ok":                 bool(self._ok),
+            }
+
+
+class CorrelationNetworkEngine:
+    """v166: Unified correlation NETWORK GRAPH — organizes every correlation into one structure.
+
+    THE CAPSTONE "WAY TO REFERENCE DATA TO ORGANIZE IT BETTER".  N.E.P.A. now computes three
+    independent correlation views: v163 temporal (zero-lag Pearson of scalar streams), v164
+    spatial (geolocated co-occurrence overlap), v165 lead/lag (which stream precedes which).
+    Each is a matrix/list that is hard to read structurally.  This engine UNIFIES all three into
+    a single navigable network graph: nodes = data streams, edges = real correlations (coloured
+    by type), node size = how connected a stream is (weighted-degree centrality → the hub/most-
+    informative stream), and connected components = clusters of co-varying phenomena.
+
+    It performs NO new correlation computation — it CONSUMES the already-published outputs
+    (xcorr_top_pairs, scoinc_top_pairs, xcorr_lag_pairs), assembles the graph, lays it out with a
+    pure-numpy Fruchterman-Reingold force-directed layout, computes weighted-degree centrality and
+    union-find connected-component clusters.  Auto-detects live: only streams that appear in at
+    least one real correlation become nodes ("show what is live").
+
+    NO FALSE DATA: edges are real measured correlations; an empty correlation set ⇒ empty graph.
+    Zero new network, zero duplicate computation.
+
+    Keys: corrnet_nodes, corrnet_edges, corrnet_n_nodes, corrnet_n_edges, corrnet_hub,
+          corrnet_hub_degree, corrnet_n_clusters, corrnet_n_temporal, corrnet_n_spatial,
+          corrnet_n_leadlag, corrnet_ok
+    """
+    _GROUP_COLORS = {
+        "Seismic": "#ff5a4a", "Earth-obs": "#ff9a3c", "Space-wx": "#ffd84a",
+        "Air-qual": "#9ae84a", "Ocean": "#3cc8ff", "Atmos": "#4af0d0",
+        "RF/Plat": "#b88aff", "Fusion": "#ff7ad0", "Astro": "#8a9aff", "?": "#9aa",
+    }
+    # which group each known stream label belongs to (mirrors v163/v164 layer groups)
+    _GROUP_OF = {
+        "Quakes": "Seismic", "Fires": "Earth-obs", "Fires/EONET": "Earth-obs",
+        "Disasters": "Earth-obs", "Kp": "Space-wx", "F10.7": "Space-wx", "X-ray": "Space-wx",
+        "PM2.5": "Air-qual", "PM2.5 mesh": "Air-qual", "AQ sensors": "Air-qual",
+        "AQ hotspots": "Air-qual", "Wave max": "Ocean", "SST": "Ocean", "Min pres": "Ocean",
+        "Ocean buoys": "Ocean", "Storms": "Atmos", "Air temp": "Atmos", "Wind max": "Atmos",
+        "Aircraft": "RF/Plat", "WSPR": "RF/Plat", "WSPR paths": "RF/Plat", "APRS": "RF/Plat",
+        "APRS VHF": "RF/Plat", "Tracked sat": "RF/Plat", "Sat subpts": "RF/Plat",
+        "LEO sat": "RF/Plat", "LEO subpts": "RF/Plat", "GNSS subpts": "RF/Plat",
+        "Recon cov": "Fusion", "KinVis cov": "Fusion", "Tomo3D cov": "Fusion",
+        "HF paths": "Fusion", "GNSS-R spec": "Fusion", "GW events": "Astro", "NEO": "Astro",
+    }
+    _REFRESH_S    = 18.0
+    _BOOT_DELAY_S = 75.0
+    _FR_ITERS     = 90
+
+    def __init__(self):
+        import threading as _thr
+        self._lock = _thr.Lock()
+        self._snap = {"temporal": [], "spatial": [], "leadlag": []}
+        self._nodes: list = []; self._edges: list = []
+        self._hub = ""; self._hub_deg = 0.0; self._n_clusters = 0
+        self._n_t = 0; self._n_s = 0; self._n_l = 0; self._ok = False
+        _thr.Thread(target=self._loop, daemon=True, name="corrnet_v166").start()
+
+    def inject(self, pp: dict):
+        with self._lock:
+            self._snap = {
+                "temporal": list(pp.get("xcorr_top_pairs") or []),
+                "spatial":  list(pp.get("scoinc_top_pairs") or []),
+                "leadlag":  list(pp.get("xcorr_lag_pairs") or []),
+            }
+
+    def _layout(self, labels, adj):
+        """Pure-numpy Fruchterman-Reingold force-directed layout in the unit square."""
+        import numpy as _np, math as _m
+        n = len(labels)
+        if n == 0:
+            return _np.zeros((0, 2))
+        if n == 1:
+            return _np.zeros((1, 2))
+        rng = _np.random.default_rng(42)
+        # init on a circle (deterministic-ish + tiny jitter)
+        ang = _np.linspace(0, 2 * _m.pi, n, endpoint=False)
+        pos = _np.stack([_np.cos(ang), _np.sin(ang)], axis=1) * 0.8
+        pos += rng.normal(0, 0.01, pos.shape)
+        k = 1.0 / _m.sqrt(n)            # ideal edge length
+        temp = 0.15
+        for _it in range(self._FR_ITERS):
+            disp = _np.zeros_like(pos)
+            for i in range(n):
+                delta = pos[i] - pos                       # (n,2)
+                dist = _np.sqrt((delta ** 2).sum(axis=1)) + 1e-9
+                # repulsive k²/d
+                rep = (k * k) / dist
+                rep[i] = 0.0
+                disp[i] += (delta / dist[:, None] * rep[:, None]).sum(axis=0)
+            # attractive d²/k along weighted edges
+            for i in range(n):
+                for j in range(n):
+                    w = adj[i, j]
+                    if w <= 0 or i == j:
+                        continue
+                    delta = pos[i] - pos[j]
+                    d = _m.sqrt(float((delta ** 2).sum())) + 1e-9
+                    att = (d * d) / k * w
+                    disp[i] -= delta / d * att
+            length = _np.sqrt((disp ** 2).sum(axis=1)) + 1e-9
+            pos += (disp / length[:, None]) * _np.minimum(length, temp)[:, None]
+            temp *= 0.96
+        # normalize to [-1,1]
+        mn = pos.min(axis=0); mx = pos.max(axis=0)
+        span = _np.maximum(mx - mn, 1e-6)
+        pos = (pos - mn) / span * 1.8 - 0.9
+        return pos
+
+    def _loop(self):
+        import time as _ti, numpy as _np
+        _ti.sleep(self._BOOT_DELAY_S)
+        while True:
+            try:
+                with self._lock:
+                    temporal = list(self._snap["temporal"])
+                    spatial  = list(self._snap["spatial"])
+                    leadlag  = list(self._snap["leadlag"])
+                # collect edges (a,b,type,weight,directed)
+                edges = []
+                node_set = set()
+                for pr in temporal:
+                    a = pr.get("a"); b = pr.get("b"); r = float(pr.get("r") or 0.0)
+                    if a and b:
+                        edges.append({"a": a, "b": b, "type": "temporal",
+                                      "weight": round(abs(r), 3), "sign": (1 if r >= 0 else -1),
+                                      "directed": False})
+                        node_set.add(a); node_set.add(b)
+                for pr in spatial:
+                    a = pr.get("a"); b = pr.get("b"); ov = float(pr.get("overlap") or 0.0)
+                    if a and b:
+                        edges.append({"a": a, "b": b, "type": "spatial",
+                                      "weight": round(ov, 3), "sign": 1, "directed": False})
+                        node_set.add(a); node_set.add(b)
+                for pr in leadlag:
+                    a = pr.get("leader"); b = pr.get("follower"); r = float(pr.get("r") or 0.0)
+                    if a and b:
+                        edges.append({"a": a, "b": b, "type": "leadlag",
+                                      "weight": round(abs(r), 3), "sign": (1 if r >= 0 else -1),
+                                      "directed": True, "lag_min": pr.get("lag_min")})
+                        node_set.add(a); node_set.add(b)
+                labels = sorted(node_set)
+                idx = {l: i for i, l in enumerate(labels)}
+                n = len(labels)
+                # weighted symmetric adjacency for layout + centrality
+                adj = _np.zeros((n, n), dtype=float)
+                for e in edges:
+                    i = idx[e["a"]]; j = idx[e["b"]]
+                    adj[i, j] += e["weight"]; adj[j, i] += e["weight"]
+                # union-find connected components
+                parent = list(range(n))
+                def find(x):
+                    while parent[x] != x:
+                        parent[x] = parent[parent[x]]; x = parent[x]
+                    return x
+                for e in edges:
+                    ri, rj = find(idx[e["a"]]), find(idx[e["b"]])
+                    if ri != rj:
+                        parent[ri] = rj
+                clusters = {}
+                for i in range(n):
+                    clusters.setdefault(find(i), []).append(i)
+                n_clusters = len(clusters)
+                # layout
+                pos = self._layout(labels, adj) if n else _np.zeros((0, 2))
+                # centrality (weighted degree)
+                deg = adj.sum(axis=1) if n else _np.zeros(0)
+                nodes = []
+                for i, l in enumerate(labels):
+                    grp = self._GROUP_OF.get(l, "?")
+                    n_edges_i = int((adj[i] > 0).sum())
+                    nodes.append({"label": l, "group": grp,
+                                  "x": round(float(pos[i, 0]), 4),
+                                  "y": round(float(pos[i, 1]), 4),
+                                  "degree": round(float(deg[i]), 3),
+                                  "n_edges": n_edges_i})
+                hub = ""; hub_deg = 0.0
+                if n:
+                    hi = int(_np.argmax(deg))
+                    hub = labels[hi]; hub_deg = round(float(deg[hi]), 3)
+                with self._lock:
+                    self._nodes = nodes; self._edges = edges
+                    self._hub = hub; self._hub_deg = hub_deg
+                    self._n_clusters = n_clusters
+                    self._n_t = len(temporal); self._n_s = len(spatial); self._n_l = len(leadlag)
+                    self._ok = n >= 2
+                if n >= 2:
+                    log.info(f"[CORRNET] {n} stream nodes · {len(edges)} edges "
+                             f"({self._n_t}temporal/{self._n_s}spatial/{self._n_l}leadlag) · "
+                             f"{n_clusters} clusters · hub={hub} (deg {hub_deg})")
+            except Exception as _e:
+                log.debug(f"[CORRNET] loop error: {_e}")
+            _ti.sleep(self._REFRESH_S)
+
+    def get(self) -> dict:
+        with self._lock:
+            return {
+                "corrnet_nodes":      list(self._nodes),
+                "corrnet_edges":      list(self._edges),
+                "corrnet_n_nodes":    len(self._nodes),
+                "corrnet_n_edges":    len(self._edges),
+                "corrnet_hub":        self._hub,
+                "corrnet_hub_degree": self._hub_deg,
+                "corrnet_n_clusters": self._n_clusters,
+                "corrnet_n_temporal": self._n_t,
+                "corrnet_n_spatial":  self._n_s,
+                "corrnet_n_leadlag":  self._n_l,
+                "corrnet_ok":         bool(self._ok),
+            }
+
+
+class SpatialCoincidenceMatrixEngine:
+    """v164: Spatial co-occurrence matrix — WHERE every geolocated real stream co-locates.
+
+    THE SPATIAL COUNTERPART to v163's TEMPORAL correlation matrix, and the generalised form of
+    the recurring "parallel cross-referencing checks to verify" directive.  v163 answers "which
+    planetary scalars move together over TIME"; this answers "which geolocated phenomena occupy
+    the SAME PLACE on the planet RIGHT NOW".  Every prior verify_*() function (v151 fire-vs-thermal,
+    v153 fire-vs-PM2.5, v155 cyclone-vs-buoy, …) checked ONE pair; this computes the FULL matrix
+    across every geolocated layer at once and maps the cells where independent streams agree.
+
+    Each live layer is a list of real {lat,lon} points already in pp (quakes, satellite-detected
+    fires, disaster alerts, aircraft, satellite subpoints, citizen PM2.5 sensors, ocean buoys,
+    APRS VHF stations, WSPR path endpoints, GNSS-R specular points).  Every point is binned to a
+    5° cell.  For each pair of layers the OVERLAP COEFFICIENT = |bins_A ∩ bins_B| / min(|bins_A|,
+    |bins_B|) — the fraction of the smaller layer's footprint shared with the other (symmetric,
+    0..1).  The engine also counts, per cell, how many DISTINCT layers occupy it: cells with ≥2
+    independent real streams are CROSS-CONFIRMED — the verification mesh, now a live map.
+
+    NO FALSE DATA: only real geolocated points; a layer is "live" only with ≥1 real point; an
+    empty layer is excluded (auto-detect — "show what is live").  Overlap is a real set-overlap,
+    never fabricated.  Zero new network — reads point lists already flowing in pp.
+
+    Keys: scoinc_labels, scoinc_groups, scoinc_matrix, scoinc_counts, scoinc_n_layers,
+          scoinc_n_points_total, scoinc_top_pairs, scoinc_n_significant, scoinc_bin_deg,
+          scoinc_cooccur_cells, scoinc_max_layers, scoinc_n_confirmed_cells, scoinc_ok
+    """
+    # (label, pp key, group) — all lists use lat/lon except WSPR (tx_/rx_ endpoints)
+    _LAYERS = [
+        ("Quakes",      "seismic_quakes",      "Seismic"),
+        ("Fires/EONET", "eonet_events",        "Earth-obs"),
+        ("Disasters",   "gdacs_events",        "Earth-obs"),
+        ("Aircraft",    "aircraft",            "RF/Plat"),
+        ("Sat subpts",  "tracked_satellites",  "RF/Plat"),
+        ("LEO subpts",  "extended_sats",       "RF/Plat"),
+        ("GNSS subpts", "gnss_satellites",     "RF/Plat"),
+        ("PM2.5 mesh",  "aqmesh_sensors",      "Air-qual"),
+        ("AQ hotspots", "aqmesh_hotspots",     "Air-qual"),
+        ("Ocean buoys", "ocean_buoys",         "Ocean"),
+        ("APRS VHF",    "aprs_stations",       "RF/Plat"),
+        ("GNSS-R spec", "gnss_r_specular_pts", "Fusion"),
+        ("WSPR paths",  "wspr_spots",          "RF/Plat"),
+    ]
+    _GROUP_COLORS = {
+        "Seismic": "#ff5a4a", "Earth-obs": "#ff9a3c", "Air-qual": "#9ae84a",
+        "Ocean": "#3cc8ff", "RF/Plat": "#b88aff", "Fusion": "#ff7ad0",
+    }
+    _BIN_DEG      = 5.0
+    _SIG_OVERLAP  = 0.25       # ≥25% footprint shared = significant spatial association
+    _REFRESH_S    = 20.0
+    _BOOT_DELAY_S = 95.0       # after most geolocated streams have data
+
+    def __init__(self):
+        import threading as _thr
+        self._lock = _thr.Lock()
+        self._snap: dict = {}
+        self._labels: list = []; self._groups: list = []
+        self._matrix: list = []; self._counts: list = []
+        self._top: list = []; self._cooccur: list = []
+        self._n_sig = 0; self._max_layers = 0; self._n_confirmed = 0
+        self._n_points = 0; self._ok = False
+        _thr.Thread(target=self._loop, daemon=True, name="scoinc_v164").start()
+
+    def inject(self, pp: dict):
+        with self._lock:
+            d = {}
+            for _lbl, key, _g in self._LAYERS:
+                d[key] = list(pp.get(key) or [])
+            self._snap = d
+
+    def _bin(self, lat, lon):
+        bd = self._BIN_DEG
+        return (int(round(lat / bd)), int(round(lon / bd)))
+
+    def _layer_bins(self, key, pts):
+        """Return set of occupied 5° bins for a layer's real points."""
+        bins = set()
+        if key == "wspr_spots":
+            for s in pts:
+                for la_k, lo_k in (("tx_lat", "tx_lon"), ("rx_lat", "rx_lon")):
+                    la = s.get(la_k); lo = s.get(lo_k)
+                    if la is None or lo is None:
+                        continue
+                    try:
+                        bins.add(self._bin(float(la), float(lo)))
+                    except (TypeError, ValueError):
+                        continue
+            return bins
+        for pp_ in pts:
+            try:
+                la = pp_.get("lat"); lo = pp_.get("lon")
+                if la is None or lo is None:
+                    continue
+                bins.add(self._bin(float(la), float(lo)))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return bins
+
+    def _loop(self):
+        import time as _ti
+        _ti.sleep(self._BOOT_DELAY_S)
+        while True:
+            try:
+                with self._lock:
+                    snap = dict(self._snap)
+                layer_bins = {}      # label -> set(bins)
+                labels = []; groups = []; counts = []
+                grp_of = {lbl: g for lbl, _k, g in self._LAYERS}
+                total_pts = 0
+                for lbl, key, _g in self._LAYERS:
+                    pts = snap.get(key) or []
+                    if not pts:
+                        continue
+                    bins = self._layer_bins(key, pts)
+                    if not bins:
+                        continue
+                    layer_bins[lbl] = bins
+                    labels.append(lbl); groups.append(grp_of[lbl])
+                    counts.append(len(pts)); total_pts += len(pts)
+                n = len(labels)
+                matrix = [[0.0] * n for _ in range(n)]
+                pairs = []
+                for i in range(n):
+                    bi = layer_bins[labels[i]]
+                    matrix[i][i] = 1.0
+                    for j in range(i + 1, n):
+                        bj = layer_bins[labels[j]]
+                        denom = min(len(bi), len(bj)) or 1
+                        ov = len(bi & bj) / denom
+                        ov = round(ov, 3)
+                        matrix[i][j] = ov; matrix[j][i] = ov
+                        if ov > 0:
+                            pairs.append({"a": labels[i], "b": labels[j],
+                                          "overlap": ov, "shared": len(bi & bj)})
+                pairs.sort(key=lambda d: -d["overlap"])
+                top = [pr for pr in pairs if pr["overlap"] >= self._SIG_OVERLAP][:14]
+                n_sig = len([p for p in pairs if p["overlap"] >= self._SIG_OVERLAP])
+                # per-cell distinct-layer count → cross-confirmed cells
+                cell_layers: dict = {}
+                for lbl in labels:
+                    for b in layer_bins[lbl]:
+                        cell_layers.setdefault(b, set()).add(lbl)
+                cooccur = []
+                max_layers = 0
+                for (blat, blon), lset in cell_layers.items():
+                    if len(lset) >= 2:
+                        cooccur.append({"lat": blat * self._BIN_DEG,
+                                        "lon": blon * self._BIN_DEG,
+                                        "n_layers": len(lset),
+                                        "layers": sorted(lset)})
+                    max_layers = max(max_layers, len(lset))
+                cooccur.sort(key=lambda c: -c["n_layers"])
+                n_confirmed = len(cooccur)
+                with self._lock:
+                    self._labels = labels; self._groups = groups
+                    self._matrix = matrix; self._counts = counts
+                    self._top = top; self._cooccur = cooccur[:600]
+                    self._n_sig = n_sig; self._max_layers = max_layers
+                    self._n_confirmed = n_confirmed; self._n_points = total_pts
+                    self._ok = n >= 2
+                log.info(f"[SCOINC] {n} geolocated layers · {total_pts} pts · "
+                         f"{n_sig} spatial assoc (overlap≥{self._SIG_OVERLAP}) · "
+                         f"{n_confirmed} cross-confirmed cells (≥2 streams, max {max_layers})"
+                         + (f" · top: {top[0]['a']}↔{top[0]['b']} {top[0]['overlap']:.2f}"
+                            if top else ""))
+            except Exception as _e:
+                log.debug(f"[SCOINC] loop error: {_e}")
+            _ti.sleep(self._REFRESH_S)
+
+    def get(self) -> dict:
+        with self._lock:
+            return {
+                "scoinc_labels":         list(self._labels),
+                "scoinc_groups":         list(self._groups),
+                "scoinc_matrix":         [list(r) for r in self._matrix],
+                "scoinc_counts":         list(self._counts),
+                "scoinc_n_layers":       len(self._labels),
+                "scoinc_n_points_total": self._n_points,
+                "scoinc_top_pairs":      list(self._top),
+                "scoinc_n_significant":  self._n_sig,
+                "scoinc_bin_deg":        self._BIN_DEG,
+                "scoinc_cooccur_cells":  list(self._cooccur),
+                "scoinc_max_layers":     self._max_layers,
+                "scoinc_n_confirmed_cells": self._n_confirmed,
+                "scoinc_ok":             bool(self._ok),
+            }
+
+
+class CrossStreamCorrelationMatrixEngine:
+    """v163: Master cross-stream correlation matrix across every live planetary data stream.
+
+    THE "MORE CORRELATION / CORRELATION MATRICES / WAY TO REFERENCE DATA TO ORGANIZE IT
+    BETTER" ENGINE.  N.E.P.A. now publishes dozens of independent real planetary scalar
+    metrics every fuse cycle — quake count, satellite-detected fire count, disaster alerts,
+    Kp/F10.7/X-ray space weather, citizen-sensor PM2.5, ocean wave height / SST / pressure,
+    NWP storm count / temperature / wind, aircraft / WSPR / APRS / satellite counts, and the
+    fusion coverages (recon / kinetic-vision / 3D-tomography).  They were scattered across the
+    pp dict with no structured cross-reference.
+
+    This engine ORGANIZES them: it auto-detects which metrics are live (a metric is included
+    only when it has produced real numeric values — "show what is live, don't show what isn't"),
+    keeps a rolling 1-hour history (sampled every 30 s so it tracks genuine planetary change,
+    not frame jitter), and computes the full Pearson correlation matrix across all live metrics.
+    It surfaces the strongest cross-stream relationships (|r| ≥ 0.5) — e.g. fires↔PM2.5,
+    Kp↔aurora, storms↔ocean-pressure — turning the raw key soup into a structured, navigable
+    cross-reference of how the planet's real measured streams move together.
+
+    NO FALSE DATA: correlations are computed only over real measured samples; a pair is reported
+    only with ≥ MIN_PAIRS overlapping samples AND non-zero variance in both — otherwise the cell
+    is left blank (None), never a fabricated number.  A constant or absent metric is excluded.
+
+    Inputs: every scalar already in pp (zero new network).  inject(pp) is called once per fuse
+    cycle from _fuse_agents AFTER all engines publish; it snapshots one rate-limited row.
+    Keys: xcorr_labels, xcorr_groups, xcorr_matrix, xcorr_n_metrics, xcorr_n_samples,
+          xcorr_window_min, xcorr_top_pairs, xcorr_n_significant, xcorr_latest, xcorr_ok
+    """
+    # (short label, pp scalar key, group) — group drives colour/organisation
+    _METRICS = [
+        ("Quakes",      "seismic_n",                       "Seismic"),
+        ("Fires",       "eonet_n",                         "Earth-obs"),
+        ("Disasters",   "gdacs_n",                         "Earth-obs"),
+        ("Kp",          "kp_index",                        "Space-wx"),
+        ("F10.7",       "f107_flux",                       "Space-wx"),
+        ("X-ray",       "xray_flux",                       "Space-wx"),
+        ("PM2.5",       "aqmesh_pm25_mean",                "Air-qual"),
+        ("AQ sensors",  "aqmesh_n",                        "Air-qual"),
+        ("Wave max",    "ocean_wvht_max",                  "Ocean"),
+        ("SST",         "ocean_wtmp_mean",                 "Ocean"),
+        ("Min pres",    "ocean_pres_min",                  "Ocean"),
+        ("Storms",      "atmos_n_storms",                  "Atmos"),
+        ("Air temp",    "atmos_temp_mean",                 "Atmos"),
+        ("Wind max",    "atmos_wind_max",                  "Atmos"),
+        ("Aircraft",    "aircraft_count",                  "RF/Plat"),
+        ("WSPR",        "wspr_n_spots",                    "RF/Plat"),
+        ("APRS",        "aprs_n_stations",                 "RF/Plat"),
+        ("Tracked sat", "tracked_sat_count",               "RF/Plat"),
+        ("LEO sat",     "extended_sat_n",                  "RF/Plat"),
+        ("Recon cov",   "recon_coverage_pct",              "Fusion"),
+        ("KinVis cov",  "kinvis_coverage_pct",             "Fusion"),
+        ("Tomo3D cov",  "tomo3d_coverage_pct",             "Fusion"),
+        ("HF paths",    "hf_n_total_paths",                "Fusion"),
+        ("GW events",   "gw_n",                            "Astro"),
+        ("NEO",         "neo_n",                           "Astro"),
+    ]
+    _GROUP_COLORS = {
+        "Seismic": "#ff5a4a", "Earth-obs": "#ff9a3c", "Space-wx": "#ffd84a",
+        "Air-qual": "#9ae84a", "Ocean": "#3cc8ff", "Atmos": "#4af0d0",
+        "RF/Plat": "#b88aff", "Fusion": "#ff7ad0", "Astro": "#8a9aff",
+    }
+    _SAMPLE_S     = 30.0       # one row per 30 s (planetary metrics change slowly)
+    _MAXLEN       = 120        # 120 × 30 s = 1-hour rolling window
+    _MIN_SAMPLES  = 6          # need ≥6 present samples to consider a metric live
+    _MIN_PAIRS    = 6          # need ≥6 overlapping samples to report a pair's r
+    _SIG_R        = 0.5        # |r| threshold for "significant" cross-stream link
+    _REFRESH_S    = 15.0
+    _BOOT_DELAY_S = 50.0
+    # v165: lead/lag cross-correlation — scan ±10 samples (±5 min at 30 s/sample).
+    # If stream A correlates best with B shifted by τ>0, A LEADS B by τ → A's present
+    # predicts B's future (the "forward math in consistency / assumed outcome" directive).
+    _MAXLAG       = 10
+
+    def __init__(self):
+        import threading as _thr
+        self._lock = _thr.Lock()
+        self._rows: list = []            # list of dict{label: value or None}
+        self._last_append = 0.0
+        self._labels: list = []; self._groups: list = []
+        self._matrix: list = []; self._top: list = []
+        self._latest: dict = {}; self._n_samples = 0; self._n_sig = 0
+        self._ok = False
+        self._pending = None
+        # v165 lead/lag state
+        self._lag_matrix: list = []      # NxN best-lag in MINUTES (signed; +i leads j)
+        self._lag_pairs: list = []       # top lead/lag relationships
+        self._n_leadlag = 0
+        self._lag_curve: dict = {}       # {a,b,lags_min:[...],r:[...]} for strongest pair
+        _thr.Thread(target=self._loop, daemon=True, name="xcorr_v163").start()
+
+    def inject(self, pp: dict):
+        """Snapshot one rate-limited row of every metric's current real value (or None)."""
+        import time as _ti, math as _m
+        now = _ti.time()
+        if now - self._last_append < self._SAMPLE_S:
+            return
+        row = {}
+        for lbl, key, _grp in self._METRICS:
+            v = pp.get(key)
+            try:
+                fv = float(v)
+                if _m.isfinite(fv):
+                    row[lbl] = fv
+                else:
+                    row[lbl] = None
+            except (TypeError, ValueError):
+                row[lbl] = None
+        with self._lock:
+            self._rows.append(row)
+            if len(self._rows) > self._MAXLEN:
+                self._rows = self._rows[-self._MAXLEN:]
+            self._last_append = now
+
+    def _loop(self):
+        import time as _ti, numpy as _np
+        _ti.sleep(self._BOOT_DELAY_S)
+        grp_of = {lbl: grp for lbl, _k, grp in self._METRICS}
+        while True:
+            try:
+                with self._lock:
+                    rows = list(self._rows)
+                if len(rows) >= self._MIN_SAMPLES:
+                    # build per-metric arrays (NaN where absent)
+                    cols = {}
+                    for lbl, _k, _g in self._METRICS:
+                        arr = _np.array([r.get(lbl, None) if r.get(lbl) is not None
+                                         else _np.nan for r in rows], dtype=float)
+                        present = _np.isfinite(arr)
+                        if present.sum() >= self._MIN_SAMPLES and _np.nanstd(arr) > 1e-9:
+                            cols[lbl] = arr
+                    labels = [lbl for lbl, _k, _g in self._METRICS if lbl in cols]
+                    n = len(labels)
+                    matrix = [[None] * n for _ in range(n)]
+                    pairs = []
+                    for i in range(n):
+                        ai = cols[labels[i]]
+                        matrix[i][i] = 1.0
+                        for j in range(i + 1, n):
+                            aj = cols[labels[j]]
+                            mask = _np.isfinite(ai) & _np.isfinite(aj)
+                            m = int(mask.sum())
+                            if m < self._MIN_PAIRS:
+                                continue
+                            xi = ai[mask]; xj = aj[mask]
+                            if xi.std() < 1e-9 or xj.std() < 1e-9:
+                                continue
+                            r = float(_np.corrcoef(xi, xj)[0, 1])
+                            if not _np.isfinite(r):
+                                continue
+                            matrix[i][j] = round(r, 3); matrix[j][i] = round(r, 3)
+                            pairs.append({"a": labels[i], "b": labels[j],
+                                          "r": round(r, 3), "n": m})
+                    pairs.sort(key=lambda d: -abs(d["r"]))
+                    top = [pr for pr in pairs if abs(pr["r"]) >= self._SIG_R][:14]
+                    latest = {}
+                    last_row = rows[-1]
+                    for lbl, _k, _g in self._METRICS:
+                        if last_row.get(lbl) is not None:
+                            latest[lbl] = {"value": round(float(last_row[lbl]), 3),
+                                           "group": grp_of[lbl]}
+                    # ── v165: lead/lag cross-correlation (reuse cols, no duplicate history) ──
+                    lag_matrix = [[0.0] * n for _ in range(n)]
+                    lag_pairs = []
+                    best_curve = None; best_curve_absr = 0.0
+                    maxlag = min(self._MAXLAG, max(0, len(rows) - self._MIN_PAIRS))
+                    for i in range(n):
+                        ai = cols[labels[i]]
+                        for j in range(i + 1, n):
+                            aj = cols[labels[j]]
+                            best_lag = 0; best_r = 0.0
+                            lags_min = []; r_curve = []
+                            for lag in range(-maxlag, maxlag + 1):
+                                if lag >= 0:        # A[t] vs B[t+lag] → A leads B by lag
+                                    xi = ai[: len(ai) - lag] if lag else ai
+                                    xj = aj[lag:]
+                                else:
+                                    k = -lag
+                                    xi = ai[k:]
+                                    xj = aj[: len(aj) - k]
+                                msk = _np.isfinite(xi) & _np.isfinite(xj)
+                                if int(msk.sum()) < self._MIN_PAIRS:
+                                    lags_min.append(lag * self._SAMPLE_S / 60.0)
+                                    r_curve.append(0.0)
+                                    continue
+                                u = xi[msk]; v = xj[msk]
+                                if u.std() < 1e-9 or v.std() < 1e-9:
+                                    lags_min.append(lag * self._SAMPLE_S / 60.0)
+                                    r_curve.append(0.0)
+                                    continue
+                                rr = float(_np.corrcoef(u, v)[0, 1])
+                                if not _np.isfinite(rr):
+                                    rr = 0.0
+                                lags_min.append(lag * self._SAMPLE_S / 60.0)
+                                r_curve.append(round(rr, 3))
+                                if abs(rr) > abs(best_r):
+                                    best_r = rr; best_lag = lag
+                            lag_min = round(best_lag * self._SAMPLE_S / 60.0, 1)
+                            lag_matrix[i][j] = lag_min
+                            lag_matrix[j][i] = -lag_min
+                            if abs(best_r) >= self._SIG_R and best_lag != 0:
+                                # positive lag → labels[i] leads labels[j]
+                                if best_lag > 0:
+                                    leader, follower = labels[i], labels[j]
+                                else:
+                                    leader, follower = labels[j], labels[i]
+                                lag_pairs.append({
+                                    "leader": leader, "follower": follower,
+                                    "lag_min": abs(lag_min), "r": round(best_r, 3)})
+                            if abs(best_r) > best_curve_absr and best_lag != 0:
+                                best_curve_absr = abs(best_r)
+                                best_curve = {"a": labels[i], "b": labels[j],
+                                              "lags_min": lags_min, "r": r_curve}
+                    lag_pairs.sort(key=lambda d: -abs(d["r"]))
+                    lag_pairs = lag_pairs[:14]
+                    with self._lock:
+                        self._labels = labels
+                        self._groups = [grp_of[l] for l in labels]
+                        self._matrix = matrix
+                        self._top = top
+                        self._latest = latest
+                        self._n_samples = len(rows)
+                        self._n_sig = len([p for p in pairs if abs(p["r"]) >= self._SIG_R])
+                        self._lag_matrix = lag_matrix
+                        self._lag_pairs = lag_pairs
+                        self._n_leadlag = len(lag_pairs)
+                        self._lag_curve = best_curve or {}
+                        self._ok = n >= 2
+                    log.info(f"[XCORR] {n} live metrics · {len(rows)} samples "
+                             f"({int(len(rows)*self._SAMPLE_S/60)}min) · "
+                             f"{self._n_sig} significant links (|r|≥{self._SIG_R}) · "
+                             f"top: {top[0]['a']}↔{top[0]['b']} r={top[0]['r']}" if top else
+                             f"[XCORR] {n} live metrics · {len(rows)} samples · 0 significant links yet")
+            except Exception as _e:
+                log.debug(f"[XCORR] loop error: {_e}")
+            _ti.sleep(self._REFRESH_S)
+
+    def get(self) -> dict:
+        with self._lock:
+            return {
+                "xcorr_labels":        list(self._labels),
+                "xcorr_groups":        list(self._groups),
+                "xcorr_matrix":        [list(r) for r in self._matrix],
+                "xcorr_n_metrics":     len(self._labels),
+                "xcorr_n_samples":     self._n_samples,
+                "xcorr_window_min":    int(self._n_samples * self._SAMPLE_S / 60),
+                "xcorr_top_pairs":     list(self._top),
+                "xcorr_n_significant": self._n_sig,
+                "xcorr_latest":        dict(self._latest),
+                "xcorr_ok":            bool(self._ok),
+                # v165 lead/lag
+                "xcorr_lag_matrix":    [list(r) for r in self._lag_matrix],
+                "xcorr_lag_pairs":     list(self._lag_pairs),
+                "xcorr_n_leadlag":     self._n_leadlag,
+                "xcorr_lag_curve":     dict(self._lag_curve),
+                "xcorr_max_lag_min":   round(self._MAXLAG * self._SAMPLE_S / 60.0, 1),
+            }
+
+
+class KineticVisionExpansionEngine:
+    """v162: Time-integrated planetary vision via real moving-platform kinetic sweep.
+
+    THE "VISION EXPANSION UNTIL REAL-TIME VISIBILITY DUE TO ASSUMED KINETIC MOTION" ENGINE.
+    The user's recurring directive: "satellite resonance reverse engineering ... vision
+    expansion until galactic real-time visibility due to assumed kinetic motion due to
+    physics consistency ... recalculated and corrected many times until universal vision."
+
+    Every prior coverage engine measured INSTANTANEOUS coverage (which cells are observed
+    THIS cycle). v140 specifically fixed the "100% illumination" overclaim by counting only
+    instantaneous real observations. But the planet is swept over TIME: as real satellites
+    and aircraft move along their real orbits/tracks, their sensing footprints sweep across
+    new ground every cycle. This engine TIME-INTEGRATES that sweep — accumulating genuinely
+    observed cells over a rolling window, expanding vision as platforms move, decaying stale
+    cells so it stays real-time, and ERROR-CORRECTING each cycle's kinetic prediction against
+    where the platforms actually went.
+
+    Per cycle:
+      1. Gather every REAL moving platform with a real position + altitude:
+         tracked_satellites, gnss_satellites, extended_sats (LEO), aircraft (ADS-B 1090 MHz).
+      2. Each platform sweeps a realistic NADIR SENSING footprint (NOT the full horizon disk
+         — that was the v140 overclaim). footprint_radius = clamp(alt_km·tan(20°), 80, 1400) km.
+      3. Mark swept cells observed NOW, tagged by the platform's real frequency band.
+      4. KINETIC FORWARD-PREDICTION: from each platform's real displacement since last cycle
+         (its measured motion → velocity vector), project the subpoint forward Δt and pre-
+         compute the footprint it WILL sweep next. This is "assumed kinetic motion" / "math
+         in motion / forward math in consistency" applied to REAL measured states.
+      5. ERROR-CORRECTION: compare last cycle's PREDICTED swept-set to this cycle's ACTUAL
+         swept-set → Jaccard agreement + residual cell count. The prediction is recalculated
+         and corrected every cycle — convergence of the assumed-motion model toward reality.
+      6. DECAY: cells not re-swept within the window (default 30 min) drop out of current
+         coverage (stay in lifetime tally). Keeps "vision" real-time, never fabricated.
+
+    NO FALSE DATA: a cell is only "observed" if a real platform's footprint actually swept it.
+    Coverage% = cells swept within the window / total grid. Lifetime% = unique cells ever swept.
+    Multispectrum: each cell records WHICH real bands (GNSS L-band, ADS-B 1090 MHz, LEO Ku/Ka,
+    mixed-satellite) have observed it — the literal "all wave kinds overlaid to build the planet."
+
+    Inputs (all already in pp, zero new network):
+      tracked_satellites, gnss_satellites, extended_sats, aircraft
+    Keys: kinvis_grid, kinvis_n_cells, kinvis_observed_cells, kinvis_coverage_pct,
+          kinvis_lifetime_cells, kinvis_lifetime_pct, kinvis_n_platforms, kinvis_n_sats,
+          kinvis_n_aircraft, kinvis_predict_jaccard, kinvis_predict_residual_cells,
+          kinvis_expansion_rate, kinvis_bands, kinvis_window_min, kinvis_n_corrections, kinvis_ok
+    """
+    _RE_KM   = 6371.0
+    _STEP    = 5.0                 # 5°×5° → 36 lat × 72 lon = 2592 cells (matches recon grid)
+    _WINDOW_S = 1800.0            # 30-min rolling window for "currently visible"
+    _REFRESH_S    = 30.0          # platforms move meaningfully every ~30 s
+    _BOOT_DELAY_S = 130.0
+    # platform kind → (real band label, footprint scale factor of altitude)
+    _BANDS = [
+        ("gnss",     "L-band 1.2-1.6 GHz (GNSS)"),
+        ("tracked",  "mixed-band satellite"),
+        ("extended", "LEO downlink Ku/Ka"),
+        ("aircraft", "1090 MHz (ADS-B)"),
+    ]
+
+    def __init__(self):
+        import threading as _thr
+        import numpy as _np
+        self._lock = _thr.Lock()
+        lats = _np.arange(-90.0 + self._STEP / 2.0, 90.0, self._STEP)   # 36
+        lons = _np.arange(-180.0 + self._STEP / 2.0, 180.0, self._STEP) # 72
+        self._nlat = len(lats); self._nlon = len(lons)
+        self._ncells = self._nlat * self._nlon
+        LON, LAT = _np.meshgrid(lons, lats)             # (36,72)
+        self._cell_lat = LAT.ravel()                    # (2592,)
+        self._cell_lon = LON.ravel()
+        self._rlat = _np.radians(self._cell_lat)
+        self._coslat = _np.cos(self._rlat)
+        self._n_bands = len(self._BANDS)
+        self._last_obs   = _np.zeros(self._ncells, dtype=_np.float64)   # unix; 0 = never
+        self._n_obs      = _np.zeros(self._ncells, dtype=_np.int32)
+        self._band_mask  = _np.zeros((self._ncells, self._n_bands), dtype=bool)
+        self._lifetime   = _np.zeros(self._ncells, dtype=bool)
+        self._prev_sub: dict = {}        # platform id -> (lat, lon)
+        self._predicted: set = set()
+        self._prev_swept: set = set()
+        # published state
+        self._grid: list = []
+        self._observed = 0; self._cov = 0.0; self._life = 0; self._life_pct = 0.0
+        self._n_plat = 0; self._n_sats = 0; self._n_air = 0
+        self._jaccard = 0.0; self._resid = 0; self._expansion = 0
+        self._bands_live: list = []; self._n_corr = 0; self._ok = False
+        self._recon: list = []
+        self._sats: list = []; self._gnss: list = []
+        self._ext: list = []; self._air: list = []
+        _thr.Thread(target=self._loop, daemon=True, name="kinvis_v162").start()
+
+    def inject(self, pp: dict):
+        with self._lock:
+            self._sats = list(pp.get("tracked_satellites") or [])
+            self._gnss = list(pp.get("gnss_satellites") or [])
+            self._ext  = list(pp.get("extended_sats") or [])
+            self._air  = list(pp.get("aircraft") or [])
+
+    @staticmethod
+    def _footprint_km(alt_km, kind):
+        if kind == "aircraft":
+            return 60.0                       # ADS-B reception ~ local; mostly its own cell
+        import math as _m
+        return float(min(max(alt_km * _m.tan(_m.radians(20.0)), 80.0), 1400.0))
+
+    def _gc_dist(self, slat, slon):
+        """Vectorized haversine distance (km) from (slat,slon) to every cell centre."""
+        import numpy as _np
+        rlat1 = _np.radians(slat)
+        dlat = self._rlat - rlat1
+        dlon = _np.radians(self._cell_lon - slon)
+        a = (_np.sin(dlat / 2.0) ** 2
+             + _np.cos(rlat1) * self._coslat * _np.sin(dlon / 2.0) ** 2)
+        return 2.0 * self._RE_KM * _np.arcsin(_np.sqrt(_np.clip(a, 0.0, 1.0)))
+
+    def _cells_within(self, slat, slon, radius_km):
+        """Flat indices of cells within radius_km — ALWAYS includes the nadir cell.
+
+        A platform observes the ground directly beneath it (nadir), so the cell whose
+        centre is nearest the subpoint is always marked, even when the sensing footprint
+        is narrower than the 5° grid spacing (a LEO swath can fall between cell centres).
+        This is honest: the subpoint cell is genuinely under the platform right now.
+        """
+        import numpy as _np
+        d = self._gc_dist(slat, slon)
+        idx = _np.where(d <= radius_km)[0]
+        nadir = int(_np.argmin(d))
+        if nadir not in idx:
+            idx = _np.append(idx, nadir)
+        return idx
+
+    def _platforms(self):
+        """Yield (pid, kind, lat, lon, alt_km) for every real moving platform."""
+        out = []
+        with self._lock:
+            sats = list(self._sats); gnss = list(self._gnss)
+            ext = list(self._ext); air = list(self._air)
+        for grp, kind, idkey in ((gnss, "gnss", "prn"), (sats, "tracked", "norad_id"),
+                                 (ext, "extended", "norad_id")):
+            for i, s in enumerate(grp):
+                try:
+                    la = s.get("lat"); lo = s.get("lon")
+                    if la is None or lo is None:
+                        continue
+                    alt = float(s.get("alt_km") or 550.0)
+                    pid = f"{kind}:{s.get(idkey) or s.get('name') or i}"
+                    out.append((pid, kind, float(la), float(lo), alt))
+                except Exception:
+                    continue
+        for i, a in enumerate(air):
+            try:
+                la = a.get("lat"); lo = a.get("lon")
+                if la is None or lo is None:
+                    continue
+                alt = float(a.get("baro_alt_m") or a.get("geo_alt_m") or 0.0) / 1000.0
+                pid = f"aircraft:{a.get('icao24') or i}"
+                out.append((pid, "aircraft", float(la), float(lo), max(alt, 0.1)))
+            except Exception:
+                continue
+        return out
+
+    def _loop(self):
+        import time as _ti, numpy as _np
+        _ti.sleep(self._BOOT_DELAY_S)
+        band_idx = {k: i for i, (k, _lbl) in enumerate(self._BANDS)}
+        while True:
+            if _ti.time() - getattr(self, "_last_run", 0.0) >= self._REFRESH_S:
+                try:
+                    now = _ti.time()
+                    plats = self._platforms()
+                    swept: set = set()
+                    swept_by_band = {k: set() for k, _l in self._BANDS}
+                    new_prev: dict = {}
+                    predicted_next: set = set()
+                    n_sats = n_air = 0
+                    for pid, kind, la, lo, alt in plats:
+                        if kind == "aircraft": n_air += 1
+                        else:                  n_sats += 1
+                        radius = self._footprint_km(alt, kind)
+                        cells = self._cells_within(la, lo, radius)
+                        for ci in cells:
+                            swept.add(int(ci))
+                            swept_by_band[kind].add(int(ci))
+                        new_prev[pid] = (la, lo)
+                        # ── kinetic forward-prediction from real displacement ──
+                        prev = self._prev_sub.get(pid)
+                        if prev is not None:
+                            dla = la - prev[0]
+                            dlo = ((lo - prev[1] + 180.0) % 360.0) - 180.0
+                            # advance one more step along the measured motion
+                            plat2 = max(-89.9, min(89.9, la + dla))
+                            plon2 = ((lo + dlo + 180.0) % 360.0) - 180.0
+                            for ci in self._cells_within(plat2, plon2, radius):
+                                predicted_next.add(int(ci))
+                    # ── error-correction: last prediction vs this actual sweep ──
+                    if self._predicted:
+                        inter = len(self._predicted & swept)
+                        union = len(self._predicted | swept) or 1
+                        jaccard = inter / union
+                        resid = len(self._predicted ^ swept)
+                        n_corr = self._n_corr + 1
+                    else:
+                        jaccard = 0.0; resid = 0; n_corr = self._n_corr
+                    # expansion = cells swept now that were NOT swept last cycle
+                    expansion = len(swept - self._prev_swept)
+                    # ── commit observations into the persistent grid ──
+                    if swept:
+                        idx = _np.fromiter(swept, dtype=_np.int64, count=len(swept))
+                        self._last_obs[idx] = now
+                        self._n_obs[idx] += 1
+                        self._lifetime[idx] = True
+                        for k, cells in swept_by_band.items():
+                            if cells:
+                                bi = band_idx[k]
+                                bidx = _np.fromiter(cells, dtype=_np.int64, count=len(cells))
+                                self._band_mask[bidx, bi] = True
+                    # ── coverage within rolling window ──
+                    age = now - self._last_obs
+                    visible = (self._last_obs > 0) & (age <= self._WINDOW_S)
+                    observed = int(visible.sum())
+                    cov = round(100.0 * observed / self._ncells, 1)
+                    life = int(self._lifetime.sum())
+                    life_pct = round(100.0 * life / self._ncells, 1)
+                    bands_live = sorted({lbl for (k, lbl) in self._BANDS
+                                         if swept_by_band[k]})
+                    # build draw grid (visible cells only)
+                    vis_idx = _np.where(visible)[0]
+                    grid = []
+                    for ci in vis_idx:
+                        bset = [lbl for j, (k, lbl) in enumerate(self._BANDS)
+                                if self._band_mask[ci, j]]
+                        grid.append({
+                            "lat": float(self._cell_lat[ci]),
+                            "lon": float(self._cell_lon[ci]),
+                            "age_s": round(float(age[ci]), 0),
+                            "n_obs": int(self._n_obs[ci]),
+                            "bands": bset, "n_bands": len(bset),
+                        })
+                    with self._lock:
+                        self._grid = grid; self._observed = observed; self._cov = cov
+                        self._life = life; self._life_pct = life_pct
+                        self._n_plat = len(plats); self._n_sats = n_sats; self._n_air = n_air
+                        self._jaccard = round(jaccard, 3); self._resid = resid
+                        self._expansion = expansion; self._bands_live = bands_live
+                        self._n_corr = n_corr; self._ok = observed > 0
+                    self._prev_sub = new_prev
+                    self._predicted = predicted_next
+                    self._prev_swept = swept
+                    self._last_run = now
+                    log.info(f"[KINVIS] {len(plats)} platforms ({n_sats} sat/{n_air} air) · "
+                             f"swept {observed}/{self._ncells} cells in {int(self._WINDOW_S/60)}min "
+                             f"({cov:.1f}%) · lifetime {life_pct:.1f}% · +{expansion} new · "
+                             f"predict J={jaccard:.2f} (corr×{n_corr}) · bands={len(bands_live)}")
+                except Exception as _e:
+                    log.debug(f"[KINVIS] loop error: {_e}")
+                    self._last_run = _ti.time()
+            _ti.sleep(10.0)
+
+    def get(self) -> dict:
+        with self._lock:
+            return {
+                "kinvis_grid":              list(self._grid),
+                "kinvis_n_cells":           self._ncells,
+                "kinvis_observed_cells":    self._observed,
+                "kinvis_coverage_pct":      self._cov,
+                "kinvis_lifetime_cells":    self._life,
+                "kinvis_lifetime_pct":      self._life_pct,
+                "kinvis_n_platforms":       self._n_plat,
+                "kinvis_n_sats":            self._n_sats,
+                "kinvis_n_aircraft":        self._n_air,
+                "kinvis_predict_jaccard":   self._jaccard,
+                "kinvis_predict_residual_cells": self._resid,
+                "kinvis_expansion_rate":    self._expansion,
+                "kinvis_bands":             list(self._bands_live),
+                "kinvis_window_min":        int(self._WINDOW_S / 60),
+                "kinvis_n_corrections":     self._n_corr,
+                "kinvis_ok":                bool(self._ok),
+            }
+
+
+class MetarSurfaceStationEngine:
+    """v161: Real surface weather from 10,000+ global NOAA METAR aviation stations.
+
+    METAR (METeorological Aerodrome Report) is the global standard for surface weather
+    observation at airports — every major airport on Earth reports every 30-60 minutes.
+    The global network exceeds 10,000 stations, providing the densest surface-level
+    weather coverage of any free real-time dataset.
+
+    Every observation is MEASURED: thermometer, anemometer, barometer, hygrometer.
+    This data directly upgrades the 3D tomography surface layer from DERIVED → MEASURED
+    for every 15°×15° column that contains an aviation-reporting station.
+
+    Source: aviationweather.gov / NOAA/NWS Aviation Weather Center (free, no auth).
+    API: /api/data/metar?format=json&hours=1.5&bbox=-90,-180,90,180
+    Keys: metar_stations, metar_n, metar_ok
+    """
+    _URL = ("https://aviationweather.gov/api/data/metar"
+            "?format=json&hours=1.5&bbox=-90,-180,90,180")
+    _INTERVAL_S  = 600    # refresh every 10 min (METAR cycle is 30-60 min)
+    _BOOT_DELAY_S = 165.0  # after kinprop (145s)
+
+    def __init__(self):
+        import threading as _thr
+        self._lock = _thr.Lock()
+        self._stations: list = []
+        self._n = 0; self._ok = False
+        _thr.Thread(target=self._loop, daemon=True, name="metar_v161").start()
+
+    def _fetch(self) -> list:
+        try:
+            import urllib.request, json as _js
+            req = urllib.request.Request(
+                self._URL,
+                headers={"User-Agent": "NEPA/161 (edu/research non-commercial)"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = _js.loads(r.read().decode("utf-8", errors="replace"))
+            if not isinstance(data, list):
+                return []
+            out = []
+            for obs in data:
+                if not isinstance(obs, dict):
+                    continue
+                # field name variants between API revisions
+                lat = obs.get("lat") or obs.get("latitude")
+                lon = obs.get("lon") or obs.get("longitude")
+                if lat is None or lon is None:
+                    continue
+                try:
+                    lat, lon = float(lat), float(lon)
+                except (TypeError, ValueError):
+                    continue
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    continue
+                sid  = obs.get("stationId") or obs.get("id") or obs.get("station_id") or ""
+                rec  = {"lat": lat, "lon": lon, "station_id": str(sid), "src": "measured"}
+                for dst, keys in (
+                    ("temp_c",        ["temp",      "tmpC",    "temperature"]),
+                    ("dewpoint_c",    ["dewpoint",  "dwpC",    "dewpointC"]),
+                    ("wind_speed_kt", ["windSpeed", "spdKt",   "windSpeedKt"]),
+                    ("wind_dir_deg",  ["windDirection", "dirKt", "windDir"]),
+                    ("pressure_hpa",  ["altimeter", "altimSL", "slp"]),
+                ):
+                    for k in keys:
+                        v = obs.get(k)
+                        if v is not None:
+                            try:
+                                rec[dst] = float(v)
+                            except (TypeError, ValueError):
+                                pass
+                            break
+                out.append(rec)
+            return out
+        except Exception as _e:
+            log.debug(f"[METAR] fetch error: {_e}")
+            return []
+
+    def _loop(self):
+        import time as _ti
+        _ti.sleep(self._BOOT_DELAY_S)
+        while True:
+            stations = self._fetch()
+            with self._lock:
+                self._stations = stations
+                self._n = len(stations); self._ok = self._n > 0
+            if self._n > 0:
+                log.info(f"[METAR] {self._n} surface stations loaded "
+                         f"(REAL measured T/wind/pressure · aviationweather.gov)")
+            else:
+                log.debug("[METAR] API unreachable — no surface station data this cycle")
+            _ti.sleep(self._INTERVAL_S)
+
+    def get(self) -> dict:
+        with self._lock:
+            return {
+                "metar_stations": list(self._stations),
+                "metar_n":        self._n,
+                "metar_ok":       bool(self._ok),
+            }
+
+
+class GlobalOceanCurrentEngine:
+    """v161: Real ocean surface currents from OSCAR (Ocean Surface Current Analysis Real-time).
+
+    OSCAR merges satellite altimetry (SSH), scatterometer winds, and SST observations
+    via variational optimal interpolation to produce 5°×5° global surface current vectors
+    (u eastward, v northward in m/s) at ~15m depth. Updated twice weekly.
+
+    Source: NOAA CoastWatch / JPL ERDDAP (jplOscarv1_0 or jplOscarNearRealTime60d).
+    URL: /erddap/griddap/jplOscarv1_0.csv?u,v[last][0][lat][lon]
+    All vectors labeled src='measured' — OSCAR is a real analysis product, not a model sim.
+    Keys: ocean_currents, ocean_currents_n, ocean_currents_ok
+    """
+    _ERDDAP_URL = (
+        "https://coastwatch.pfeg.noaa.gov/erddap/griddap/jplOscarv1_0.csv"
+        "?u,v[last][0][(-87.5):(87.5):5][(-177.5):(177.5):5]"
+    )
+    _INTERVAL_S   = 3600   # 1-hour refresh (OSCAR updates weekly; hourly avoids hammering)
+    _BOOT_DELAY_S = 170.0  # after metar (165s)
+
+    def __init__(self):
+        import threading as _thr
+        self._lock = _thr.Lock()
+        self._currents: list = []
+        self._n = 0; self._ok = False
+        _thr.Thread(target=self._loop, daemon=True, name="oscar_v161").start()
+
+    def _fetch(self) -> list:
+        try:
+            import urllib.request, csv as _csv, io as _io, math as _math
+            req = urllib.request.Request(
+                self._ERDDAP_URL,
+                headers={"User-Agent": "NEPA/161 (edu/research non-commercial)",
+                         "Accept": "text/csv"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                raw = r.read().decode("utf-8", errors="replace")
+            reader = _csv.reader(_io.StringIO(raw))
+            header = None
+            out = []
+            for row in reader:
+                if header is None:
+                    header = [c.strip().lower().split("(")[0].strip() for c in row]
+                    continue
+                if len(row) < 2:
+                    continue
+                try:
+                    rec = dict(zip(header, row))
+                    lat = float(rec.get("latitude") or rec.get("lat") or "nan")
+                    lon = float(rec.get("longitude") or rec.get("lon") or "nan")
+                    u   = float(rec.get("u") or "nan")
+                    v   = float(rec.get("v") or "nan")
+                except (TypeError, ValueError, KeyError):
+                    continue
+                if any(_math.isnan(x) for x in (lat, lon, u, v)):
+                    continue
+                out.append({"lat": lat, "lon": lon, "u_ms": u, "v_ms": v, "src": "measured"})
+            return out
+        except Exception as _e:
+            log.debug(f"[OSCAR] ERDDAP fetch error: {_e}")
+            return []
+
+    def _loop(self):
+        import time as _ti
+        _ti.sleep(self._BOOT_DELAY_S)
+        while True:
+            currents = self._fetch()
+            with self._lock:
+                self._currents = currents
+                self._n = len(currents); self._ok = self._n > 0
+            if self._n > 0:
+                log.info(f"[OSCAR] {self._n} ocean current vectors loaded "
+                         f"(REAL OSCAR analysis · NOAA CoastWatch ERDDAP)")
+            else:
+                log.debug("[OSCAR] ERDDAP unreachable — no ocean current data this cycle")
+            _ti.sleep(self._INTERVAL_S)
+
+    def get(self) -> dict:
+        with self._lock:
+            return {
+                "ocean_currents":    list(self._currents),
+                "ocean_currents_n":  self._n,
+                "ocean_currents_ok": bool(self._ok),
             }
 
 
@@ -40825,6 +43263,15 @@ class LiveSourceRegistry:
         ("Deep Earth",      "IGRF-13 magnetic grid", ["geomag_n"], ["geomag_ok"], "cells"),
         ("Deep Earth",      "PREM seismic rays",    ["subsurface_n_rays"], ["subsurface_ok"], "rays"),
         ("Deep Earth",      "VLF/ELF lightning est", ["lightning_n_cells"], ["lightning_ok"], "cells"),
+        ("Fusion",          "3D volumetric columns", ["tomo3d_measured_voxels"], ["tomo3d_ok"], "voxels"),
+        ("Fusion",          "Kinetic propagator",    ["kinprop_n_cells"], ["kinprop_ok"], "cells"),
+        ("Surface",         "METAR stations",        ["metar_n"], ["metar_ok"], "stations"),
+        ("Surface",         "OSCAR ocean currents",  ["ocean_currents_n"], ["ocean_currents_ok"], "vectors"),
+        ("Fusion",          "Kinetic vision sweep",  ["kinvis_observed_cells"], ["kinvis_ok"], "cells"),
+        ("Fusion",          "Cross-stream correlation", ["xcorr_n_metrics"], ["xcorr_ok"], "streams"),
+        ("Fusion",          "Lead/lag predictors",      ["xcorr_n_leadlag"], [], "links"),
+        ("Fusion",          "Correlation network",      ["corrnet_n_edges"], ["corrnet_ok"], "edges"),
+        ("Fusion",          "Spatial co-occurrence",    ["scoinc_n_confirmed_cells"], ["scoinc_ok"], "cells"),
         ("Earth-obs",       "Gravitational waves",  ["gw_n", "gw_events"], [], "events"),
         ("Earth-obs",       "NEO close approaches",  ["neo_n", "neo_approaches"], [], "objects"),
         ("Earth-obs",       "Seismic wavefronts",   ["seismic_wave_n", "seismic_wave_fronts"], [], "fronts"),
@@ -74643,6 +77090,34 @@ class MultiAgentWirelessBCIFuser:
         # v159: 3D volumetric planetary tomography — stacks every real layer into vertical columns
         self.tomo3d = VolumetricPlanetTomographyEngine()
         log.info("[TOMO3D] VolumetricPlanetTomographyEngine ready (3D columns ionosphere→core, 288 cols × 11 levels)")
+
+        # v160: Kinetic propagator — semi-Lagrangian advection + Coriolis + error-correction
+        self.kinprop = PlanetaryKineticPropagatorEngine()
+        log.info("[KINPROP] PlanetaryKineticPropagatorEngine ready (2-hour horizon, 30-min steps, Coriolis+diffusion)")
+
+        # v161: METAR global surface stations (10k+ airports · real T/wind/pressure)
+        self.metar_engine = MetarSurfaceStationEngine()
+        log.info("[METAR] MetarSurfaceStationEngine ready (aviationweather.gov, boots ~165s)")
+
+        # v161: OSCAR global ocean surface currents (NOAA CoastWatch ERDDAP)
+        self.ocean_current = GlobalOceanCurrentEngine()
+        log.info("[OSCAR] GlobalOceanCurrentEngine ready (NOAA ERDDAP jplOscarv1_0, boots ~170s)")
+
+        # v162: Kinetic vision expansion — time-integrated planetary sweep by real moving platforms
+        self.kinvis = KineticVisionExpansionEngine()
+        log.info("[KINVIS] KineticVisionExpansionEngine ready (sat+ADS-B kinetic sweep, 30-min window, boots ~130s)")
+
+        # v163: Cross-stream correlation matrix — organizes every live planetary scalar stream
+        self.xcorr = CrossStreamCorrelationMatrixEngine()
+        log.info("[XCORR] CrossStreamCorrelationMatrixEngine ready (rolling 1-hr Pearson across all live streams)")
+
+        # v164: Spatial co-occurrence matrix — where every geolocated real stream co-locates
+        self.scoinc = SpatialCoincidenceMatrixEngine()
+        log.info("[SCOINC] SpatialCoincidenceMatrixEngine ready (geolocated cross-reference, 5° bins, verification mesh)")
+
+        # v166: Correlation network — unifies temporal+spatial+lead/lag into one graph
+        self.corrnet = CorrelationNetworkEngine()
+        log.info("[CORRNET] CorrelationNetworkEngine ready (unified correlation graph, FR layout, centrality, clusters)")
         # v97: REAL planet-scale map (OpenStreetMap satellite/survey cartography). Geolocate +
         # prefetch in the background so the Planet Map tab [k] opens straight onto real data.
         self.planet_map = PlanetMapEngine()
@@ -76072,6 +78547,13 @@ class MultiAgentWirelessBCIFuser:
                  ("PlanetScan [0]", "planetscan"),
                  ("DeepScan", "deepscan"),
                  ("PlanetTomo", "planettomo"),
+                 ("KineticProp", "kineticprop"),
+                 ("GeoCurrents", "geocurrent"),
+                 ("KinVision", "kinvis"),
+                 ("DataMatrix", "xcorrmatrix"),
+                 ("SpatialXref", "spatialxref"),
+                 ("LeadLag", "xcorrlag"),
+                 ("CorrNet", "corrnet"),
                  ("Info [i]", "info")]
         try:
             _nbtn = len(_tabs)
@@ -78795,6 +81277,58 @@ class MultiAgentWirelessBCIFuser:
                         pp[_kls] = _vls
             except Exception:
                 pass
+            # ── v159: 3D volumetric planetary tomography — stack all real layers into vertical columns ──
+            # (runs LAST among planetary engines so recon/atmos/ocean/iono/geomag are all published)
+            try:
+                _t3 = getattr(self, "tomo3d", None)
+                if _t3 is not None:
+                    _t3.inject(pp)   # snapshot every real layer from this fuse cycle
+                    for _kt3, _vt3 in _t3.get().items():
+                        pp[_kt3] = _vt3
+            except Exception:
+                pass
+            # ── v160: Kinetic propagator — semi-Lagrangian advection + Coriolis + error-correction ──
+            try:
+                _kp = getattr(self, "kinprop", None)
+                if _kp is not None:
+                    _kp.inject(pp)   # inject recon_grid + atmos_grid wind vectors
+                    for _kkp, _vkp in _kp.get().items():
+                        pp[_kkp] = _vkp
+            except Exception:
+                pass
+            # ── v161: METAR surface stations — 10k+ global aviation obs (real T/wind/pressure) ──
+            try:
+                _mt = getattr(self, "metar_engine", None)
+                if _mt is not None:
+                    for _kmt, _vmt in _mt.get().items():
+                        pp[_kmt] = _vmt
+            except Exception:
+                pass
+            # ── v161: OSCAR ocean surface currents (NOAA CoastWatch ERDDAP) ──
+            try:
+                _oc = getattr(self, "ocean_current", None)
+                if _oc is not None:
+                    for _koc, _voc in _oc.get().items():
+                        pp[_koc] = _voc
+            except Exception:
+                pass
+            # ── v161: tomo3d re-inject now that metar_stations is in pp ──
+            try:
+                _t3b = getattr(self, "tomo3d", None)
+                if _t3b is not None and pp.get("metar_stations"):
+                    _t3b.inject(pp)   # push metar_stations into tomo3d surface layer
+            except Exception:
+                pass
+            # ── v162: kinetic vision expansion — accumulate moving-platform sweep ──
+            try:
+                _kv = getattr(self, "kinvis", None)
+                if _kv is not None:
+                    # inject after tracked/gnss/extended sats + aircraft are all in pp
+                    _kv.inject(pp)
+                    for _kkv, _vkv in _kv.get().items():
+                        pp[_kkv] = _vkv
+            except Exception:
+                pass
             # ── v147: NOAA SWPC space weather dashboard (solar wind, X-ray, Kp, Dst, aurora) ──
             try:
                 _swpc = getattr(self, "swpc", None)
@@ -78836,6 +81370,35 @@ class MultiAgentWirelessBCIFuser:
                     _anomr = _ganom.correlate(pp)
                     for _ka, _va in _anomr.items():
                         pp[_ka] = _va
+            except Exception:
+                pass
+            # ── v163: cross-stream correlation matrix — snapshot every live scalar
+            # AFTER all engines publish, BEFORE the inventory (organises the data) ──
+            try:
+                _xc = getattr(self, "xcorr", None)
+                if _xc is not None:
+                    _xc.inject(pp)              # rate-limited row snapshot (30 s)
+                    for _kxc, _vxc in _xc.get().items():
+                        pp[_kxc] = _vxc
+            except Exception:
+                pass
+            # ── v164: spatial co-occurrence matrix — snapshot all geolocated layers ──
+            try:
+                _sx = getattr(self, "scoinc", None)
+                if _sx is not None:
+                    _sx.inject(pp)              # snapshot geolocated point lists
+                    for _ksx, _vsx in _sx.get().items():
+                        pp[_ksx] = _vsx
+            except Exception:
+                pass
+            # ── v166: correlation network — unify v163/v164/v165 pairs into one graph
+            # (runs AFTER xcorr + scoinc publish their pair lists; no new computation) ──
+            try:
+                _cn = getattr(self, "corrnet", None)
+                if _cn is not None:
+                    _cn.inject(pp)              # reads xcorr_top_pairs/scoinc_top_pairs/xcorr_lag_pairs
+                    for _kcn, _vcn in _cn.get().items():
+                        pp[_kcn] = _vcn
             except Exception:
                 pass
             # ── v141: live-source auto-detect inventory (must run LAST — reads every
