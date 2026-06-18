@@ -1792,6 +1792,12 @@ class DetailTabWindow:
                  "spatialxref":  "SPATIAL CO-OCCURRENCE MATRIX — WHERE GEOLOCATED STREAMS AGREE (VERIFICATION MESH · CROSS-CONFIRMED CELLS)",
                  "xcorrlag":     "LEAD/LAG CROSS-CORRELATION — WHICH PLANETARY STREAM PREDICTS WHICH (TIME-SHIFTED PEARSON · FORWARD MATH)",
                  "corrnet":      "CORRELATION NETWORK — ALL DATA RELATIONSHIPS AS ONE GRAPH (TEMPORAL + SPATIAL + LEAD/LAG · CLUSTERS · HUBS)",
+                 "xcorrpca":     "PRINCIPAL MODES (PCA) — DOMINANT PATTERNS OF PLANETARY CO-VARIATION (LATENT FACTORS · VARIANCE EXPLAINED)",
+                 "granger":      "GRANGER CAUSALITY — DIRECTED CAUSAL FLOW BETWEEN STREAMS (WHICH STREAM PREDICTS WHICH · F-STAT · VAR(2) · ALL REAL)",
+                 "anomaly":      "STREAM ANOMALY DASHBOARD — WHICH PLANETARY STREAMS ARE CURRENTLY OUT OF NORMAL RANGE (Z-SCORE · IQR · SEVERITY · ALL REAL)",
+                 "partial":      "PARTIAL CORRELATION — DIRECT vs CONFOUNDED LINKS (CONTROLS FOR EVERY OTHER STREAM · PRECISION MATRIX · SPURIOUS-LINK FLAGGING · ALL REAL)",
+                 "sessions":     "SESSION RECORDER — PERSISTED SCAN DURATIONS FOR REPLAY (REAL STREAMS + MEASURED EEG STORED AUTOMATICALLY · NOT MINDS · ALL REAL)",
+                 "intake":       "DATA INTAKE — REAL-DATA SLOTS FOR WHEN DATA IS OFFERED (DECLINED-TO-FABRICATE CAPABILITIES GET A SLOT · AWAITING UNTIL OFFERED · NOTHING INVENTED)",
                  "entitydetail": "ENTITY DETAIL",
                  "info": "SYSTEM INFO & ABOUT"}.get(self.kind, self.kind)
         if self.kind == "entitydetail":
@@ -2123,19 +2129,129 @@ class DetailTabWindow:
         fig.suptitle("RAW DATA READOUT - full transparency of all sensed data",
                      color='#00ffcc', fontsize=12)
 
+    def _draw_bci_real_eeg(self, fig, p, snap):
+        """v170: REAL EEG dashboard — genuine per-channel band powers from a connected headset.
+
+        ALL REAL: every number here is a measured band power from a physical EEG device streamed
+        over LSL (Muse/OpenBCI/BrainFlow). One consenting wearer, electrodes on their own scalp.
+        NOT remote, NOT through walls, NOT thought-content, NOT animals/planet-wide minds.
+        """
+        import numpy as _np
+        S = snap if (snap or {}).get("eeg_real_ok") else (p or {})
+        name   = str(S.get("eeg_real_stream_name") or "EEG")
+        nch    = int(S.get("eeg_real_n_channels") or 0)
+        srate  = float(S.get("eeg_real_srate") or 0.0)
+        bmean  = dict(S.get("eeg_real_band_powers") or {})
+        perch  = list(S.get("eeg_real_per_channel") or [])
+        nsamp  = int(S.get("eeg_real_n_samples") or 0)
+
+        fig.suptitle(f"WIRELESS BCI — REAL EEG  [{name}]  {nch} ch @ {srate:.0f} Hz  ·  ALL MEASURED",
+                     color='#00ffcc', fontsize=12, fontweight='bold')
+
+        band_order = ["delta", "theta", "alpha", "beta", "gamma"]
+        band_cols  = {'delta': '#3355ff', 'theta': '#22aaff', 'alpha': '#22ffaa',
+                      'beta': '#aaff22', 'gamma': '#ff5533'}
+
+        # Panel 1: mean band-power distribution across channels
+        ax1 = fig.add_subplot(2, 2, 1); ax1.set_facecolor('#080808')
+        vals = [bmean.get(b, 0.0) for b in band_order]
+        ax1.bar(range(len(band_order)), vals, color=[band_cols[b] for b in band_order])
+        ax1.set_xticks(range(len(band_order)))
+        ax1.set_xticklabels(["δ", "θ", "α", "β", "γ"], color='#ccc', fontsize=12)
+        ax1.set_title("Mean band-power fraction (all channels)", color='#00ffcc', fontsize=10)
+        ax1.tick_params(colors='#888'); ax1.set_ylim(0, max(0.6, max(vals) * 1.2 if vals else 0.6))
+        for xi, v in enumerate(vals):
+            ax1.text(xi, v + 0.01, f"{v:.2f}", ha='center', color='#cec', fontsize=8)
+
+        # Panel 2: per-channel band fractions as a stacked heatmap
+        ax2 = fig.add_subplot(2, 2, 2); ax2.set_facecolor('#080808')
+        if perch:
+            M = _np.array([[c["bands"].get(b, 0.0) for b in band_order] for c in perch])
+            im = ax2.imshow(M, aspect='auto', cmap='viridis', vmin=0, vmax=max(0.6, M.max()))
+            ax2.set_xticks(range(len(band_order)))
+            ax2.set_xticklabels(["δ", "θ", "α", "β", "γ"], color='#ccc')
+            ax2.set_yticks(range(len(perch)))
+            ax2.set_yticklabels([c["label"][:8] for c in perch], color='#bbb', fontsize=7)
+            ax2.set_title("Per-channel band fractions", color='#00ffcc', fontsize=10)
+            fig.colorbar(im, ax=ax2, fraction=0.04, pad=0.02).ax.tick_params(labelsize=6, colors='#888')
+        else:
+            ax2.axis('off')
+            ax2.text(0.5, 0.5, "accumulating samples…", ha='center', va='center',
+                     color='#888', transform=ax2.transAxes)
+
+        # Panel 3: per-channel total power (µV²)
+        ax3 = fig.add_subplot(2, 2, 3); ax3.set_facecolor('#080808')
+        if perch:
+            tots = [c["total_uv2"] for c in perch]
+            ax3.barh(range(len(perch)), tots, color='#22ddaa')
+            ax3.set_yticks(range(len(perch)))
+            ax3.set_yticklabels([c["label"][:8] for c in perch], color='#bbb', fontsize=7)
+            ax3.invert_yaxis()
+            ax3.set_xlabel("total power (µV²)", color='#888', fontsize=8)
+            ax3.set_title("Per-channel signal power", color='#00ffcc', fontsize=10)
+            ax3.tick_params(colors='#888')
+        else:
+            ax3.axis('off')
+
+        # Panel 4: honesty + provenance
+        ax4 = fig.add_subplot(2, 2, 4); ax4.set_facecolor('#080808'); ax4.axis('off')
+        ax4.text(0.02, 0.95, "PROVENANCE — ALL REAL", color='#00ffcc', fontsize=11,
+                 fontweight='bold', transform=ax4.transAxes)
+        lines = [
+            (f"device stream : {name}", '#ddd'),
+            (f"channels       : {nch}   @ {srate:.0f} Hz", '#ddd'),
+            (f"samples seen   : {nsamp:,}", '#ddd'),
+            ("source         : physical EEG electrodes (one wearer)", '#9fe'),
+            ("bands          : real FFT band powers (Hann PSD)", '#9fe'),
+        ]
+        for i, (t, c) in enumerate(lines):
+            ax4.text(0.02, 0.83 - i * 0.075, t, color=c, fontsize=9,
+                     family='monospace', transform=ax4.transAxes)
+        ax4.text(0.02, 0.40,
+                 "HONEST CEILING:\n"
+                 "• one consenting wearer, electrodes on their own scalp\n"
+                 "• coarse cortical rhythms — NOT thought content\n"
+                 "• NOT remote, NOT through walls, NOT animals/minds\n"
+                 "Remote neural monitoring (RMN) is not a missing sensor —\n"
+                 "it is data that does not exist to read. None is fabricated.",
+                 color='#80a0a8', fontsize=8.0, family='monospace',
+                 transform=ax4.transAxes, va='top')
+
     def _draw_bci(self, fig, p, snap):
-        """T1-4: BCI Dashboard — 7-band bars + focus/stress/arousal gauges + motor intent."""
+        """T1-4: BCI Dashboard — 7-band bars + focus/stress/arousal gauges + motor intent.
+
+        v170: when a REAL EEG headset (Muse/OpenBCI/BrainFlow via LSL) is connected, render the
+        genuine per-channel band powers measured from that one wearer's scalp — the honest
+        "wireless BCI is real" path. No device → falls through to the CSI/none logic below.
+        """
+        # ── v170: REAL EEG device present → show its genuine measured band powers ──
+        if (snap or {}).get("eeg_real_ok") or (p or {}).get("eeg_real_ok"):
+            self._draw_bci_real_eeg(fig, p, snap)
+            return
         _vm = p.get("vitals_mode", "none")
         if _vm == "none" or not p.get("vitals_valid", True):
             fig.suptitle("WIRELESS BCI — NO SENSOR", color='#ff6666', fontsize=13, fontweight='bold')
             axn = fig.add_subplot(111); axn.axis('off')
-            axn.text(0.5, 0.6, "NO EEG / CSI-BCI SENSOR DETECTED", ha='center', va='center',
+            axn.text(0.5, 0.74, "NO EEG / CSI-BCI SENSOR DETECTED", ha='center', va='center',
                      color='#ff6666', fontsize=18, weight='bold', transform=axn.transAxes)
-            axn.text(0.5, 0.4,
+            axn.text(0.5, 0.56,
                      "Brain-state / focus / stress inference needs CSI or EEG hardware.\n"
                      "No fabricated neural data is shown. Use --sim-validate for a clearly\n"
-                     "labelled SIMULATED demonstration, or attach real CSI hardware.",
+                     "labelled SIMULATED demonstration, or attach real hardware.",
                      ha='center', va='center', color='#aaaaaa', fontsize=11, transform=axn.transAxes)
+            # v170: explicit honesty boundary on remote neural monitoring (RMN)
+            axn.text(0.5, 0.34,
+                     "REAL PATH TO LIVE BCI:  connect a wireless EEG headset\n"
+                     "(Muse via muselsl · OpenBCI · any BrainFlow/LSL device).\n"
+                     "N.E.P.A. auto-ingests its REAL band powers — that is genuine wireless BCI.",
+                     ha='center', va='center', color='#66ccaa', fontsize=10, transform=axn.transAxes)
+            axn.text(0.5, 0.12,
+                     "Remote 'mind-reading' (RMN) of thought content — through walls, at a distance,\n"
+                     "of people or animals — is NOT a sensor N.E.P.A. lacks; it is data that does not\n"
+                     "exist to read. EEG fields are µV at the scalp (undetectable remotely), and even\n"
+                     "contact EEG reads coarse rhythms, never the content of thought. Not fabricated here.",
+                     ha='center', va='center', color='#80707a', fontsize=8.0, transform=axn.transAxes,
+                     style='italic')
             return
         _tag = "  [SIMULATED]" if _vm == "simulated" else "  [REAL CSI]"
         _col = '#ffaa00' if _vm == "simulated" else '#00ffcc'
@@ -2457,9 +2573,15 @@ class DetailTabWindow:
         caps = bus.get("live_capabilities", [])
         fusion = bus.get("fusion", {})
         n_conn = bus.get("instrument_count", 0)
-        fig.suptitle(f"MULTI-INSTRUMENT BUS  —  {n_conn} connected  ·  live capabilities: "
-                     f"{', '.join(caps) if caps else 'none'}",
-                     color='#00ffcc', fontsize=13, fontweight='bold')
+        # v171: provenance-separated counts — simulated is OFFSET from the measured read
+        _meas = int(bus.get("measured_count", n_conn))
+        _real = int(bus.get("real_count", n_conn))
+        _swd  = int(bus.get("software_defined_count", 0))
+        _sim  = int(bus.get("simulated_count", 0))
+        fig.suptitle(f"MULTI-INSTRUMENT BUS  —  MEASURED {_meas} "
+                     f"(real {_real} + software-defined {_swd})"
+                     + (f"  ·  SIMULATED {_sim} [watermarked, not measured]" if _sim else ""),
+                     color='#00ffcc', fontsize=12, fontweight='bold')
 
         # ── Panel 1: instrument cards ────────────────────────────────────────
         ax1 = fig.add_subplot(1, 2, 1); ax1.axis('off'); ax1.set_facecolor('#04060a')
@@ -2467,14 +2589,18 @@ class DetailTabWindow:
         ax1.text(0.5, y, "INSTRUMENTS (auto-detected)", ha='center', va='top',
                  transform=ax1.transAxes, color='#00ffcc', fontsize=11, weight='bold')
         y -= 0.07
+        _prov_col = {"REAL": '#22ff88', "SOFTWARE-DEFINED": '#33ccff', "SIMULATED": '#ffaa00'}
         for inst in insts:
             conn = inst.get("connected", False)
-            col = '#22ff88' if conn else '#666666'
+            prov = inst.get("provenance", "REAL")
+            col = (_prov_col.get(prov, '#22ff88') if conn else '#666666')
             dot = '●' if conn else '○'
             ax1.text(0.02, y, f"{dot} {inst.get('kind','?').upper():<14s}",
                      transform=ax1.transAxes, color=col, fontsize=10, weight='bold', va='top')
-            ax1.text(0.40, y, ("CONNECTED" if conn else "not present"),
-                     transform=ax1.transAxes, color=col, fontsize=9, va='top')
+            # v171: explicit provenance badge so simulated is never read as measured
+            _badge = (prov if conn else "not present")
+            ax1.text(0.40, y, _badge, transform=ax1.transAxes, color=col, fontsize=8.5,
+                     va='top', weight='bold')
             y -= 0.045
             ax1.text(0.06, y, "caps: " + ", ".join(inst.get("capabilities", [])),
                      transform=ax1.transAxes, color='#88ccdd', fontsize=7.5, va='top')
@@ -2746,7 +2872,51 @@ class DetailTabWindow:
             f"              (codebase9) + MIMO-SAR Toolbox (codebase8). Real CSI data only.\n"
             f"  [v142] SatelliteResonanceEngine: 7 iterations (was 3), early-exit convergence test,\n"
             f"              Lorentz-corrected bistatic horizon from real per-satellite γ.\n"
-            f"              Self-consistent: resonance engine reads relativistic predictor output."
+            f"              Self-consistent: resonance engine reads relativistic predictor output.\n"
+            f"  [v143] Ionosphere [N]: real-time IRI-like model + satellite future-track prediction\n"
+            f"  [v144] ExtSat [D]: extended LEO constellation + cross-spectrum correlator\n"
+            f"  [v145] PlanetPhys [O] + HFRadar [Q]: planetary physics + HF propagation atlas\n"
+            f"  [v146] EarthObs [1]: global planet-scan from NASA EONET satellites (real events)\n"
+            f"  [v147] SpaceWx [2]: NOAA SWPC dashboard + cognitive sensing (χ² + cyclostationary)\n"
+            f"  [v148] GlobalAnomalyCrossCorrelator: multi-stream planetary event detection (26 streams)\n"
+            f"  [v149] GDACS global disaster alert feed (2nd real-time planet-scan layer)\n"
+            f"  [v150] SatScan [3]: real NASA GIBS satellite Earth imagery — planet-scan-at-distance\n"
+            f"  [v151] SatBands [4]: multi-spectral science bands + independent cross-band fire verify\n"
+            f"  [v152] OrbSync [5]: orbital-consistency validator (physics vs universal constants)\n"
+            f"  [v153] AirMesh [6]: global citizen-sensor mesh (Sensor.Community) — mass correlation\n"
+            f"  [v154] GOESWatch [7]: NOAA GOES-16/18 real geostationary hemispheric imagery\n"
+            f"  [v155] Ocean [8]: NOAA NDBC in-situ ocean buoy sensor mesh (first ocean layer)\n"
+            f"  [v156] Atmos [9]: Open-Meteo NWP atmospheric grid (propagation medium for all spectra)\n"
+            f"  [v157] PlanetScan [0]: iterative Gauss-Seidel reconstruction + GNSS-R passive radar\n"
+            f"  [v158] DeepScan: matter-penetrating layer (IGRF-13 magnetic + PREM seismic + VLF/ELF)\n"
+            f"  [v159] PlanetTomo: 3D volumetric reconstruction (every real 2D layer → vertical columns)\n"
+            f"  [v160] KineticProp: 'math in motion' (semi-Lagrangian advection + Coriolis + error-correct)\n"
+            f"  [v161] GeoCurrents: METAR global surface stations + OSCAR ocean-current vectors\n"
+            f"  [v162] KinVision: time-integrated planetary sweep by real moving platforms (sat+ADS-B)\n"
+            f"  ── CORRELATION / DATA-ORGANIZATION SUITE (reuses one rolling history, no duplicates) ──\n"
+            f"  [v163] DataMatrix: cross-stream Pearson correlation matrix across every live stream\n"
+            f"  [v164] SpatialXref: spatial co-occurrence matrix — where geolocated streams agree (verify)\n"
+            f"  [v165] LeadLag: lead/lag cross-correlation — which stream PREDICTS which (±5 min scan)\n"
+            f"  [v166] CorrNet: correlation network graph — temporal+spatial+lead/lag unified, clusters/hubs\n"
+            f"  [v167] PrinComp: PCA principal modes — dozens of streams → 3-4 latent factors (variance%)\n"
+            f"  [v168] Granger: directed causal flow — bivariate VAR(2) F-test, which stream causes which\n"
+            f"  [v169] Anomaly: live stream-health dashboard — z-score + IQR severity per planetary stream\n"
+            f"  [v170] REAL EEG/BCI (LSL inlet): genuine wireless headset (Muse/OpenBCI/BrainFlow) band\n"
+            f"              powers per channel when connected; no device → no-op, NO fabrication. RMN of\n"
+            f"              thought content is NOT built — it is data that does not exist, never faked.\n"
+            f"  [v171] Instrument registry now PROVENANCE-SEPARATED: MEASURED (real+software-defined)\n"
+            f"              counted distinctly from SIMULATED (watermarked) — an accurate registry read.\n"
+            f"  [v172] Partial: partial-correlation matrix — which links are DIRECT vs CONFOUNDED by a\n"
+            f"              shared driver (precision-matrix; controls for every other stream). Multiplies\n"
+            f"              the suite's truth: CorrNet=links, Granger=direction, Partial=real-vs-spurious.\n"
+            f"  [v173] Sessions: persistent session recorder — saves a scan duration of REAL streams\n"
+            f"              (+ a connected EEG's real band-power series, AUTOMATICALLY) to .jsonl for\n"
+            f"              replay/review. Stores MEASUREMENTS only — never a 'mind' (not measured).\n"
+            f"  [v174] DataIntake: generic external-data intake — the honest 'system in place for WHEN\n"
+            f"              data is offered'. Declined-to-fabricate capabilities (RMN/per-entity vitals)\n"
+            f"              get a real slot that stays AWAITING until a genuine provider offers data via\n"
+            f"              drop-folder JSON (NEPA_INTAKE_DIR) or push(); then validated/stored/rendered.\n"
+            f"              Nothing fabricated for an empty slot; any device→a feed (multiplies sources)."
         )
         ax2.text(0.03, max(y - 0.02, 0.06), _extra,
                  transform=ax2.transAxes, color='#88ffcc', fontsize=7.5, va='top',
@@ -8121,6 +8291,729 @@ class DetailTabWindow:
         ax_inf.text(0.5, 0.02, "Sensor.Community / Luftdaten · keyless · ALL REAL · empty if unreachable",
                     ha="center", va="bottom", transform=ax_inf.transAxes, color="#4a3a2a", fontsize=5.8)
 
+    def _draw_intake(self, fig, p, snap):
+        """v174: DATA INTAKE — the honest 'system in place for when data is offered'.
+
+        Every declared channel (including slots for capabilities deliberately NOT fabricated, e.g.
+        remote-neural/RMN) shows its status: LIVE when a real provider is offering data, AWAITING
+        otherwise. Nothing is ever fabricated for an empty slot.
+
+        Panel 1 (top): channel registry — status · samples · last value · provenance.
+        Panel 2 (bottom-left): how to offer real data (drop-folder + push API).
+        Panel 3 (bottom-right): live history of the most-active channel (if any real data).
+        """
+        import numpy as _np
+        fig.suptitle(
+            "DATA INTAKE — REAL-DATA SLOTS, AWAITING UNTIL OFFERED  "
+            "(declined-to-fabricate capabilities get a slot · nothing invented · button)",
+            color="#a0d8ff", fontsize=8.0, fontweight="bold", y=0.985)
+
+        ok       = bool(snap.get("intake_ok"))
+        idir     = str(snap.get("intake_dir") or "")
+        n_ch     = int(snap.get("intake_n_channels") or 0)
+        n_live   = int(snap.get("intake_n_live") or 0)
+        n_await  = int(snap.get("intake_n_awaiting") or 0)
+        n_in     = int(snap.get("intake_n_ingested") or 0)
+        n_rej    = int(snap.get("intake_n_rejected") or 0)
+        chans    = list(snap.get("intake_channels") or [])
+        series   = dict(snap.get("intake_best_series") or {})
+
+        gs = fig.add_gridspec(2, 2, left=0.05, right=0.97, top=0.92, bottom=0.08,
+                              hspace=0.34, wspace=0.22)
+        ax_tab = fig.add_subplot(gs[0, :])
+        ax_how = fig.add_subplot(gs[1, 0])
+        ax_ser = fig.add_subplot(gs[1, 1])
+        for ax in (ax_tab, ax_how, ax_ser):
+            ax.set_facecolor("#06100b")
+            ax.tick_params(colors="#888", labelsize=6)
+            for sp in ax.spines.values():
+                sp.set_color("#243828")
+
+        scol = {"LIVE": "#22ff88", "AWAITING": "#ffaa00", "STALE": "#ff7a5a"}
+
+        # ── Panel 1: channel registry ───────────────────────────────────────
+        ax_tab.axis("off")
+        ax_tab.text(0.01, 0.97,
+                    f"CHANNELS  {n_ch} declared · {n_live} LIVE · {n_await} AWAITING · "
+                    f"{n_in} samples ingested · {n_rej} rejected (non-finite)",
+                    color="#a0d8ff", fontsize=9, fontweight="bold",
+                    transform=ax_tab.transAxes, va="top")
+        ax_tab.text(0.01, 0.88, f"{'CHANNEL':<26s}{'KIND':<9s}{'STATUS':<10s}{'N':>5s}  "
+                    f"{'LAST':<14s}{'SRC':<10s}",
+                    color="#7aa", fontsize=7, family="monospace",
+                    transform=ax_tab.transAxes, va="top")
+        y = 0.80
+        for ch in chans[:11]:
+            st = ch.get("status", "AWAITING")
+            c = scol.get(st, "#999")
+            lv = ch.get("last_value")
+            lv_s = ("—" if lv is None else
+                    (f"{lv:.3f}" if isinstance(lv, (int, float)) else str(lv)[:13]))
+            ax_tab.text(0.01, y,
+                        f"{ch.get('name','?')[:25]:<26s}{ch.get('kind','?')[:8]:<9s}"
+                        f"{st:<10s}{ch.get('n',0):>5d}  {lv_s:<14s}{ch.get('provenance','—')[:9]:<10s}",
+                        color=c, fontsize=6.6, family="monospace",
+                        transform=ax_tab.transAxes, va="top")
+            y -= 0.072
+        # show the note for the first AWAITING placeholder (the declined-capability message)
+        awaiting = [c for c in chans if c.get("status") == "AWAITING" and c.get("note")]
+        if awaiting:
+            ax_tab.text(0.01, max(y - 0.01, 0.02),
+                        "↳ " + awaiting[0]["name"] + ": " + awaiting[0]["note"][:120],
+                        color="#caa46a", fontsize=6.0, transform=ax_tab.transAxes, va="top",
+                        style="italic", wrap=True)
+
+        # ── Panel 2: how to offer real data ─────────────────────────────────
+        ax_how.axis("off")
+        ax_how.text(0.03, 0.95, "OFFER REAL DATA (no fabrication — only what you send is shown)",
+                    color="#a0d8ff", fontsize=8, fontweight="bold",
+                    transform=ax_how.transAxes, va="top")
+        how = [
+            "1) DROP-FOLDER (any program/device that writes a file):",
+            f"   write a *.json into:",
+            f"   {idir}",
+            '   {"channel":"remote_neural","value":0.83,"provenance":"my_decoder"}',
+            '   or  {"channel":"my_sensor","fields":{"a":1.2,"b":3.4}}',
+            "   → ingested within ~2 s, then moved to intake/archive",
+            "",
+            "2) IN-PROCESS:  fuser.data_intake.push('chan', value)",
+            "",
+            "A declared slot stays AWAITING (nothing shown) until real",
+            "data arrives. Non-finite/garbage payloads are rejected.",
+        ]
+        for i, t in enumerate(how):
+            ax_how.text(0.03, 0.84 - i * 0.077, t,
+                        color="#9fd" if t and t[0].isdigit() else "#9aa",
+                        fontsize=6.3, family="monospace", transform=ax_how.transAxes, va="top")
+
+        # ── Panel 3: live history of most-active channel ────────────────────
+        sid = series.get("id", ""); st_t = series.get("t", []); st_v = series.get("v", [])
+        if sid and len(st_v) >= 2:
+            t0 = st_t[0]
+            tx = [(t - t0) / 60.0 for t in st_t]
+            ax_ser.plot(tx, st_v, color="#4ad0ff", lw=1.4, marker="o", ms=3)
+            ax_ser.set_title(f"LIVE channel '{sid}' — real offered data", color="#a0d8ff", fontsize=7.5)
+            ax_ser.set_xlabel("minutes", color="#888", fontsize=7)
+            ax_ser.set_ylabel("value", color="#888", fontsize=7)
+        else:
+            ax_ser.axis("off")
+            ax_ser.text(0.5, 0.5,
+                        "NO CHANNEL RECEIVING DATA YET\n"
+                        "(slots are declared & AWAITING)\n"
+                        "offer real data → it plots here live",
+                        ha="center", va="center", transform=ax_ser.transAxes,
+                        color="#5a7a6a", fontsize=9)
+
+        fig.text(0.5, 0.015,
+                 "The ingestion/storage/render path is IN PLACE for every capability — including "
+                 "ones not fabricated. Real data offered here flows through; until then, slots are "
+                 "empty, never invented.",
+                 ha="center", va="bottom", color="#5a7068", fontsize=6.0)
+
+    def _draw_sessions(self, fig, p, snap):
+        """v173: SESSION RECORDER — persisted 'scan durations' of REAL measured data for replay.
+
+        Auto-records the real planetary streams (+ a connected EEG's real band-power time-series)
+        to timestamped .jsonl session files. Stores MEASUREMENTS only — never a 'mind' (not measured).
+
+        Panel 1 (top-left): live recording status (file, rows, duration, size, EEG recording).
+        Panel 2 (top-right): saved sessions on disk (name · rows · duration · size).
+        Panel 3 (bottom): replay preview — a recorded stream (or EEG bands) over the session.
+        """
+        import numpy as _np
+        fig.suptitle(
+            "SESSION RECORDER — PERSISTED SCAN DURATIONS FOR REPLAY  "
+            "(real streams + measured EEG · stored automatically · button)",
+            color="#9fe8c0", fontsize=8.0, fontweight="bold", y=0.985)
+
+        ok      = bool(snap.get("session_ok"))
+        sfile   = str(snap.get("session_file") or "")
+        sdir    = str(snap.get("session_dir") or "")
+        rows    = int(snap.get("session_rows") or 0)
+        dur     = float(snap.get("session_duration_s") or 0.0)
+        sbytes  = int(snap.get("session_bytes") or 0)
+        eeg_rec = bool(snap.get("session_eeg_recording"))
+        n_saved = int(snap.get("session_n_saved") or 0)
+        tot_b   = int(snap.get("session_total_bytes") or 0)
+        slist   = list(snap.get("session_list") or [])
+        rmetric = str(snap.get("session_replay_metric") or "")
+        rt      = list(snap.get("session_replay_t") or [])
+        rv      = list(snap.get("session_replay_v") or [])
+        reeg    = dict(snap.get("session_replay_eeg") or {})
+
+        gs = fig.add_gridspec(2, 2, left=0.07, right=0.96, top=0.92, bottom=0.10,
+                              hspace=0.38, wspace=0.26)
+        ax_stat = fig.add_subplot(gs[0, 0])
+        ax_list = fig.add_subplot(gs[0, 1])
+        ax_rep  = fig.add_subplot(gs[1, :])
+        for ax in (ax_stat, ax_list, ax_rep):
+            ax.set_facecolor("#06100b")
+            ax.tick_params(colors="#888", labelsize=6)
+            for sp in ax.spines.values():
+                sp.set_color("#243828")
+
+        def _hsize(n):
+            for u in ("B", "KB", "MB", "GB"):
+                if n < 1024 or u == "GB":
+                    return f"{n:.0f}{u}" if u == "B" else f"{n/1.0:.1f}{u}"
+                n /= 1024.0
+            return f"{n:.0f}B"
+
+        # ── Panel 1: live recording status ──────────────────────────────────
+        ax_stat.axis("off")
+        ax_stat.text(0.03, 0.96, "RECORDING STATUS", color="#9fe8c0", fontsize=10,
+                     fontweight="bold", transform=ax_stat.transAxes, va="top")
+        rec_col = "#22ff88" if ok else "#ff6666"
+        mm = int(dur // 60); ss = int(dur % 60)
+        lines = [
+            (f"● RECORDING" if ok else "○ recorder off", rec_col),
+            (f"file   : {sfile or '—'}", "#cde"),
+            (f"rows   : {rows}   ({mm}m{ss:02d}s elapsed)", "#cde"),
+            (f"size   : {_hsize(sbytes)}", "#cde"),
+            (f"EEG    : {'RECORDING (real headset)' if eeg_rec else 'no device — streams only'}",
+             "#66ffcc" if eeg_rec else "#889"),
+            (f"dir    : {sdir}", "#7a8"),
+        ]
+        for i, (t, c) in enumerate(lines):
+            ax_stat.text(0.03, 0.82 - i * 0.12, t, color=c, fontsize=8,
+                         family="monospace", transform=ax_stat.transAxes, va="top")
+
+        # ── Panel 2: saved sessions on disk ─────────────────────────────────
+        ax_list.axis("off")
+        ax_list.text(0.03, 0.96, f"SAVED SESSIONS ({n_saved} · {_hsize(tot_b)})",
+                     color="#9fe8c0", fontsize=10, fontweight="bold",
+                     transform=ax_list.transAxes, va="top")
+        if slist:
+            for i, s in enumerate(slist[:11]):
+                dmm = int(s.get("duration_s", 0) // 60)
+                ax_list.text(0.03, 0.84 - i * 0.078,
+                             f"{s['name'][8:]:<16s} {s['rows']:>4d} rows  ~{dmm:>3d}m  {_hsize(s['bytes'])}",
+                             color="#bcd", fontsize=6.6, family="monospace",
+                             transform=ax_list.transAxes, va="top")
+        else:
+            ax_list.text(0.5, 0.5, "no saved sessions yet\n(first rows write at ~30 s)",
+                         ha="center", va="center", transform=ax_list.transAxes,
+                         color="#5a7a6a", fontsize=8)
+
+        # ── Panel 3: replay preview ─────────────────────────────────────────
+        if reeg and reeg.get("t") and len(reeg["t"]) >= 2:
+            t0 = reeg["t"][0]
+            tx = [(t - t0) / 60.0 for t in reeg["t"]]
+            bcol = {"delta": "#3355ff", "theta": "#22aaff", "alpha": "#22ffaa",
+                    "beta": "#aaff22", "gamma": "#ff5533"}
+            for b, c in bcol.items():
+                if b in reeg:
+                    ax_rep.plot(tx, reeg[b], color=c, lw=1.2, label=b)
+            ax_rep.set_title("REPLAY — recorded REAL EEG band powers over the session "
+                             "(measured rhythms, not a mind)", color="#9fe8c0", fontsize=7.5)
+            ax_rep.set_xlabel("minutes into session", color="#888", fontsize=7)
+            ax_rep.set_ylabel("band fraction", color="#888", fontsize=7)
+            ax_rep.legend(fontsize=6, labelcolor="#ccc", framealpha=0, ncol=5, loc="upper right")
+        elif rmetric and len(rt) >= 3:
+            t0 = rt[0]
+            tx = [(t - t0) / 60.0 for t in rt]
+            ax_rep.plot(tx, rv, color="#4af0a0", lw=1.4, marker="o", ms=3)
+            ax_rep.set_title(f"REPLAY — recorded real stream '{rmetric}' over the session",
+                             color="#9fe8c0", fontsize=7.5)
+            ax_rep.set_xlabel("minutes into session", color="#888", fontsize=7)
+            ax_rep.set_ylabel(rmetric, color="#888", fontsize=7)
+        else:
+            ax_rep.axis("off")
+            ax_rep.text(0.5, 0.5,
+                        "REPLAY PREVIEW ACCUMULATING\n"
+                        "(needs ≥3 recorded rows · one row per 30 s)\n"
+                        "a recorded stream or EEG band series plots here as it builds",
+                        ha="center", va="center", transform=ax_rep.transAxes,
+                        color="#5a7a6a", fontsize=9)
+
+        fig.text(0.5, 0.025,
+                 "Stores REAL measured streams + measured EEG rhythms for replay/review. "
+                 "NOT minds/thoughts/identity — those are not measured, never stored. No fabrication.",
+                 ha="center", va="bottom", color="#5a7068", fontsize=6.0)
+
+    def _draw_partial(self, fig, p, snap):
+        """v172: PARTIAL CORRELATION — which planetary links are DIRECT vs CONFOUNDED.
+
+        Marginal correlation (DataMatrix) can be large only because a third stream drives both.
+        Partial correlation removes the linear effect of every other live stream, leaving the
+        direct association. A pair with strong marginal but near-zero partial is CONFOUNDED.
+
+        Panel 1 (left): partial-correlation matrix heatmap (controlling for all others).
+        Panel 2 (top-right): strongest DIRECT links (survive controlling).
+        Panel 3 (bottom-right): CONFOUNDED pairs — marginal r collapses under partial (spurious).
+        """
+        import numpy as _np
+        fig.suptitle(
+            "PARTIAL CORRELATION — DIRECT vs CONFOUNDED PLANETARY LINKS  "
+            "(controls for every other stream · button)",
+            color="#c8b0ff", fontsize=8.0, fontweight="bold", y=0.985)
+
+        pmat   = list(snap.get("xcorr_partial_matrix") or [])
+        top    = list(snap.get("xcorr_partial_top") or [])
+        conf   = list(snap.get("xcorr_partial_confounded") or [])
+        labels = list(snap.get("xcorr_labels") or [])
+        n_dir  = int(snap.get("xcorr_n_partial_direct") or 0)
+        n_samp = int(snap.get("xcorr_n_samples") or 0)
+        xc_ok  = bool(snap.get("xcorr_ok", False))
+
+        gs = fig.add_gridspec(2, 2, left=0.10, right=0.97, top=0.92, bottom=0.07,
+                              hspace=0.40, wspace=0.32)
+        ax_mat  = fig.add_subplot(gs[:, 0])
+        ax_dir  = fig.add_subplot(gs[0, 1])
+        ax_conf = fig.add_subplot(gs[1, 1])
+        for ax in (ax_mat, ax_dir, ax_conf):
+            ax.set_facecolor("#06100b")
+            ax.tick_params(colors="#888", labelsize=5.5)
+            for sp in ax.spines.values():
+                sp.set_color("#243828")
+
+        if not pmat or not labels or len(labels) < 3:
+            ax_mat.axis("off"); ax_dir.axis("off"); ax_conf.axis("off")
+            ax_mat.text(0.5, 0.5,
+                        "PARTIAL CORRELATION ACCUMULATING\n"
+                        f"(needs ≥3 live streams & ≥4 samples · {n_samp} samples, "
+                        f"{len(labels)} streams so far)\n"
+                        "shares history with DataMatrix · boots ~50 s",
+                        ha="center", va="center", transform=ax_mat.transAxes,
+                        color="#5a7a6a", fontsize=8.5)
+            fig.text(0.5, 0.012, "PARTIAL WAITING · ALL REAL · no false data",
+                     ha="center", va="bottom", color="#5a7068", fontsize=5.6)
+            return
+
+        n = len(labels)
+        M = _np.zeros((n, n), dtype=float)
+        for i in range(min(n, len(pmat))):
+            for j in range(min(n, len(pmat[i]))):
+                v = pmat[i][j]
+                if v is not None:
+                    M[i, j] = float(v)
+
+        # ── Panel 1: partial correlation heatmap ───────────────────────────
+        im = ax_mat.imshow(M, aspect="auto", cmap="PuOr", vmin=-1, vmax=1, origin="lower")
+        ax_mat.set_xticks(_np.arange(n)); ax_mat.set_yticks(_np.arange(n))
+        ax_mat.set_xticklabels(labels, fontsize=4.5, rotation=75, ha="right", color="#9aa")
+        ax_mat.set_yticklabels(labels, fontsize=4.5, color="#9aa")
+        ax_mat.set_title(f"Partial r (controls all others) · {n_dir} direct links",
+                         color="#c8b0ff", fontsize=7.0)
+        fig.colorbar(im, ax=ax_mat, fraction=0.035, pad=0.02).ax.tick_params(labelsize=4.5)
+
+        # ── Panel 2: strongest DIRECT links ────────────────────────────────
+        if top:
+            tn = min(10, len(top))
+            names = [f"{d['a']}–{d['b']}" for d in top[:tn]]
+            pr_v  = [d["partial"] for d in top[:tn]]
+            mr_v  = [d["marginal"] for d in top[:tn]]
+            yp = _np.arange(tn)
+            ax_dir.barh(yp + 0.18, pr_v, height=0.36, color="#9a78ff", alpha=0.9, label="partial")
+            ax_dir.barh(yp - 0.18, mr_v, height=0.36, color="#4a6a8a", alpha=0.7, label="marginal")
+            ax_dir.axvline(0, color="#444", lw=0.5)
+            ax_dir.set_yticks(yp); ax_dir.set_yticklabels(names, fontsize=4.8, color="#cbe")
+            ax_dir.invert_yaxis(); ax_dir.set_xlim(-1.05, 1.05)
+            ax_dir.set_title("DIRECT links (partial survives) · vs marginal",
+                             color="#c8b0ff", fontsize=6.5)
+            ax_dir.legend(fontsize=4.6, labelcolor="#ccc", framealpha=0, loc="lower right")
+        else:
+            ax_dir.axis("off")
+            ax_dir.text(0.5, 0.5, "no strong direct links yet", ha="center", va="center",
+                        transform=ax_dir.transAxes, color="#5a7a6a", fontsize=7)
+
+        # ── Panel 3: CONFOUNDED pairs (spurious) ───────────────────────────
+        if conf:
+            cn = min(8, len(conf))
+            names = [f"{d['a']}–{d['b']}" for d in conf[:cn]]
+            mr_v  = [abs(d["marginal"]) for d in conf[:cn]]
+            pr_v  = [abs(d["partial"]) for d in conf[:cn]]
+            yp = _np.arange(cn)
+            ax_conf.barh(yp + 0.18, mr_v, height=0.36, color="#ff7a5a", alpha=0.85, label="|marginal|")
+            ax_conf.barh(yp - 0.18, pr_v, height=0.36, color="#3a8a6a", alpha=0.85, label="|partial|")
+            ax_conf.set_yticks(yp); ax_conf.set_yticklabels(names, fontsize=4.8, color="#cbe")
+            ax_conf.invert_yaxis(); ax_conf.set_xlim(0, 1.05)
+            ax_conf.set_title("CONFOUNDED — looked linked, partial collapses (shared driver)",
+                              color="#ff9a7a", fontsize=6.0)
+            ax_conf.legend(fontsize=4.6, labelcolor="#ccc", framealpha=0, loc="lower right")
+        else:
+            ax_conf.axis("off")
+            ax_conf.text(0.5, 0.5, "no confounded pairs detected\n(no spurious links to flag)",
+                         ha="center", va="center", transform=ax_conf.transAxes,
+                         color="#5a7a6a", fontsize=7)
+
+        status = (f"PARTIAL {'LIVE' if xc_ok else 'WAITING'} · {n} streams · "
+                  f"{n_dir} direct links · {len(conf)} confounded flagged · {n_samp} samples · "
+                  "precision-matrix partial correlation · ALL REAL · no false data")
+        fig.text(0.5, 0.012, status, ha="center", va="bottom",
+                 color="#5a7068", fontsize=5.6)
+
+    def _draw_anomaly(self, fig, p, snap):
+        """v169: STREAM ANOMALY DASHBOARD — which planetary streams are currently out of normal range.
+
+        Every live scalar metric is compared to its rolling-history baseline (mean/std/IQR).
+        Z-score ≥3 → ALERT (red), ≥2 or IQR-outlier → WARN (orange), else NORMAL (green).
+        Sorted by |z| so the most anomalous streams appear first.
+
+        Panel 1 (left): horizontal bar chart of z-scores, colour-coded by severity + group.
+        Panel 2 (right): scatter of current value vs historical μ±σ for every stream.
+        Panel 3 (top-right): summary counts (ALERT / WARN / NORMAL).
+        """
+        import numpy as _np
+        fig.suptitle(
+            "STREAM ANOMALY DASHBOARD — WHICH PLANETARY SENSORS ARE CURRENTLY ANOMALOUS  "
+            "(z-score · IQR · severity · button)",
+            color="#ffd0a0", fontsize=8.0, fontweight="bold", y=0.985)
+
+        flags    = list(snap.get("xcorr_anomaly_flags") or [])
+        n_anom   = int(snap.get("xcorr_n_anomalies") or 0)
+        n_samp   = int(snap.get("xcorr_n_samples") or 0)
+        xc_ok    = bool(snap.get("xcorr_ok", False))
+        gcol = {"Seismic": "#ff5a4a", "Earth-obs": "#ff9a3c", "Space-wx": "#ffd84a",
+                "Air-qual": "#9ae84a", "Ocean": "#3cc8ff", "Atmos": "#4af0d0",
+                "RF/Plat": "#b88aff", "Fusion": "#ff7ad0", "Astro": "#8a9aff", "?": "#9aa"}
+        sev_col  = {"ALERT": "#ff3a3a", "WARN": "#ff9a3c", "NORMAL": "#3cb878"}
+
+        gs = fig.add_gridspec(2, 2, left=0.06, right=0.97, top=0.92, bottom=0.07,
+                              hspace=0.40, wspace=0.32)
+        ax_bar  = fig.add_subplot(gs[:, 0])    # full left: z-score bars
+        ax_scat = fig.add_subplot(gs[1, 1])    # bottom-right: value vs baseline
+        ax_sum  = fig.add_subplot(gs[0, 1])    # top-right: summary counts
+        for ax in (ax_bar, ax_scat, ax_sum):
+            ax.set_facecolor("#06100b")
+            ax.tick_params(colors="#888", labelsize=5.5)
+            for sp in ax.spines.values():
+                sp.set_color("#243828")
+
+        if not flags:
+            ax_bar.axis("off")
+            ax_bar.text(0.5, 0.5,
+                        "ANOMALY DASHBOARD ACCUMULATING\n"
+                        f"({n_samp} samples · needs ≥{6} per stream)\n"
+                        "shares history with DataMatrix · boots ~50 s",
+                        ha="center", va="center", transform=ax_bar.transAxes,
+                        color="#5a7a6a", fontsize=9)
+            ax_scat.axis("off"); ax_sum.axis("off")
+            fig.text(0.5, 0.012, "ANOMALY WAITING · ALL REAL · no false data",
+                     ha="center", va="bottom", color="#5a7068", fontsize=5.6)
+            return
+
+        # ── Panel 1: horizontal z-score bar chart ───────────────────────────
+        labels_f  = [f["label"] for f in flags]
+        zscores   = [f["z"] for f in flags]
+        bar_cols  = [sev_col.get(f["severity"], "#9aa") for f in flags]
+        ypos = _np.arange(len(labels_f))
+        ax_bar.barh(ypos, zscores, color=bar_cols, alpha=0.85, height=0.7)
+        ax_bar.axvline(-3, color="#ff3a3a", lw=0.8, ls="--", alpha=0.5)
+        ax_bar.axvline( 3, color="#ff3a3a", lw=0.8, ls="--", alpha=0.5)
+        ax_bar.axvline(-2, color="#ff9a3c", lw=0.6, ls=":",  alpha=0.5)
+        ax_bar.axvline( 2, color="#ff9a3c", lw=0.6, ls=":",  alpha=0.5)
+        ax_bar.axvline( 0, color="#444",    lw=0.5)
+        ax_bar.set_yticks(ypos)
+        ax_bar.set_yticklabels(labels_f, fontsize=5.0, color="#cbe")
+        ax_bar.invert_yaxis()
+        ax_bar.set_xlabel("z-score (σ from rolling mean)", color="#888", fontsize=6)
+        ax_bar.set_title(f"All {len(flags)} streams · {n_anom} anomalous",
+                         color="#ffd0a0", fontsize=7.0)
+        for yi, (z, f) in enumerate(zip(zscores, flags)):
+            if f["severity"] != "NORMAL":
+                col = sev_col[f["severity"]]
+                ax_bar.text(z + (0.1 if z >= 0 else -0.1), yi,
+                            f"{z:+.1f}σ {f['direction']}",
+                            va="center", ha="left" if z >= 0 else "right",
+                            color=col, fontsize=4.5, fontweight="bold")
+
+        # ── Panel 2: current value vs μ±σ scatter ──────────────────────────
+        xs = _np.arange(len(flags))
+        mus  = _np.array([f["mu"] for f in flags])
+        sds  = _np.array([f["sd"] for f in flags])
+        vals = _np.array([f["value"] for f in flags])
+        grp_cols = [gcol.get(f["group"], "#9aa") for f in flags]
+        ax_scat.fill_between(xs, mus - sds, mus + sds, color="#1a3a2a", alpha=0.4, label="μ±σ")
+        ax_scat.fill_between(xs, mus - 2*sds, mus + 2*sds, color="#0d2018", alpha=0.25, label="μ±2σ")
+        ax_scat.plot(xs, mus, color="#4af0a0", lw=0.8, alpha=0.7)
+        for xi, (y, col) in enumerate(zip(vals, grp_cols)):
+            ax_scat.scatter([xi], [y], color=col, s=12, zorder=3)
+        ax_scat.set_xticks(xs[::max(1, len(xs)//8)])
+        ax_scat.set_xticklabels([labels_f[i] for i in range(0, len(labels_f), max(1, len(labels_f)//8))],
+                                 fontsize=4.2, rotation=45, ha="right", color="#9aa")
+        ax_scat.set_ylabel("raw value", color="#888", fontsize=5.5)
+        ax_scat.set_title("current value vs historical μ±σ (group colours)", color="#ffd0a0", fontsize=6.0)
+        ax_scat.legend(fontsize=4.5, labelcolor="#ccc", framealpha=0, loc="upper right")
+
+        # ── Panel 3: summary counts ─────────────────────────────────────────
+        n_alert  = len([f for f in flags if f["severity"] == "ALERT"])
+        n_warn   = len([f for f in flags if f["severity"] == "WARN"])
+        n_normal = len([f for f in flags if f["severity"] == "NORMAL"])
+        ax_sum.axis("off")
+        ax_sum.text(0.5, 0.92, "STREAM HEALTH SUMMARY", ha="center", va="top",
+                    transform=ax_sum.transAxes, color="#ffd0a0", fontsize=8.0, fontweight="bold")
+        items = [("ALERT",  n_alert,  "#ff3a3a"),
+                 ("WARN",   n_warn,   "#ff9a3c"),
+                 ("NORMAL", n_normal, "#3cb878")]
+        for yi_off, (label, cnt, col) in enumerate(items):
+            ax_sum.text(0.15, 0.72 - yi_off * 0.18, f"{label}:", ha="left", va="top",
+                        transform=ax_sum.transAxes, color=col, fontsize=10, fontweight="bold")
+            ax_sum.text(0.65, 0.72 - yi_off * 0.18, str(cnt), ha="left", va="top",
+                        transform=ax_sum.transAxes, color=col, fontsize=14, fontweight="bold")
+        if n_alert:
+            top_al = [f["label"] for f in flags if f["severity"] == "ALERT"][:3]
+            ax_sum.text(0.5, 0.18, "ALERT streams:\n" + ", ".join(top_al),
+                        ha="center", va="top", transform=ax_sum.transAxes,
+                        color="#ff3a3a", fontsize=6.5)
+
+        status = (f"ANOMALY {'LIVE' if xc_ok else 'WAITING'} · {len(flags)} streams · "
+                  f"{n_anom} anomalous ({n_alert} ALERT, {n_warn} WARN) · {n_samp} samples · "
+                  "z-score + IQR · ALL REAL · no false data")
+        fig.text(0.5, 0.012, status, ha="center", va="bottom",
+                 color="#5a7068", fontsize=5.6)
+
+    def _draw_granger(self, fig, p, snap):
+        """v168: GRANGER CAUSALITY — directed causal flow between planetary data streams.
+
+        Bivariate Granger test: for each ordered pair (X→Y), does knowing X's recent past
+        improve prediction of Y's near-future beyond Y's own autoregressive past alone?
+        Uses VAR(2) OLS: restricted (Y from own lags) vs unrestricted (Y + X lags) → F-stat.
+        F≥4 (≈p<0.05) = significant directional Granger-causal link.
+
+        Complements v166 CorrNet (undirected) and v165 LeadLag (lag of peak correlation):
+        Granger tests genuine directional PREDICTION improvement, not just temporal offset.
+
+        Panel 1 (left): directed F-stat matrix heatmap (rows = cause, cols = effect).
+        Panel 2 (top-right): top causal pairs ranked by F-stat.
+        Panel 3 (bottom-right): directed causal graph (arrows by F magnitude).
+        """
+        import numpy as _np
+        fig.suptitle(
+            "GRANGER CAUSALITY — DIRECTED CAUSAL FLOW BETWEEN PLANETARY STREAMS  "
+            "(bivariate VAR(2) · F-stat · directed · button)",
+            color="#c0d8ff", fontsize=8.0, fontweight="bold", y=0.985)
+
+        g_matrix = list(snap.get("xcorr_granger_matrix") or [])
+        g_pairs  = list(snap.get("xcorr_granger_pairs") or [])
+        n_g      = int(snap.get("xcorr_n_granger") or 0)
+        labels   = list(snap.get("xcorr_labels") or [])
+        n_samp   = int(snap.get("xcorr_n_samples") or 0)
+        xc_ok    = bool(snap.get("xcorr_ok", False))
+        gcol = {"Seismic": "#ff5a4a", "Earth-obs": "#ff9a3c", "Space-wx": "#ffd84a",
+                "Air-qual": "#9ae84a", "Ocean": "#3cc8ff", "Atmos": "#4af0d0",
+                "RF/Plat": "#b88aff", "Fusion": "#ff7ad0", "Astro": "#8a9aff", "?": "#9aa"}
+
+        gs = fig.add_gridspec(2, 2, left=0.10, right=0.97, top=0.92, bottom=0.07,
+                              hspace=0.40, wspace=0.32)
+        ax_mat  = fig.add_subplot(gs[:, 0])    # full left: F-stat matrix
+        ax_rank = fig.add_subplot(gs[0, 1])    # top-right: ranked causal pairs
+        ax_net  = fig.add_subplot(gs[1, 1])    # bottom-right: causal network
+        for ax in (ax_mat, ax_rank, ax_net):
+            ax.set_facecolor("#06100b")
+            ax.tick_params(colors="#888", labelsize=5.5)
+            for sp in ax.spines.values():
+                sp.set_color("#243828")
+
+        no_data_msg = ("GRANGER CAUSALITY ACCUMULATING\n"
+                       f"({n_samp} samples · needs ≥{6 + 4 + 2} rows for VAR(2) + burn-in)\n"
+                       "shares history with DataMatrix · boots ~2 min")
+        if not g_matrix or not labels:
+            ax_mat.axis("off")
+            ax_mat.text(0.5, 0.5, no_data_msg, ha="center", va="center",
+                        transform=ax_mat.transAxes, color="#5a7a6a", fontsize=8.5)
+            ax_rank.axis("off"); ax_net.axis("off")
+            fig.text(0.5, 0.012, "GRANGER WAITING · ALL REAL · no false data",
+                     ha="center", va="bottom", color="#5a7068", fontsize=5.6)
+            return
+
+        n = len(labels)
+        # build numerical matrix (None → 0 for display)
+        Fm = _np.zeros((n, n), dtype=float)
+        for i in range(min(n, len(g_matrix))):
+            for j in range(min(n, len(g_matrix[i]))):
+                v = g_matrix[i][j]
+                if v is not None:
+                    Fm[i, j] = float(v)
+        Fm_diag0 = Fm.copy(); _np.fill_diagonal(Fm_diag0, 0)
+
+        # ── Panel 1: directed F-stat heatmap ─────────────────────────────
+        vmax = max(float(Fm_diag0.max()), 4.0)
+        im = ax_mat.imshow(Fm_diag0.T, aspect="auto", cmap="hot",
+                           vmin=0, vmax=vmax, origin="lower")
+        ax_mat.set_xticks(_np.arange(n)); ax_mat.set_yticks(_np.arange(n))
+        ax_mat.set_xticklabels(labels, fontsize=4.5, rotation=75, ha="right", color="#9aa")
+        ax_mat.set_yticklabels(labels, fontsize=4.5, color="#9aa")
+        ax_mat.set_xlabel("CAUSE (X)", color="#888", fontsize=6)
+        ax_mat.set_ylabel("EFFECT (Y) — cell = F-stat for X→Y", color="#888", fontsize=6)
+        ax_mat.set_title(f"Granger F-matrix · {n_g} significant (F≥4)", color="#c0d8ff", fontsize=7.0)
+        # mark significant cells
+        SIG_F = 4.0
+        for i in range(n):
+            for j in range(n):
+                if i != j and Fm[i, j] >= SIG_F:
+                    ax_mat.plot(i, j, ".", ms=2.5, color="#00ffcc", alpha=0.9)
+        fig.colorbar(im, ax=ax_mat, fraction=0.035, pad=0.02).ax.tick_params(labelsize=4.5)
+
+        # ── Panel 2: top causal pairs bar ─────────────────────────────────
+        if g_pairs:
+            top_n  = min(10, len(g_pairs))
+            pair_labels = [f"{d['cause']}→{d['effect']}" for d in g_pairs[:top_n]]
+            pair_Fs = [d["F"] for d in g_pairs[:top_n]]
+            yp = _np.arange(top_n)
+            colors_p = ["#ff4444" if d["F"] >= 10 else "#ff9a3c" if d["F"] >= 6 else "#ffd040"
+                        for d in g_pairs[:top_n]]
+            ax_rank.barh(yp, pair_Fs, color=colors_p, alpha=0.85)
+            ax_rank.axvline(SIG_F, color="#aaa", lw=0.7, ls="--")
+            ax_rank.set_yticks(yp)
+            ax_rank.set_yticklabels(pair_labels, fontsize=4.8, color="#cbe")
+            ax_rank.invert_yaxis()
+            ax_rank.set_xlabel("F-statistic (X→Y predictive gain)", color="#888", fontsize=5.5)
+            ax_rank.set_title(f"Top {top_n} Granger-causal pairs", color="#c0d8ff", fontsize=6.5)
+            for yi, F in enumerate(pair_Fs):
+                ax_rank.text(F + 0.1, yi, f"{F:.1f}", va="center", color="#ffd040", fontsize=4.5)
+        else:
+            ax_rank.axis("off")
+            ax_rank.text(0.5, 0.5, "no significant pairs yet\n(need ≥12 samples + F≥4)",
+                         ha="center", va="center", transform=ax_rank.transAxes,
+                         color="#5a7a6a", fontsize=7)
+
+        # ── Panel 3: directed causal mini-network ─────────────────────────
+        sig_pairs = [d for d in g_pairs if d["F"] >= SIG_F][:12]
+        if sig_pairs:
+            # gather unique nodes
+            nodes_seen = {}
+            for d in sig_pairs:
+                nodes_seen.setdefault(d["cause"], 0)
+                nodes_seen.setdefault(d["effect"], 0)
+                nodes_seen[d["cause"]] += d["F"]
+                nodes_seen[d["effect"]] += d["F"]
+            node_names = list(nodes_seen.keys())
+            nn = len(node_names); rng = _np.random.default_rng(42)
+            theta_arr = _np.linspace(0, 2 * _np.pi, nn, endpoint=False)
+            pos = {nm: (_np.cos(t), _np.sin(t)) for nm, t in zip(node_names, theta_arr)}
+            ax_net.set_xlim(-1.5, 1.5); ax_net.set_ylim(-1.5, 1.5); ax_net.axis("off")
+            ax_net.set_title("Directed causal network (F≥4 pairs)", color="#c0d8ff", fontsize=6.0)
+            for nm, (x, y) in pos.items():
+                grp = "?"
+                for d in sig_pairs:
+                    if d["cause"] == nm or d["effect"] == nm:
+                        for lbl2, _k, g in [(l, k, g) for l, k, g in
+                                            [("Quakes","seismic_n","Seismic"),("Fires","eonet_n","Earth-obs"),
+                                             ("Kp","kp_index","Space-wx"),("PM2.5","aqmesh_pm25_mean","Air-qual"),
+                                             ("Aircraft","aircraft_count","RF/Plat")]]:
+                            if lbl2 == nm:
+                                grp = g; break
+                        break
+                col = gcol.get(grp, "#9aa")
+                ax_net.scatter([x], [y], s=80, color=col, zorder=3, alpha=0.9)
+                ax_net.text(x, y + 0.13, nm, ha="center", va="bottom", fontsize=4.5, color=col)
+            F_max = max((d["F"] for d in sig_pairs), default=4.0)
+            for d in sig_pairs:
+                c_nm, e_nm = d["cause"], d["effect"]
+                if c_nm not in pos or e_nm not in pos:
+                    continue
+                cx, cy = pos[c_nm]; ex, ey = pos[e_nm]
+                alpha = 0.3 + 0.7 * min(1.0, d["F"] / max(F_max, 1.0))
+                lw = 0.8 + 1.5 * min(1.0, d["F"] / max(F_max, 1.0))
+                ax_net.annotate("", xy=(ex, ey), xytext=(cx, cy),
+                                arrowprops=dict(arrowstyle="->", color="#00ccff",
+                                                lw=lw, alpha=alpha))
+        else:
+            ax_net.axis("off")
+            ax_net.text(0.5, 0.5, "no significant causal\npairs yet", ha="center", va="center",
+                        transform=ax_net.transAxes, color="#5a7a6a", fontsize=7)
+
+        status = (f"GRANGER {'LIVE' if xc_ok else 'WAITING'} · {n} streams · "
+                  f"{n_g} significant causal pairs (F≥4) · {n_samp} samples · "
+                  "bivariate VAR(2) OLS · ALL REAL · no false data")
+        fig.text(0.5, 0.012, status, ha="center", va="bottom",
+                 color="#5a7068", fontsize=5.6)
+
+    def _draw_xcorrpca(self, fig, p, snap):
+        """v167: PRINCIPAL MODES (PCA) — the few latent factors the dozens of streams collapse into.
+
+        Real PCA of the live stream correlation structure. Each mode is an orthogonal pattern of
+        joint co-variation; the loadings show which streams define it; variance% shows how much of
+        the planet's joint variability it explains. The literal "organize the data better" — 25
+        correlated streams → 3-4 dominant modes.
+
+        Panel 1 (top-left): scree plot — variance explained per mode + cumulative.
+        Panels 2-4: loadings of the top 3 modes (signed bars, group-coloured) — what each mode IS.
+        """
+        import numpy as _np
+        fig.suptitle(
+            "PRINCIPAL MODES (PCA) — DOMINANT PATTERNS OF PLANETARY CO-VARIATION  "
+            "(latent factors · organised · button)",
+            color="#b0d8c0", fontsize=8.0, fontweight="bold", y=0.985)
+
+        modes  = list(snap.get("xcorr_pca_modes") or [])
+        n_md   = int(snap.get("xcorr_pca_n_modes") or len(modes))
+        total3 = float(snap.get("xcorr_pca_total3_pct") or 0.0)
+        n_samp = int(snap.get("xcorr_n_samples") or 0)
+        window = int(snap.get("xcorr_window_min") or 0)
+        xc_ok  = bool(snap.get("xcorr_ok", False))
+        gcol = {"Seismic": "#ff5a4a", "Earth-obs": "#ff9a3c", "Space-wx": "#ffd84a",
+                "Air-qual": "#9ae84a", "Ocean": "#3cc8ff", "Atmos": "#4af0d0",
+                "RF/Plat": "#b88aff", "Fusion": "#ff7ad0", "Astro": "#8a9aff", "?": "#9aa"}
+
+        gs = fig.add_gridspec(2, 2, left=0.10, right=0.97, top=0.92, bottom=0.07,
+                              hspace=0.40, wspace=0.32)
+        ax_scree = fig.add_subplot(gs[0, 0])
+        ax_pc = [fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1])]
+        for ax in (ax_scree, *ax_pc):
+            ax.set_facecolor("#06100b")
+            ax.tick_params(colors="#888", labelsize=5.5)
+            for sp in ax.spines.values():
+                sp.set_color("#243828")
+
+        if not modes:
+            ax_scree.axis("off")
+            for a in ax_pc:
+                a.axis("off")
+            ax_scree.text(1.05, 0.5,
+                          "PRINCIPAL MODES ACCUMULATING\n"
+                          f"(needs ≥4 time samples & ≥2 live streams · {n_samp} samples so far)\n"
+                          "real PCA of the live correlation structure · boots ~50 s",
+                          ha="center", va="center", transform=ax_scree.transAxes,
+                          color="#5a7a6a", fontsize=9)
+            fig.text(0.5, 0.012, "PCA WAITING · shares history with DataMatrix · ALL REAL",
+                     ha="center", va="bottom", color="#5a7068", fontsize=5.6)
+            return
+
+        # ── Panel 1: scree + cumulative ─────────────────────────────────────
+        vp = [md["variance_pct"] for md in modes]
+        xs = _np.arange(1, len(vp) + 1)
+        ax_scree.bar(xs, vp, color="#3cb878", alpha=0.85, width=0.6)
+        ax_scree.plot(xs, _np.cumsum(vp), "-o", color="#ffd040", ms=4, lw=1.0,
+                      label="cumulative")
+        ax_scree.set_xticks(xs)
+        ax_scree.set_xticklabels([f"PC{i}" for i in xs], fontsize=6, color="#cce")
+        ax_scree.set_ylabel("variance explained %", color="#888", fontsize=6)
+        ax_scree.set_title(f"Scree — {n_md} modes · top-3 = {total3:.0f}% of joint variance",
+                           color="#b0d8c0", fontsize=7.0)
+        ax_scree.legend(fontsize=5.5, labelcolor="#ccc", framealpha=0)
+        for xi, v in zip(xs, vp):
+            ax_scree.text(xi, v + 1, f"{v:.0f}%", ha="center", color="#cec", fontsize=5.4)
+
+        # ── Panels 2-4: loadings of top 3 modes ─────────────────────────────
+        for mi in range(3):
+            ax = ax_pc[mi]
+            if mi >= len(modes):
+                ax.axis("off")
+                continue
+            md = modes[mi]
+            load = md["loadings"]
+            names = [ld["label"] for ld in load]
+            wts   = [ld["weight"] for ld in load]
+            cols  = [gcol.get(ld["group"], "#9aa") for ld in load]
+            ypos = _np.arange(len(names))
+            ax.barh(ypos, wts, color=cols, alpha=0.85)
+            ax.set_yticks(ypos)
+            ax.set_yticklabels(names, fontsize=4.8, color="#cbe")
+            ax.invert_yaxis()
+            ax.axvline(0, color="#444", lw=0.5)
+            ax.set_xlim(-1.05, 1.05)
+            ax.set_title(f"PC{mi+1} · {md['variance_pct']:.0f}% var · score {md['score']:+.2f}",
+                         color="#b0d8c0", fontsize=6.5)
+            ax.set_xlabel("loading", color="#888", fontsize=5.5)
+
+        status = (f"PCA {'LIVE' if xc_ok else 'WAITING'} · {n_md} modes · "
+                  f"top-3 explain {total3:.0f}% · {n_samp} samples ({window}min) · "
+                  "real eigendecomposition of live correlation matrix · ALL REAL")
+        fig.text(0.5, 0.012, status, ha="center", va="bottom",
+                 color="#5a7068", fontsize=5.6)
+
     def _draw_corrnet(self, fig, p, snap):
         """v166: CORRELATION NETWORK — every correlation (temporal + spatial + lead/lag) as one graph.
 
@@ -12803,6 +13696,199 @@ class BCILSLBroadcaster:
             log.info("[LSL] NEPA_BCI LSL outlet closed")
 
 
+class EEGStreamInletClient:
+    """v170: REAL wired/wireless EEG ingestion via Lab Streaming Layer (LSL) inlet.
+
+    THE HONEST "MAKE WIRELESS BCI REAL" PATH. A consumer EEG headset IS a genuine wireless
+    BCI: a Muse (Bluetooth, via muselsl), an OpenBCI Cyton/Ganglion, an Emotiv, or any
+    BrainFlow/LSL-aware device publishes a REAL LSL stream of type 'EEG' — microvolt samples
+    measured by electrodes physically on ONE consenting wearer's scalp. This client
+    auto-detects such a stream (excluding N.E.P.A.'s own NEPA_BCI outlet), pulls the real
+    samples into a rolling window, and computes REAL per-channel band powers (delta / theta /
+    alpha / beta / gamma) by FFT. When a device is present, BCI becomes a REAL neural source
+    for that wearer — the literal honest answer to "wireless BCI should be real."
+
+    Same "show what is live, don't show what isn't" pattern as every other instrument: a real
+    headset lights it up; nothing present → it simply does not appear. Same path the ESP32-CSI
+    sensor uses — plug in real hardware and the real data flows, no code change.
+
+    HONESTY CEILING (hard physical limits, NOT engineering hurdles that can be coded around):
+      • Reads ONE wearer wearing electrodes on their own scalp — NOT remote, NOT through walls,
+        NOT animals, NOT a planet of minds. EEG fields are microvolts at the scalp; they are
+        undetectable at a distance (that is WHY EEG needs contact electrodes and MEG needs
+        femtotesla SQUIDs in a shielded room).
+      • Reads aggregate cortical RHYTHMS (band powers, evoked potentials, coarse motor-imagery
+        after per-wearer training) — NOT the semantic CONTENT of thoughts. No instrument,
+        contact or remote, decodes the content of thought. "Reading minds" is not a sensor
+        N.E.P.A. lacks; it is data that does not exist to be read.
+      • Remote neural monitoring (RMN) of thought has no real signal — N.E.P.A. will not
+        fabricate one. This client publishes ONLY what a real attached device measures.
+
+    NO FALSE DATA: pylsl absent OR no real EEG stream present → no-op, eeg_real_ok=False, no
+    band powers. Never synthesises EEG (SyntheticEEGGenerator is a separate, explicitly
+    SIMULATED path used only under --sim-validate).
+    """
+    _BANDS = [("delta", 1.0, 4.0), ("theta", 4.0, 8.0), ("alpha", 8.0, 13.0),
+              ("beta", 13.0, 30.0), ("gamma", 30.0, 50.0)]
+    _WIN_S      = 2.0      # 2-second analysis window
+    _REFRESH_S  = 0.5
+
+    def __init__(self):
+        import threading as _thr
+        self._lock = _thr.Lock()
+        self._ok = False
+        self._stream_name = ""
+        self._n_channels = 0
+        self._srate = 0.0
+        self._ch_labels: list = []
+        self._band_mean: dict = {}     # band -> mean fraction across channels
+        self._per_channel: list = []   # [{ch,label,bands:{frac},total_uv2}]
+        self._n_samples_seen = 0
+        self._inlet = None
+        self._buf = None               # numpy (channels x winN) rolling buffer
+        self._buf_fill = 0
+        _thr.Thread(target=self._loop, daemon=True, name="eeg_inlet_v170").start()
+
+    @staticmethod
+    def _band_powers_psd(sig, srate, bands):
+        """Real one-sided PSD band powers for a 1-D signal (Hann-windowed periodogram).
+
+        Returns {band: absolute power} in input-units² (µV² for EEG). Pure numpy, no SciPy.
+        """
+        import numpy as _np
+        x = _np.asarray(sig, dtype=float)
+        n = x.size
+        if n < 8 or srate <= 0:
+            return None
+        x = x - _np.mean(x)
+        w = _np.hanning(n)
+        sw2 = float(_np.sum(w ** 2)) or 1.0
+        sp = _np.fft.rfft(x * w)
+        psd = (_np.abs(sp) ** 2) / (srate * sw2)
+        if psd.size > 2:
+            psd[1:-1] *= 2.0          # one-sided correction
+        freqs = _np.fft.rfftfreq(n, d=1.0 / srate)
+        out = {}
+        for name, lo, hi in bands:
+            m = (freqs >= lo) & (freqs < hi)
+            out[name] = float(_np.sum(psd[m]))
+        return out
+
+    def _find_stream(self):
+        """Resolve a real, non-NEPA EEG LSL stream. Returns StreamInfo or None."""
+        try:
+            streams = pylsl.resolve_streams(wait_time=1.0)
+        except Exception:
+            return None
+        for st in streams:
+            try:
+                if (st.type() or "").upper() == "EEG" \
+                        and st.source_id() != "nepa_bci_0" and st.name() != "NEPA_BCI":
+                    return st
+            except Exception:
+                continue
+        return None
+
+    def _open(self, info):
+        import numpy as _np
+        self._inlet = pylsl.StreamInlet(info, max_buflen=8)
+        meta = self._inlet.info()
+        self._srate = float(meta.nominal_srate()) or 256.0
+        self._n_channels = max(1, int(meta.channel_count()))
+        labels = []
+        try:
+            ch = meta.desc().child("channels").child("channel")
+            for i in range(self._n_channels):
+                lbl = ch.child_value("label")
+                labels.append(lbl if lbl else f"ch{i}")
+                ch = ch.next_sibling()
+        except Exception:
+            labels = [f"ch{i}" for i in range(self._n_channels)]
+        self._ch_labels = labels
+        self._stream_name = meta.name() or "EEG"
+        winN = max(16, int(self._WIN_S * self._srate))
+        self._buf = _np.zeros((self._n_channels, winN), dtype=float)
+        self._buf_fill = 0
+        log.info(f"[EEG] REAL EEG stream '{self._stream_name}' — {self._n_channels} ch "
+                 f"@ {self._srate:.0f} Hz (genuine wireless BCI ingest active)")
+
+    def _loop(self):
+        import time as _ti, numpy as _np
+        if not _pylsl_ok:
+            log.info("[EEG] pylsl not available — real EEG ingest disabled (no fabrication). "
+                     "Install pylsl + run a Muse (muselsl)/OpenBCI/BrainFlow LSL stream to enable.")
+            return
+        while True:
+            try:
+                if self._inlet is None:
+                    info = self._find_stream()
+                    if info is None:
+                        with self._lock:
+                            self._ok = False
+                        _ti.sleep(3.0)
+                        continue
+                    self._open(info)
+                chunk, _ts = self._inlet.pull_chunk(timeout=0.4, max_samples=512)
+                if chunk:
+                    arr = _np.asarray(chunk, dtype=float)        # (samples x channels)
+                    if arr.ndim == 1:
+                        arr = arr.reshape(-1, 1)
+                    arr = arr.T[: self._n_channels, :]            # (channels x samples)
+                    ns = arr.shape[1]
+                    winN = self._buf.shape[1]
+                    if ns >= winN:
+                        self._buf = arr[:, -winN:].copy()
+                        self._buf_fill = winN
+                    else:
+                        self._buf = _np.roll(self._buf, -ns, axis=1)
+                        self._buf[:, -ns:] = arr
+                        self._buf_fill = min(winN, self._buf_fill + ns)
+                    self._n_samples_seen += ns
+                    if self._buf_fill >= max(16, int(0.5 * winN)):
+                        per_ch = []
+                        agg = {b: 0.0 for b, _lo, _hi in self._BANDS}
+                        for ci in range(self._n_channels):
+                            bp = self._band_powers_psd(
+                                self._buf[ci, -self._buf_fill:], self._srate, self._BANDS)
+                            if bp is None:
+                                continue
+                            tot = sum(bp.values()) or 1.0
+                            frac = {b: round(bp[b] / tot, 4) for b in bp}
+                            for b in agg:
+                                agg[b] += frac[b]
+                            per_ch.append({
+                                "ch": ci,
+                                "label": self._ch_labels[ci] if ci < len(self._ch_labels) else f"ch{ci}",
+                                "bands": frac,
+                                "total_uv2": round(tot, 3),
+                            })
+                        nch = len(per_ch) or 1
+                        band_mean = {b: round(agg[b] / nch, 4) for b in agg}
+                        with self._lock:
+                            self._per_channel = per_ch
+                            self._band_mean = band_mean
+                            self._ok = len(per_ch) > 0
+                _ti.sleep(self._REFRESH_S)
+            except Exception as e:
+                log.debug(f"[EEG] inlet loop error: {e}")
+                self._inlet = None
+                with self._lock:
+                    self._ok = False
+                _ti.sleep(2.0)
+
+    def get(self) -> dict:
+        with self._lock:
+            return {
+                "eeg_real_ok":          bool(self._ok),
+                "eeg_real_stream_name": self._stream_name,
+                "eeg_real_n_channels":  self._n_channels if self._ok else 0,
+                "eeg_real_srate":       round(self._srate, 1) if self._ok else 0.0,
+                "eeg_real_band_powers": dict(self._band_mean) if self._ok else {},
+                "eeg_real_per_channel": list(self._per_channel) if self._ok else [],
+                "eeg_real_n_samples":   self._n_samples_seen,
+            }
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # Pass 34 (T-SEM): SemanticStateEngine — RuView-style room-presence semantic states
 # Studies Examplecode1/RuView for occupancy + multi-room + activity classification.
@@ -13348,7 +14434,8 @@ class WebViewerServer:
                  "extsat", "planetphysics", "hfradar", "earthobs", "spaceweather",
                  "satscan", "satbands", "orbsync", "aqmesh", "goeswatch", "oceanmesh", "globatmos",
                  "planetscan", "deepscan", "planettomo", "kineticprop", "geocurrent",
-                 "kinvis", "xcorrmatrix", "spatialxref", "xcorrlag", "corrnet")
+                 "kinvis", "xcorrmatrix", "spatialxref", "xcorrlag", "corrnet", "xcorrpca",
+                 "granger", "anomaly", "partial", "sessions", "intake")
 
     def _render_tab_png(self, kind: str) -> bytes:
         import io as _io2
@@ -28594,9 +29681,20 @@ class BusInstrument:
         return {}
 
     def status(self) -> dict:
+        # v171: explicit provenance so simulated hardware is OFFSET from the measured read.
+        # SIMULATED → watermarked, never counted as measured. SOFTWARE-DEFINED → real data
+        # from a code-implemented instrument operating on genuine RF. REAL → physical device.
+        if getattr(self, "simulated", False):
+            prov = "SIMULATED"
+        elif getattr(self, "software_defined", False):
+            prov = "SOFTWARE-DEFINED"
+        else:
+            prov = "REAL"
         return {"id": self.id, "kind": self.kind, "connected": self.connected,
                 "capabilities": sorted(self.capabilities), "note": self.note,
-                "last": self.last}
+                "last": self.last, "provenance": prov,
+                "simulated": bool(getattr(self, "simulated", False)),
+                "software_defined": bool(getattr(self, "software_defined", False))}
 
 
 class WiFiInstrument(BusInstrument):
@@ -29316,8 +30414,18 @@ class InstrumentBus:
 
     def summary(self) -> dict:
         conn = self.connected_instruments()
+        # v171: provenance-separated tally so the registry is an ACCURATE read — simulated
+        # instruments are OFFSET into their own count and never inflate the measured total.
+        sim_n = sum(1 for i in conn if getattr(i, "simulated", False))
+        sw_n  = sum(1 for i in conn if getattr(i, "software_defined", False)
+                    and not getattr(i, "simulated", False))
+        real_n = len(conn) - sim_n - sw_n
         return {
             "instrument_count": len(conn),
+            "real_count": real_n,                       # physical hardware present
+            "software_defined_count": sw_n,             # code instruments on REAL RF (data real)
+            "simulated_count": sim_n,                    # watermarked, NOT measured
+            "measured_count": real_n + sw_n,            # everything producing genuine data
             "instruments": [i.status() for i in self.instruments],
             "live_capabilities": sorted(self.live_capabilities()),
             "fusion": self.fusion_status(),
@@ -42493,7 +43601,275 @@ class CrossStreamCorrelationMatrixEngine:
         self._lag_pairs: list = []       # top lead/lag relationships
         self._n_leadlag = 0
         self._lag_curve: dict = {}       # {a,b,lags_min:[...],r:[...]} for strongest pair
+        # v167 PCA / principal modes state
+        self._pca_modes: list = []       # [{variance_pct, loadings:[{label,weight,group}], score}]
+        self._pca_total3 = 0.0           # variance explained by top-3 modes
+        self._pca_n_modes = 0
+        # v168 Granger causality state
+        self._granger_matrix: list = []  # NxN directed F-statistics (X→Y)
+        self._granger_pairs: list = []   # top causal pairs [{cause, effect, F, n}]
+        self._n_granger = 0
+        # v169 stream anomaly detection state
+        self._anomaly_flags: list = []   # [{label, group, value, z, severity, direction, mu, sd}]
+        self._n_anomalies = 0
+        # v172 partial correlation state (direct vs confounded links)
+        self._partial_matrix: list = []  # NxN partial r (controlling for all other streams)
+        self._partial_top: list = []     # strongest DIRECT links [{a,b,partial,marginal,...}]
+        self._partial_confounded: list = []  # high-marginal/low-partial = spurious (shared driver)
+        self._n_partial_direct = 0
         _thr.Thread(target=self._loop, daemon=True, name="xcorr_v163").start()
+
+    @staticmethod
+    def _compute_pca(cols, labels, grp_of, n_rows):
+        """v167: PCA of the live correlation structure → dominant modes of planetary co-variation.
+
+        Real principal-component analysis on the standardized stream histories. Each metric's
+        present samples are z-scored; missing samples mean-imputed to 0 (no info contribution,
+        labeled honest). Eigendecomposition of the correlation matrix gives the orthogonal modes
+        that explain the most joint variance — the few latent factors the dozens of streams
+        collapse into ("a way to reference data to organize it better"). Returns top modes with
+        their stream loadings + variance-explained + the current score along each mode.
+        """
+        import numpy as _np
+        m = len(labels)
+        if m < 2 or n_rows < 4:
+            return [], 0.0
+        # standardized matrix Z (n_rows × m); mean-impute missing → 0 after z-score
+        Z = _np.zeros((n_rows, m), dtype=float)
+        for j, lbl in enumerate(labels):
+            a = cols[lbl]
+            fin = _np.isfinite(a)
+            mu = float(_np.nanmean(a)); sd = float(_np.nanstd(a))
+            if sd < 1e-9:
+                continue
+            z = (a - mu) / sd
+            z[~fin] = 0.0
+            Z[:, j] = z
+        # correlation matrix (symmetric) → eigendecomposition
+        C = (Z.T @ Z) / max(1, n_rows - 1)
+        try:
+            evals, evecs = _np.linalg.eigh(C)
+        except Exception:
+            return [], 0.0
+        order = _np.argsort(evals)[::-1]
+        evals = evals[order]; evecs = evecs[:, order]
+        total = float(evals.sum()) or 1.0
+        last_z = Z[-1]
+        modes = []
+        n_modes = min(4, m)
+        for k in range(n_modes):
+            ev = evecs[:, k]
+            var_pct = round(100.0 * float(evals[k]) / total, 1)
+            if var_pct <= 0:
+                continue
+            # sign convention: largest-magnitude loading positive
+            if ev[int(_np.argmax(_np.abs(ev)))] < 0:
+                ev = -ev
+            load = sorted(
+                [{"label": labels[j], "weight": round(float(ev[j]), 3),
+                  "group": grp_of.get(labels[j], "?")} for j in range(m)],
+                key=lambda d: -abs(d["weight"]))[:6]
+            score = round(float(last_z @ ev), 3)
+            modes.append({"variance_pct": var_pct, "loadings": load, "score": score})
+        total3 = round(sum(md["variance_pct"] for md in modes[:3]), 1)
+        return modes, total3
+
+    @staticmethod
+    def _compute_granger(cols, labels, n_rows, min_pairs):
+        """v168: Bivariate Granger causality — does X's past help predict Y's future beyond Y's own past?
+
+        For each ordered pair (X→Y): fit restricted model (Y from own lags) vs unrestricted
+        model (Y from own lags + X's lags). F-statistic quantifies predictive gain of adding X.
+        Large F → X Granger-causes Y. Uses VAR(2) (2 lag terms), pure numpy OLS.
+
+        NO FALSE DATA: only computed when sufficient overlapping finite samples exist; F=None
+        where data is insufficient. Significant threshold F≥4 (≈p<0.05 at typical dof).
+        Returns directed NxN F-matrix (i→j = col i causes row j) + sorted top causal pairs.
+        """
+        import numpy as _np
+        n = len(labels); p = 2   # VAR order; needs ≥ min_pairs + 2p rows
+        empty = [[None] * n for _ in range(n)]
+        if n < 2 or n_rows < min_pairs + 2 * p + 2:
+            return empty, []
+        matrix = [[None] * n for _ in range(n)]
+        pairs = []
+        for j in range(n):          # target Y = labels[j]
+            yraw = cols[labels[j]]
+            for i in range(n):      # predictor X = labels[i]
+                if i == j:
+                    continue
+                xraw = cols[labels[i]]
+                # build mask: need finite y[t], y[t-1], y[t-2], x[t-1], x[t-2]
+                T = n_rows
+                mask = _np.ones(T, dtype=bool)
+                mask[:p] = False                          # no lags available for first p rows
+                mask &= _np.isfinite(yraw)
+                for lag in range(1, p + 1):
+                    yl = _np.full(T, _np.nan); yl[lag:] = yraw[:T - lag]
+                    mask &= _np.isfinite(yl)
+                for lag in range(1, p + 1):
+                    xl = _np.full(T, _np.nan); xl[lag:] = xraw[:T - lag]
+                    mask &= _np.isfinite(xl)
+                t_idx = _np.where(mask)[0]
+                if len(t_idx) < min_pairs + 2 * p:
+                    continue
+                y = yraw[t_idx]
+                # restricted: [1, y_{t-1}, y_{t-2}]
+                Xr = _np.column_stack([
+                    _np.ones(len(t_idx)),
+                    *[yraw[t_idx - l] for l in range(1, p + 1)]
+                ])
+                # unrestricted: [1, y_{t-1}, y_{t-2}, x_{t-1}, x_{t-2}]
+                Xu = _np.column_stack([
+                    _np.ones(len(t_idx)),
+                    *[yraw[t_idx - l] for l in range(1, p + 1)],
+                    *[xraw[t_idx - l] for l in range(1, p + 1)]
+                ])
+                try:
+                    br, *_ = _np.linalg.lstsq(Xr, y, rcond=None)
+                    rss_r = float(_np.sum((y - Xr @ br) ** 2))
+                    bu, *_ = _np.linalg.lstsq(Xu, y, rcond=None)
+                    rss_u = float(_np.sum((y - Xu @ bu) ** 2))
+                    dof_u = len(t_idx) - 2 * p - 1
+                    if dof_u < 1 or rss_u < 1e-12:
+                        continue
+                    F = ((rss_r - rss_u) / p) / (rss_u / dof_u)
+                    if not _np.isfinite(F) or F < 0:
+                        continue
+                    matrix[i][j] = round(float(F), 2)   # X[i] → Y[j]
+                    if F >= 4.0:
+                        pairs.append({"cause": labels[i], "effect": labels[j],
+                                      "F": round(float(F), 2), "n": len(t_idx)})
+                except Exception:
+                    continue
+        pairs.sort(key=lambda d: -d["F"])
+        return matrix, pairs[:16]
+
+    @staticmethod
+    def _compute_anomaly(cols, labels, grp_of, rows, min_pairs):
+        """v169: Stream anomaly detection — z-score + IQR-based flags on every live stream.
+
+        For each live metric: compute rolling-history mean/std/IQR (excluding the most recent
+        value to avoid autocorrelation with the baseline). Flag severity: NORMAL (|z|<2),
+        WARN (2≤|z|<3 or IQR-outlier), ALERT (|z|≥3). Returns ranked by |z| so the most
+        anomalous streams appear first — a live health dashboard of the planetary sensor net.
+
+        NO FALSE DATA: each stream uses only its own real measured samples; a stream is skipped
+        if fewer than min_pairs real samples are available.
+        """
+        import numpy as _np
+        if not labels or not rows:
+            return [], 0
+        flags = []
+        for lbl in labels:
+            a = cols[lbl]
+            fin = a[_np.isfinite(a)]
+            if len(fin) < min_pairs:
+                continue
+            # exclude current value from baseline stats to avoid contamination
+            baseline = fin[:-1] if len(fin) > min_pairs else fin
+            mu = float(_np.mean(baseline)); sd = float(_np.std(baseline))
+            q1 = float(_np.percentile(baseline, 25)); q3 = float(_np.percentile(baseline, 75))
+            iqr = q3 - q1
+            curr = float(a[-1]) if _np.isfinite(a[-1]) else None
+            if curr is None:
+                continue
+            z = (curr - mu) / sd if sd > 1e-9 else 0.0
+            iqr_outlier = iqr > 1e-9 and (curr < q1 - 1.5 * iqr or curr > q3 + 1.5 * iqr)
+            absz = abs(z)
+            if absz >= 3.0:
+                severity = "ALERT"
+            elif absz >= 2.0 or iqr_outlier:
+                severity = "WARN"
+            else:
+                severity = "NORMAL"
+            flags.append({
+                "label":     lbl,
+                "group":     grp_of.get(lbl, "?"),
+                "value":     round(curr, 3),
+                "z":         round(z, 2),
+                "severity":  severity,
+                "direction": "HIGH" if z > 0 else "LOW",
+                "mu":        round(mu, 3),
+                "sd":        round(sd, 3),
+                "q1":        round(q1, 3),
+                "q3":        round(q3, 3),
+            })
+        flags.sort(key=lambda f: -abs(f["z"]))
+        n_anom = len([f for f in flags if f["severity"] != "NORMAL"])
+        return flags, n_anom
+
+    @staticmethod
+    def _compute_partial(cols, labels, grp_of, n_rows, min_pairs, sig_r):
+        """v172: Partial correlation — which links are DIRECT vs CONFOUNDED by a shared driver.
+
+        The marginal (zero-order) Pearson r between two streams (DataMatrix v163) can be large
+        purely because a THIRD stream drives both (e.g. fires↔PM2.5 both rise with a heatwave).
+        Partial correlation removes the linear effect of EVERY other live stream, leaving only
+        the direct association. Computed from the precision matrix (inverse correlation matrix):
+            partial_r(i,j | rest) = -P[i,j] / sqrt(P[i,i]·P[j,j]),  P = inv(R)
+        A pair with high |marginal| but near-zero |partial| is CONFOUNDED (spurious) — the
+        apparent link is fully explained by other streams. This multiplies the suite's truth:
+        CorrNet shows links, Granger shows direction, Partial shows which links are REAL.
+
+        NO FALSE DATA: uses only real measured samples (mean-imputed→0 after z-score, no info
+        contribution); ridge-regularized inverse for numerical stability when undersampled
+        (estimates shrink honestly toward 0 when data is thin, never fabricated). Reported only
+        when ≥ a minimal sample count and ≥3 streams (partial needs something to control for).
+        Returns (partial_matrix, top_direct, confounded).
+        """
+        import numpy as _np
+        m = len(labels)
+        if m < 3 or n_rows < max(min_pairs, 4):
+            return [[None] * m for _ in range(m)], [], []
+        # standardized matrix (same convention as PCA: z-score present, mean-impute missing→0)
+        Z = _np.zeros((n_rows, m), dtype=float)
+        for j, lbl in enumerate(labels):
+            a = cols[lbl]
+            fin = _np.isfinite(a)
+            mu = float(_np.nanmean(a)); sd = float(_np.nanstd(a))
+            if sd < 1e-9:
+                continue
+            z = (a - mu) / sd
+            z[~fin] = 0.0
+            Z[:, j] = z
+        R = _np.corrcoef(Z, rowvar=False)
+        R = _np.nan_to_num(R, nan=0.0, posinf=0.0, neginf=0.0)
+        _np.fill_diagonal(R, 1.0)
+        # ridge regularization → always invertible; shrinks estimates when n_rows < m (honest)
+        ridge = 1e-3 if n_rows > m + 2 else 5e-2
+        try:
+            P = _np.linalg.inv(R + _np.eye(m) * ridge)
+        except Exception:
+            return [[None] * m for _ in range(m)], [], []
+        pmat = [[None] * m for _ in range(m)]
+        pairs = []
+        for i in range(m):
+            pmat[i][i] = 1.0
+            for j in range(i + 1, m):
+                denom = float(_np.sqrt(P[i, i] * P[j, j]))
+                if denom < 1e-12:
+                    continue
+                pr = -float(P[i, j]) / denom
+                if not _np.isfinite(pr):
+                    continue
+                pr = round(max(-1.0, min(1.0, pr)), 3)
+                r0 = round(float(R[i, j]), 3)
+                pmat[i][j] = pr; pmat[j][i] = pr
+                pairs.append({
+                    "a": labels[i], "b": labels[j],
+                    "partial": pr, "marginal": r0,
+                    "drop": round(abs(r0) - abs(pr), 3),
+                    "ga": grp_of.get(labels[i], "?"), "gb": grp_of.get(labels[j], "?"),
+                })
+        # DIRECT links: strong partial (survive controlling for everything else)
+        top_direct = sorted([p for p in pairs if abs(p["partial"]) >= sig_r],
+                            key=lambda d: -abs(d["partial"]))[:14]
+        # CONFOUNDED: strong marginal but partial collapses (shared-driver / spurious)
+        confounded = sorted(
+            [p for p in pairs if abs(p["marginal"]) >= sig_r and abs(p["partial"]) < sig_r * 0.6],
+            key=lambda d: -d["drop"])[:10]
+        return pmat, top_direct, confounded
 
     def inject(self, pp: dict):
         """Snapshot one rate-limited row of every metric's current real value (or None)."""
@@ -42619,6 +43995,17 @@ class CrossStreamCorrelationMatrixEngine:
                                               "lags_min": lags_min, "r": r_curve}
                     lag_pairs.sort(key=lambda d: -abs(d["r"]))
                     lag_pairs = lag_pairs[:14]
+                    # ── v167: PCA / principal modes (reuse cols, no duplicate history) ──
+                    pca_modes, pca_total3 = self._compute_pca(cols, labels, grp_of, len(rows))
+                    # ── v168: Granger causality directed matrix (reuse cols/labels/rows) ──
+                    granger_matrix, granger_pairs = self._compute_granger(
+                        cols, labels, len(rows), self._MIN_PAIRS)
+                    # ── v169: stream anomaly detection (reuse cols/labels/rows) ──
+                    anomaly_flags, n_anomalies = self._compute_anomaly(
+                        cols, labels, grp_of, rows, self._MIN_PAIRS)
+                    # ── v172: partial correlation — direct vs confounded (reuse cols/labels) ──
+                    partial_matrix, partial_top, partial_confounded = self._compute_partial(
+                        cols, labels, grp_of, len(rows), self._MIN_PAIRS, self._SIG_R)
                     with self._lock:
                         self._labels = labels
                         self._groups = [grp_of[l] for l in labels]
@@ -42631,6 +44018,18 @@ class CrossStreamCorrelationMatrixEngine:
                         self._lag_pairs = lag_pairs
                         self._n_leadlag = len(lag_pairs)
                         self._lag_curve = best_curve or {}
+                        self._pca_modes = pca_modes
+                        self._pca_total3 = pca_total3
+                        self._pca_n_modes = len(pca_modes)
+                        self._granger_matrix = granger_matrix
+                        self._granger_pairs = granger_pairs
+                        self._n_granger = len(granger_pairs)
+                        self._anomaly_flags = anomaly_flags
+                        self._n_anomalies = n_anomalies
+                        self._partial_matrix = partial_matrix
+                        self._partial_top = partial_top
+                        self._partial_confounded = partial_confounded
+                        self._n_partial_direct = len(partial_top)
                         self._ok = n >= 2
                     log.info(f"[XCORR] {n} live metrics · {len(rows)} samples "
                              f"({int(len(rows)*self._SAMPLE_S/60)}min) · "
@@ -42660,6 +44059,22 @@ class CrossStreamCorrelationMatrixEngine:
                 "xcorr_n_leadlag":     self._n_leadlag,
                 "xcorr_lag_curve":     dict(self._lag_curve),
                 "xcorr_max_lag_min":   round(self._MAXLAG * self._SAMPLE_S / 60.0, 1),
+                # v167 PCA / principal modes
+                "xcorr_pca_modes":     list(self._pca_modes),
+                "xcorr_pca_n_modes":   self._pca_n_modes,
+                "xcorr_pca_total3_pct": self._pca_total3,
+                # v168 Granger causality
+                "xcorr_granger_matrix": [list(r) for r in self._granger_matrix],
+                "xcorr_granger_pairs":  list(self._granger_pairs),
+                "xcorr_n_granger":      self._n_granger,
+                # v169 stream anomaly
+                "xcorr_anomaly_flags":  list(self._anomaly_flags),
+                "xcorr_n_anomalies":    self._n_anomalies,
+                # v172 partial correlation (direct vs confounded)
+                "xcorr_partial_matrix":     [list(r) for r in self._partial_matrix],
+                "xcorr_partial_top":        list(self._partial_top),
+                "xcorr_partial_confounded": list(self._partial_confounded),
+                "xcorr_n_partial_direct":   self._n_partial_direct,
             }
 
 
@@ -43270,6 +44685,10 @@ class LiveSourceRegistry:
         ("Fusion",          "Kinetic vision sweep",  ["kinvis_observed_cells"], ["kinvis_ok"], "cells"),
         ("Fusion",          "Cross-stream correlation", ["xcorr_n_metrics"], ["xcorr_ok"], "streams"),
         ("Fusion",          "Lead/lag predictors",      ["xcorr_n_leadlag"], [], "links"),
+        ("Fusion",          "Principal modes (PCA)",    ["xcorr_pca_n_modes"], [], "modes"),
+        ("Fusion",          "Partial correlation",      ["xcorr_n_partial_direct"], [], "direct links"),
+        ("Storage",         "Session recorder",         ["session_rows"], ["session_ok"], "rows"),
+        ("Intake",          "External data channels",   ["intake_n_live"], ["intake_ok"], "live channels"),
         ("Fusion",          "Correlation network",      ["corrnet_n_edges"], ["corrnet_ok"], "edges"),
         ("Fusion",          "Spatial co-occurrence",    ["scoinc_n_confirmed_cells"], ["scoinc_ok"], "cells"),
         ("Earth-obs",       "Gravitational waves",  ["gw_n", "gw_events"], [], "events"),
@@ -43280,6 +44699,7 @@ class LiveSourceRegistry:
         ("Space weather",   "Kp index (1-min)",     ["swpc_kp_series"], [], "samples"),
         ("Space weather",   "Aurora ovation map",   [], ["swpc_ok"], "grid"),
         ("Fusion",          "Anomaly correlations", ["anomaly_n_active", "anomaly_events"], [], "events"),
+        ("Neural · BCI",    "Real EEG headset (LSL)", ["eeg_real_n_channels"], ["eeg_real_ok"], "channels"),
     ]
 
     @staticmethod
@@ -65084,6 +66504,401 @@ class DataRecorder:
         log.info(f"[REC] Saved {len(self.csi)} frames → {self.path}")
 
 
+class PlanetarySessionRecorder:
+    """v173: Persistent session recorder — saves a 'scan duration' of the REAL measured streams
+    (and a connected EEG's real brainwave time-series) to disk for later replay / review.
+
+    THE HONEST CORE OF THE "STORAGE SYSTEM THAT SAVES SCANNED DURATIONS TO RESYNC LATER" REQUEST.
+    N.E.P.A. previously kept every measurement only in in-memory rolling buffers — nothing
+    persisted across runs. This records one compact JSON row per sample interval to a timestamped
+    session file (.jsonl), so a recorded duration can be re-loaded and replayed/reviewed.
+
+    Each run opens its own session file and appends real measured scalars (seismic/space-wx/air/
+    ocean/atmos/RF-platform counts/fusion coverages) plus — WHEN A REAL EEG DEVICE IS CONNECTED
+    (v170 EEGStreamInletClient) — that wearer's measured band-power time-series, AUTOMATICALLY.
+    So "when a BCI exists, its data is stored on its own" is satisfied honestly.
+
+    HONESTY BOUNDARY (the part of the request that is NOT built, because it would be fabrication):
+      • This stores MEASURED data only — real stream counts and real EEG RHYTHMS (band powers).
+      • It does NOT store a "digitized mind", thoughts, identity, or anything that could be
+        "cloned" or "resynced into a world" — that data is never read (RMN is not real), so it
+        cannot be stored. A saved EEG session is a log of cortical rhythms for one wearer, not a
+        mind. Replay re-shows the recorded measurements; it does not reconstruct a person.
+
+    NO FALSE DATA: only finite, genuinely-present values are written; absent metrics are simply
+    omitted from a row. Disk-bounded (row cap per session + old-session pruning).
+    """
+    _SAMPLE_S  = 30.0     # one row per 30 s (matches the xcorr planetary-change cadence)
+    _MAX_ROWS  = 5000     # ~41 h per session, then session is full (no unbounded growth)
+    _KEEP_FILES = 50      # prune oldest sessions beyond this many on disk
+    _KEYS = [
+        "seismic_n", "eonet_n", "gdacs_n", "kp_index", "f107_flux", "xray_flux",
+        "aqmesh_pm25_mean", "aqmesh_n", "ocean_wvht_max", "ocean_wtmp_mean",
+        "atmos_n_storms", "atmos_temp_mean", "atmos_wind_max", "aircraft_count",
+        "wspr_n_spots", "aprs_n_stations", "tracked_sat_count", "extended_sat_n",
+        "recon_coverage_pct", "kinvis_coverage_pct", "tomo3d_coverage_pct", "gw_n", "neo_n",
+    ]
+
+    def __init__(self, base_dir: str = None):
+        import threading as _thr, time as _ti, os as _os, collections as _col
+        self._lock = _thr.Lock()
+        if base_dir is None:
+            base_dir = _os.environ.get("NEPA_SESSION_DIR", "")
+        if not base_dir:
+            try:
+                base_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "sessions")
+            except Exception:
+                base_dir = "/tmp/nepa_sessions"
+        self._dir = base_dir
+        self._ok = False
+        self._rows_written = 0
+        self._eeg_recording = False
+        self._t0 = _ti.time()
+        self._last = 0.0
+        self._rows_mem = _col.deque(maxlen=240)   # in-memory copy for live replay preview
+        self._path = None
+        try:
+            _os.makedirs(self._dir, exist_ok=True)
+            stamp = _ti.strftime("%Y%m%d_%H%M%S", _ti.localtime(self._t0))
+            self._path = _os.path.join(self._dir, f"session_{stamp}.jsonl")
+            self._prune()
+            self._ok = True
+            log.info(f"[SESSION] PlanetarySessionRecorder → {self._path} "
+                     f"(real streams + EEG-when-present; replay store)")
+        except Exception as e:
+            log.warning(f"[SESSION] could not open session store: {e}")
+            self._ok = False
+
+    def _prune(self):
+        """Keep at most _KEEP_FILES newest session files; delete the oldest beyond that."""
+        import os as _os, glob as _glob
+        try:
+            files = sorted(_glob.glob(_os.path.join(self._dir, "session_*.jsonl")),
+                           key=lambda f: _os.path.getmtime(f))
+            for f in files[:-self._KEEP_FILES] if len(files) > self._KEEP_FILES else []:
+                try:
+                    _os.remove(f)
+                except OSError:
+                    pass
+        except Exception:
+            pass
+
+    def inject(self, pp: dict):
+        """Append one rate-limited row of the current REAL measurements to the session file."""
+        import time as _ti, math as _m, json as _json
+        if not self._ok:
+            return
+        now = _ti.time()
+        if now - self._last < self._SAMPLE_S:
+            return
+        if self._rows_written >= self._MAX_ROWS:
+            return
+        row = {"t": round(now, 1)}
+        for k in self._KEYS:
+            v = pp.get(k)
+            try:
+                fv = float(v)
+                if _m.isfinite(fv):
+                    row[k] = round(fv, 4)
+            except (TypeError, ValueError):
+                continue
+        if pp.get("eeg_real_ok"):
+            bp = pp.get("eeg_real_band_powers") or {}
+            if bp:
+                try:
+                    row["eeg"] = {b: round(float(x), 4) for b, x in bp.items()}
+                    row["eeg_ch"] = int(pp.get("eeg_real_n_channels") or 0)
+                except (TypeError, ValueError):
+                    pass
+        with self._lock:
+            try:
+                with open(self._path, "a") as f:
+                    f.write(_json.dumps(row) + "\n")
+                self._rows_written += 1
+                self._rows_mem.append(row)
+                self._eeg_recording = "eeg" in row
+            except Exception as e:
+                log.debug(f"[SESSION] write error: {e}")
+            self._last = now
+
+    def _list_sessions(self):
+        import os as _os, glob as _glob
+        out = []
+        try:
+            files = sorted(_glob.glob(_os.path.join(self._dir, "session_*.jsonl")),
+                           key=lambda f: _os.path.getmtime(f), reverse=True)
+            for f in files[:12]:
+                try:
+                    sz = _os.path.getsize(f)
+                    # cheap row count = line count (bounded read)
+                    n = 0
+                    with open(f, "r") as fh:
+                        for n, _ in enumerate(fh, 1):
+                            pass
+                    out.append({"name": _os.path.basename(f), "bytes": sz, "rows": n,
+                                "mtime": _os.path.getmtime(f),
+                                "duration_s": round(n * self._SAMPLE_S, 0)})
+                except OSError:
+                    continue
+        except Exception:
+            pass
+        return out
+
+    def get(self) -> dict:
+        import os as _os, time as _ti
+        with self._lock:
+            rows_mem = list(self._rows_mem)
+            ok = self._ok; path = self._path
+            rows = self._rows_written; eeg_rec = self._eeg_recording
+            t0 = self._t0
+        # build a live replay preview series from in-memory rows (no disk re-read)
+        replay_metric = None; series_t = []; series_v = []
+        for cand in self._KEYS:
+            vals = [(r["t"], r[cand]) for r in rows_mem if cand in r]
+            if len(vals) >= 3:
+                replay_metric = cand
+                series_t = [v[0] for v in vals]; series_v = [v[1] for v in vals]
+                break
+        eeg_series = {}
+        eeg_rows = [r for r in rows_mem if "eeg" in r]
+        if len(eeg_rows) >= 2:
+            for b in ("delta", "theta", "alpha", "beta", "gamma"):
+                eeg_series[b] = [r["eeg"].get(b, 0.0) for r in eeg_rows]
+            eeg_series["t"] = [r["t"] for r in eeg_rows]
+        saved = self._list_sessions()
+        total_bytes = sum(s["bytes"] for s in saved)
+        cur_bytes = 0
+        try:
+            cur_bytes = _os.path.getsize(path) if path and ok else 0
+        except OSError:
+            cur_bytes = 0
+        return {
+            "session_ok":           bool(ok),
+            "session_file":         _os.path.basename(path) if path else "",
+            "session_dir":          self._dir,
+            "session_rows":         rows,
+            "session_duration_s":   round(_ti.time() - t0, 0),
+            "session_bytes":        cur_bytes,
+            "session_eeg_recording": bool(eeg_rec),
+            "session_n_saved":      len(saved),
+            "session_total_bytes":  total_bytes,
+            "session_list":         saved,
+            "session_replay_metric": replay_metric or "",
+            "session_replay_t":     series_t,
+            "session_replay_v":     series_v,
+            "session_replay_eeg":   eeg_series,
+        }
+
+
+class PluggableDataIntakeEngine:
+    """v174: Generic external-data intake — the honest 'system in place for when data is offered'.
+
+    The user's directive: "even though you won't build [a fabricated capability], make sure there
+    is a system in place to do so WHEN DATA IS OFFERED." This is that system. Any capability
+    N.E.P.A. declines to FABRICATE (remote neural decode / RMN, per-entity vitals, any sensor it
+    lacks) still gets a real INGESTION SLOT here. A slot is DECLARED and sits in AWAITING state —
+    showing NOTHING, fabricating NOTHING — until a real external provider offers genuine data for
+    it, at which point the data is validated, timestamped, tagged provenance EXTERNAL, stored, and
+    rendered live. The instant real data exists, the path is already in place; until then, empty.
+
+    This ALSO multiplies real data sources arbitrarily (the "any router/phone/program/antenna as a
+    data sender" theme): anything that can write a small JSON file — or call push() in-process —
+    becomes a live N.E.P.A. feed, no code change.
+
+    Two honest intake paths (no fabrication on either):
+      1. push(channel, value|dict, ts) — for in-process providers.
+      2. drop-folder watcher: write {"channel": id, "value": x | "fields": {...}, "ts": optional}
+         as a *.json file into NEPA_INTAKE_DIR (default <proj>/intake); it is ingested then moved
+         to intake/archive. No open network port (the network path already exists separately as
+         RemoteSensorIngestServer :8770 for RF-emitter reports).
+
+    NO FALSE DATA: only finite numeric values (or dicts/lists of them) are accepted; non-finite or
+    non-numeric payloads are rejected, never stored. A declared-but-empty channel reports status
+    AWAITING — it is never backfilled with an invented reading.
+    """
+    _HISTLEN = 240
+    _MAX_CHANNELS = 256
+    # pre-declared slots for capabilities deliberately NOT fabricated — ready for real data
+    _PLACEHOLDERS = [
+        ("remote_neural", "Remote neural decode (RMN)", "neural",
+         "AWAITING a real validated neural-decode stream. No remote thought sensor exists; nothing "
+         "is shown until genuine data is offered here. Never fabricated."),
+        ("per_entity_vitals", "Per-entity vitals feed", "vitals",
+         "AWAITING a real per-entity bio feed (e.g. multi-antenna CSI). Until offered, vitals stay "
+         "scene-aggregate; no per-entity values are invented."),
+        ("external_bci", "External BCI stream", "bci",
+         "AWAITING a real BCI provider via this intake (complements the v170 LSL EEG inlet)."),
+    ]
+
+    def __init__(self, base_dir: str = None):
+        import threading as _thr, time as _ti, os as _os, collections as _col
+        self._lock = _thr.RLock()   # reentrant: push() may call declare_channel() under the lock
+        self._channels: dict = {}
+        self._t0 = _ti.time()
+        self._n_ingested = 0
+        self._n_rejected = 0
+        if base_dir is None:
+            base_dir = _os.environ.get("NEPA_INTAKE_DIR", "")
+        if not base_dir:
+            try:
+                base_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "intake")
+            except Exception:
+                base_dir = "/tmp/nepa_intake"
+        self._dir = base_dir
+        self._archive = _os.path.join(base_dir, "archive")
+        self._ok = False
+        try:
+            _os.makedirs(self._archive, exist_ok=True)
+            self._ok = True
+        except Exception as e:
+            log.warning(f"[INTAKE] could not open intake dir: {e}")
+        for cid, name, kind, note in self._PLACEHOLDERS:
+            self.declare_channel(cid, name, kind, note)
+        if self._ok:
+            _thr.Thread(target=self._watch_loop, daemon=True, name="data_intake_v174").start()
+            log.info(f"[INTAKE] PluggableDataIntakeEngine → {self._dir} "
+                     f"(declared {len(self._channels)} slots incl. declined-capability placeholders; "
+                     f"AWAITING real data — nothing fabricated)")
+
+    def declare_channel(self, cid: str, name: str, kind: str = "generic", note: str = ""):
+        import time as _ti, collections as _col
+        cid = str(cid)[:48]
+        with self._lock:
+            if cid in self._channels or len(self._channels) >= self._MAX_CHANNELS:
+                return
+            self._channels[cid] = {
+                "name": str(name)[:48], "kind": str(kind)[:24], "note": str(note)[:200],
+                "declared_at": _ti.time(), "status": "AWAITING",
+                "n": 0, "last_ts": 0.0, "last_value": None, "provenance": "—",
+                "hist_t": _col.deque(maxlen=self._HISTLEN),
+                "hist_v": _col.deque(maxlen=self._HISTLEN),
+            }
+
+    @staticmethod
+    def _finite(x):
+        import math as _m
+        try:
+            fx = float(x)
+            return fx if _m.isfinite(fx) else None
+        except (TypeError, ValueError):
+            return None
+
+    def push(self, channel: str, value, ts: float = None, provenance: str = "external") -> bool:
+        """Offer one real sample to a channel. Returns True if accepted (finite), else rejected."""
+        import time as _ti
+        cid = str(channel)[:48]
+        now = _ti.time() if ts is None else float(ts)
+        # accept a scalar, or a dict/list of scalars (store the mean as the plotted value, keep raw)
+        scalar = self._finite(value)
+        raw = None
+        if scalar is None and isinstance(value, dict):
+            nums = [self._finite(v) for v in value.values()]
+            nums = [v for v in nums if v is not None]
+            if nums:
+                scalar = sum(nums) / len(nums)
+                raw = {k: self._finite(v) for k, v in value.items() if self._finite(v) is not None}
+        elif scalar is None and isinstance(value, (list, tuple)):
+            nums = [self._finite(v) for v in value]
+            nums = [v for v in nums if v is not None]
+            if nums:
+                scalar = sum(nums) / len(nums)
+                raw = nums
+        if scalar is None:
+            with self._lock:
+                self._n_rejected += 1
+            return False
+        with self._lock:
+            if cid not in self._channels:
+                if len(self._channels) >= self._MAX_CHANNELS:
+                    return False
+                self.declare_channel(cid, cid, "generic", "auto-declared by first real sample")
+            ch = self._channels[cid]
+            ch["status"] = "LIVE"
+            ch["n"] += 1
+            ch["last_ts"] = now
+            ch["last_value"] = round(scalar, 4) if raw is None else raw
+            ch["provenance"] = str(provenance)[:24]
+            ch["hist_t"].append(round(now, 1))
+            ch["hist_v"].append(round(scalar, 4))
+            self._n_ingested += 1
+        return True
+
+    def _watch_loop(self):
+        import time as _ti, os as _os, json as _json, glob as _glob
+        while True:
+            try:
+                for f in sorted(_glob.glob(_os.path.join(self._dir, "*.json"))):
+                    try:
+                        with open(f, "r") as fh:
+                            payload = _json.load(fh)
+                        items = payload if isinstance(payload, list) else [payload]
+                        for it in items:
+                            if not isinstance(it, dict):
+                                continue
+                            cid = it.get("channel") or it.get("id")
+                            val = it.get("value", it.get("fields"))
+                            if cid is None or val is None:
+                                continue
+                            self.push(cid, val, it.get("ts"),
+                                      provenance=str(it.get("provenance", "file-drop")))
+                        # archive ingested file (timestamp-prefixed to avoid clobber)
+                        dst = _os.path.join(self._archive,
+                                            f"{int(_ti.time()*1000)}_{_os.path.basename(f)}")
+                        _os.replace(f, dst)
+                    except Exception as e:
+                        log.debug(f"[INTAKE] file {f}: {e}")
+                        try:
+                            _os.replace(f, _os.path.join(self._archive, "bad_" + _os.path.basename(f)))
+                        except OSError:
+                            pass
+            except Exception as e:
+                log.debug(f"[INTAKE] watch loop: {e}")
+            _ti.sleep(2.0)
+
+    def stale_check(self):
+        """Demote a LIVE channel back toward stale if no recent data (honest: not currently live)."""
+        import time as _ti
+        now = _ti.time()
+        with self._lock:
+            for ch in self._channels.values():
+                if ch["status"] == "LIVE" and ch["n"] > 0 and (now - ch["last_ts"]) > 120.0:
+                    ch["status"] = "STALE"
+
+    def get(self) -> dict:
+        self.stale_check()
+        with self._lock:
+            chans = []
+            live = 0; awaiting = 0
+            best = None; best_n = 0
+            for cid, ch in self._channels.items():
+                if ch["status"] == "LIVE":
+                    live += 1
+                elif ch["status"] == "AWAITING":
+                    awaiting += 1
+                chans.append({
+                    "id": cid, "name": ch["name"], "kind": ch["kind"], "note": ch["note"],
+                    "status": ch["status"], "n": ch["n"], "last_value": ch["last_value"],
+                    "last_ts": ch["last_ts"], "provenance": ch["provenance"],
+                })
+                if ch["n"] > best_n:
+                    best_n = ch["n"]; best = cid
+            best_series = {"id": "", "t": [], "v": []}
+            if best is not None and best_n >= 2:
+                bc = self._channels[best]
+                best_series = {"id": best, "t": list(bc["hist_t"]), "v": list(bc["hist_v"])}
+            return {
+                "intake_ok":           bool(self._ok),
+                "intake_dir":          self._dir,
+                "intake_n_channels":   len(self._channels),
+                "intake_n_live":       live,
+                "intake_n_awaiting":   awaiting,
+                "intake_n_ingested":   self._n_ingested,
+                "intake_n_rejected":   self._n_rejected,
+                "intake_channels":     chans,
+                "intake_best_series":  best_series,
+            }
+
+
 def offline_train(path, mlp, epochs=10, lr=5e-4):
     """List 1.9: fine-tune the internal MLP on recorded data."""
     try:
@@ -77107,6 +78922,20 @@ class MultiAgentWirelessBCIFuser:
         self.kinvis = KineticVisionExpansionEngine()
         log.info("[KINVIS] KineticVisionExpansionEngine ready (sat+ADS-B kinetic sweep, 30-min window, boots ~130s)")
 
+        # v170: REAL EEG/BCI ingestion via LSL inlet — the honest "make wireless BCI real" path.
+        # Auto-detects a real Muse/OpenBCI/BrainFlow EEG stream; no-op + no fabrication otherwise.
+        self.eeg_inlet = EEGStreamInletClient()
+        log.info("[EEG] EEGStreamInletClient ready (real LSL EEG ingest; no device → no-op, no fabrication)")
+
+        # v173: persistent session recorder — saves a scan duration of REAL streams (+ EEG when
+        # present) to disk for replay. Stores measurements only; never a 'mind' (not measured).
+        self.session_recorder = PlanetarySessionRecorder()
+
+        # v174: generic external-data intake — the honest "system in place for when data is
+        # offered". Declined-to-fabricate capabilities (RMN, per-entity vitals) get a real slot
+        # that stays AWAITING until a genuine provider offers data; nothing is fabricated.
+        self.data_intake = PluggableDataIntakeEngine()
+
         # v163: Cross-stream correlation matrix — organizes every live planetary scalar stream
         self.xcorr = CrossStreamCorrelationMatrixEngine()
         log.info("[XCORR] CrossStreamCorrelationMatrixEngine ready (rolling 1-hr Pearson across all live streams)")
@@ -78554,6 +80383,12 @@ class MultiAgentWirelessBCIFuser:
                  ("SpatialXref", "spatialxref"),
                  ("LeadLag", "xcorrlag"),
                  ("CorrNet", "corrnet"),
+                 ("PrinComp", "xcorrpca"),
+                 ("Granger", "granger"),
+                 ("Anomaly", "anomaly"),
+                 ("Partial", "partial"),
+                 ("Sessions", "sessions"),
+                 ("DataIntake", "intake"),
                  ("Info [i]", "info")]
         try:
             _nbtn = len(_tabs)
@@ -81370,6 +83205,36 @@ class MultiAgentWirelessBCIFuser:
                     _anomr = _ganom.correlate(pp)
                     for _ka, _va in _anomr.items():
                         pp[_ka] = _va
+            except Exception:
+                pass
+            # ── v170: REAL EEG/BCI ingest — publish real headset band powers (or nothing) ──
+            try:
+                _eeg = getattr(self, "eeg_inlet", None)
+                if _eeg is not None:
+                    for _keg, _veg in _eeg.get().items():
+                        pp[_keg] = _veg
+            except Exception:
+                pass
+            # ── v174: generic external-data intake — publish channel registry (AWAITING until
+            # real data is offered); surface any LIVE scalar channel into pp so it is recorded ──
+            try:
+                _di = getattr(self, "data_intake", None)
+                if _di is not None:
+                    _div = _di.get()
+                    for _kdi, _vdi in _div.items():
+                        pp[_kdi] = _vdi
+                    for _ch in _div.get("intake_channels", []):
+                        if _ch.get("status") == "LIVE" and isinstance(_ch.get("last_value"), (int, float)):
+                            pp[f"intake_{_ch['id']}"] = _ch["last_value"]
+            except Exception:
+                pass
+            # ── v173: persistent session recorder — append real streams + EEG to disk session ──
+            try:
+                _sr = getattr(self, "session_recorder", None)
+                if _sr is not None:
+                    _sr.inject(pp)              # rate-limited (30 s), real values only
+                    for _ksr, _vsr in _sr.get().items():
+                        pp[_ksr] = _vsr
             except Exception:
                 pass
             # ── v163: cross-stream correlation matrix — snapshot every live scalar
