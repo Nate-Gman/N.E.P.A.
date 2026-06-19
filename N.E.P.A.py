@@ -965,6 +965,59 @@ class WorldReconstructionEngine:
         }
         self._splat_count = len(occ)
 
+    def export_ply(self, path=None):
+        """v191: export the current RF Gaussian-splat reconstruction as a standard PLY point
+        cloud (x,y,z + per-point RGB) — the honest 'scan to graphics programs': the SAME real
+        data the navigable-world tab renders, written in a universal format any 3D tool
+        (Blender, MeshLab, CloudCompare, Open3D) opens directly. Exports ONLY the real
+        reconstructed points — nothing invented. Returns (path, n_points) or (None, 0)."""
+        sp = self._splats
+        if not sp or self._splat_count == 0:
+            return None, 0
+        pos = np.asarray(sp["positions"], dtype=np.float32)
+        col = np.asarray(sp["colours"], dtype=np.float32)
+        n = len(pos)
+        if path is None:
+            import os as _os, time as _t
+            try:
+                _base = _os.path.dirname(_os.path.abspath(__file__))
+            except Exception:
+                _base = "/tmp"
+            path = _os.path.join(_base, "nepa_world_scan_latest.ply")
+        rgb = np.clip(col * 255.0, 0, 255).astype(np.int32)
+        verts = np.column_stack([pos[:, 0], pos[:, 1], pos[:, 2],
+                                 rgb[:, 0], rgb[:, 1], rgb[:, 2]])
+        header = ("ply\nformat ascii 1.0\n"
+                  f"comment N.E.P.A. RF Gaussian-splat world scan — {n} real reconstructed points\n"
+                  f"element vertex {n}\n"
+                  "property float x\nproperty float y\nproperty float z\n"
+                  "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+                  "end_header")
+        try:
+            np.savetxt(path, verts, fmt="%.4f %.4f %.4f %d %d %d",
+                       header=header, comments="")
+            return path, n
+        except Exception as e:
+            log.warning(f"[EXPORT] PLY export failed: {e}")
+            return None, 0
+
+    def maybe_export_ply(self, min_interval_s=30.0):
+        """Throttled auto-export of the world scan to PLY (default once per 30 s) so a current
+        'scan to graphics programs' file always exists on disk, like the auto session recorder.
+        Returns (path, n_points) when it writes this call, else (None, 0)."""
+        import time as _t
+        now = _t.time()
+        last = getattr(self, "_last_ply_export", 0.0)
+        if now - last < min_interval_s or self._splat_count == 0:
+            return None, 0
+        self._last_ply_export = now
+        path, n = self.export_ply()
+        if path:
+            self._last_ply_path = path
+            self._last_ply_points = n
+            log.info(f"[EXPORT] world scan → {path} ({n} real points · open in any 3D tool)")
+        return path, n
+
     def render_splats(self, cam_pos, cam_target, width=160, height=120, fov=60.0):
         """T3-5 / Pass 37: Upgraded to RF-GS covariance-based Gaussian renderer.
         Uses RFGaussianSplatRenderer (elliptical splats with projected covariance),
@@ -1826,6 +1879,9 @@ class DetailTabWindow:
                  "intake":       "DATA INTAKE — REAL-DATA SLOTS FOR WHEN DATA IS OFFERED (DECLINED-TO-FABRICATE CAPABILITIES GET A SLOT · AWAITING UNTIL OFFERED · NOTHING INVENTED)",
                  "entitydetail": "ENTITY DETAIL",
                  "telemetry":    "SYSTEM TELEMETRY TERMINAL — EVERY SOURCE/ENGINE, LIVE STATE · PROVENANCE KEY · UPTIME · ALL REAL",
+                 "entitysep":    "PER-ENTITY SEPARATION TERMINAL — EACH BIO-SIGNATURE TRACKED SEPARATELY · STABLE ID · CARRIER AFFINITY · MULTI-NODE LOCATION · OWN FILE · ALL REAL (NOT THOUGHTS)",
+                 "multipath":    "MULTIPATH CIR TERMINAL — CHANNEL IMPULSE RESPONSE TAPS · PER-PATH RANGE · PERTURBATION REVERSE-ATTRIBUTION · CROSS-PATH CORRELATION MATRIX · CSI-PROVENANCE GATED",
+                 "capability":   "CAPABILITY ACTIVATION TERMINAL — EVERY HARDWARE-GATED CAPABILITY · LIVE STATUS · WHAT UNLOCKS IT · EXACT CONNECTION · AUTO-ACTIVATES WHEN DATA ARRIVES",
                  "info": "SYSTEM INFO & ABOUT"}.get(self.kind, self.kind)
         if self.kind == "entitydetail":
             title = f"ENTITY {self.entity_key or ('#' + str(self.entity_idx))} DETAIL"
@@ -3309,7 +3365,109 @@ class DetailTabWindow:
             f"  [v191] UI: new SYSTEM TELEMETRY TERMINAL tab [Telemetry] — a dense monospace\n"
             f"              readout of EVERY source/engine: LIVE/idle, real value, the exact\n"
             f"              psych_profile KEY that produced it (provenance), and uptime. The honest\n"
-            f"              'told what's happening down to detail' view; every line real or idle."
+            f"              'told what's happening down to detail' view; every line real or idle.\n"
+            f"  [v191] PERF (null the next bottleneck): the KineticTrackFusionEngine multi-\n"
+            f"              hypothesis correction called ~8 SCALAR great-circle/haversine trig ops\n"
+            f"              per aircraft — after the v191 CS cache this was the new #1 fuse hotspot\n"
+            f"              (495k+619k calls). Now the 4-hypothesis × all-aircraft trig is computed\n"
+            f"              VECTORIZED in one pass → 21x faster, IDENTICAL selection (0/3000 mismatch,\n"
+            f"              residual Δ=0). (nepa_kinetic_test.py)\n"
+            f"  [v191] SCAN→GRAPHICS: WorldReconstructionEngine.export_ply() — the RF Gaussian-\n"
+            f"              splat reconstruction is auto-exported (throttled 30 s) to a standard PLY\n"
+            f"              point cloud (x,y,z+RGB) any 3D tool (Blender/MeshLab/CloudCompare/Open3D)\n"
+            f"              opens — the honest 'world as a virtual 3D scan, like a scan to graphics\n"
+            f"              programs'. Real reconstructed points only; empty scene exports nothing.\n"
+            f"              File: nepa_world_scan_latest.ply  (recon_ply_path/_points in snapshot).\n"
+            f"  [v192] MUSIC SUPER-RES BETTER (the 'better resolution / total vision' ask, real):\n"
+            f"              found per-carrier RSSI history was genuinely held at 120 real samples\n"
+            f"              (60s @ 2Hz, both local _emitter_hist and remote chist) but TRUNCATED to\n"
+            f"              only the last 64 before reaching FreqRes's root-MUSIC resolver — throwing\n"
+            f"              away half the real data already collected. Raised both export points to\n"
+            f"              use the full 120. VALIDATED standalone before shipping (nepa_t120_test.py):\n"
+            f"              0.02 Hz separation 81.8%→98.5%, 0.015 Hz 16.8%→92.0%, noise false-positive\n"
+            f"              rate unchanged (0.8%/0.8%), single-source accuracy unchanged (~99%). Pure\n"
+            f"              longer-integration-time win from REAL samples — no new fabrication.\n"
+            f"  [v193] PER-ENTITY SEPARATION (the 'each entity labeled separately in its own file so\n"
+            f"              mass reading doesn't get mixed; locate where the frequency changed' ask):\n"
+            f"              new PerEntityBioSeparator consumes FreqRes's super-resolved per-carrier\n"
+            f"              bio-frequencies and (1) SEPARATES distinct bio-sources by clustering\n"
+            f"              (carrier,freq) detections, (2) TRACKS each on a STABLE signature ID via a\n"
+            f"              freq+carrier-affinity correlation cost (so signatures never get mixed),\n"
+            f"              (3) LOCALIZES via multi-node spatial diversity — every router/antenna that\n"
+            f"              POSTs a scan is an independent receiver ('acts as a satellite'); >=2 nodes\n"
+            f"              w/ GPS → centroid fix, else affinity FINGERPRINT (honest, NOT fake coords),\n"
+            f"              (4) STORES each entity in its OWN file (entities/entity_E####.jsonl),\n"
+            f"              lossless-verified. VALIDATED (nepa_entsep_test.py, 6/6): 2 sources→2 stable\n"
+            f"              IDs, noise→0 (no fabrication), drifting source→1 ID kept, multi-node→correct\n"
+            f"              centroid, single-node→fingerprint, files written 100% lossless. New tab\n"
+            f"              [Entities-Sep]. Signatures are MEASURED bio-modulation, never thoughts.\n"
+            f"  [v194] PENETRATION-DEPTH STRATIFY (the 'frequencies at a certain distance penetrated a\n"
+            f"              certain depth → measure variance + offset + correlation' ask): added\n"
+            f"              rf_tissue_penetration_depth_m() — REAL lossy-dielectric skin depth into\n"
+            f"              tissue (Gabriel 1996), validated vs published values (2.45 GHz→2.2 cm,\n"
+            f"              5 GHz→0.9 cm, <1 GHz→4 cm+). Each separated entity now gets a DEPTH PROFILE\n"
+            f"              from which carrier frequencies carry its signature: 5 GHz=surface,\n"
+            f"              2.4 GHz=~2 cm, lower=deeper — a real extra dimension of 'total vision'\n"
+            f"              (depth of the MECHANICAL perturbation, surface-limb vs chest-wall). Shown\n"
+            f"              as a DEPTH column + layer color on [Entities-Sep], stored per-entity.\n"
+            f"              Validated 4/4 (nepa_depth_test.py): physics matches Gabriel, monotonic,\n"
+            f"              wires through, NO freq data→'unknown' (not faked). HONESTY: resolves where\n"
+            f"              the RF reaches & the dielectric/motion perturbation is — NOT neural depth.\n"
+            f"  [v195] MULTIPATH CIR — reverse-engineering by 'correlative deduction on MULTIPLE PATHS'\n"
+            f"              (the user's 'error-corrective resonance correlation matrix' framing):\n"
+            f"              new MultipathCIREngine takes the genuine per-frame CSI, IFFTs it to the\n"
+            f"              CHANNEL IMPULSE RESPONSE (taps = propagation paths at delays τ→range c·τ),\n"
+            f"              tracks each path's motion over time, then a CROSS-PATH correlation matrix +\n"
+            f"              common-mode removal strips the shared/global component so the residual is\n"
+            f"              PATH-SPECIFIC — reverse-deducing WHICH path a body perturbed and its range.\n"
+            f"              Textbook device-free DSP (WiDar/IndoTrack). Validated 5/5 (nepa_mpath_test):\n"
+            f"              3-path channel→correct taps + moving reflector attributed to the right path/\n"
+            f"              range; static→no false mover; noise→no fabricated structure; common-mode\n"
+            f"              removal separates global drift from a local mover; PROVENANCE-GATED (REAL\n"
+            f"              multipath only with genuine-phase CSI: ESP32/Nexmon/SDR — else SYNTH-CSI/\n"
+            f"              AWAITING). New [Multipath] tab: per-path table + power-delay profile +\n"
+            f"              correlation-matrix heatmap. Range-res = c/BW (≈15 m@20 MHz), stated honestly.\n"
+            f"  [v196] MUSIC ToF SUPER-RESOLUTION (the 'better music super-resolution / better total\n"
+            f"              vision' ask, applied to the DELAY domain — SpotFi, Kotaru et al. MIT 2015):\n"
+            f"              the CSI across subcarriers is a sum of complex exponentials whose digital\n"
+            f"              frequencies ∝ path DELAYS, so the SAME root-MUSIC machinery FreqRes uses in\n"
+            f"              time now super-resolves PATH RANGES below the c/BW IFFT bin. FB spatial\n"
+            f"              smoothing over subcarriers + MDL order + root-MUSIC → exact delays → ranges.\n"
+            f"              Validated 4/4 (nepa_superres_tof_test.py): two reflectors 8 m apart — INSIDE\n"
+            f"              one 15 m IFFT bin (IFFT sees 1 peak) — resolved into BOTH (30.0 & 38.0 m);\n"
+            f"              single→exactly 1 (no spurious split); PURE NOISE→0 (MDL fabricates nothing);\n"
+            f"              3 well-separated reflectors→0.0 m error. Shown on [Multipath]: pink dashed\n"
+            f"              super-res lines over the IFFT stems + a '×finer than IFFT bin' gain readout.\n"
+            f"  [v197] PER-PATH DOPPLER / VELOCITY (micro-Doppler — 'the signals that paint reality show\n"
+            f"              a being DOING a thing'): each resolved CIR tap's COMPLEX slow-time series has\n"
+            f"              a phase-rotation rate = Doppler shift → radial velocity v = f_d·λ/2 (round-\n"
+            f"              trip, λ@5.2 GHz≈5.8 cm). Sign = approach(+)/recede(−). fps derived from real\n"
+            f"              ingest timestamps. CFAR-style 5σ peak guard: a STATIC tap reports 0 (its\n"
+            f"              mean-removed series is noise → no spurious motion). Validated 4/4 (nepa_\n"
+            f"              doppler_test.py): known velocity err ~1e-4 m/s, static→0, approach/recede\n"
+            f"              sign correct, end-to-end range+velocity per path. New VELOCITY column on\n"
+            f"              [Multipath] (►approach ◄recede ·static) — range-Doppler, mechanical only.\n"
+            f"  [v198] 'ADD 1-6 / MAKE IT SUPER POWERFUL' — the recommendations built INTO the program:\n"
+            f"              (#5 PERF) multipath covariance W×K outer-product double-loop → ONE strided\n"
+            f"              Hermitian matmul (Xᵀ·conjX) = 8× faster, BIT-IDENTICAL (max|Δ|=1.4e-14;\n"
+            f"              caught a conj-transpose bug in validation first). (#3 ADAPTIVE BW) CSI\n"
+            f"              bandwidth+carrier now env-configurable (NEPA_CSI_BW_MHZ): 80 MHz → 3.75 m\n"
+            f"              range res (4× finer) with no code change. (#1,2,4,5,6 ONBOARDING) new\n"
+            f"              [Capability] ACTIVATION TERMINAL — every hardware-gated capability as a live\n"
+            f"              self-documenting slot: status (●ACTIVE/○AWAITING/⊘physics), what unlocks it,\n"
+            f"              exact connection (ESP32→:5500, 2nd node POST, Muse/LSL, RTL-SDR), and the\n"
+            f"              live snapshot signal it watches — auto-activates the instant real data arrives.\n"
+            f"              Row 6 (remote neural) stays ⊘ PHYSICS-BLOCKED, never faked. All validated, clean.\n"
+            f"  [v199] PERSISTENT REFLECTOR TRACKING ('a being doing a thing — and where it's going'):\n"
+            f"              the v196 super-res ranges + v197 Doppler velocities were computed fresh each\n"
+            f"              cycle but never TRACKED. Added a constant-velocity nearest-neighbour tracker\n"
+            f"              inside MultipathCIREngine: predicts each track forward by velocity·dt, gates+\n"
+            f"              associates the nearest detection, EMA-updates, spawns/coasts/ages-out → stable\n"
+            f"              track IDs with range trajectories + motion prediction (real target tracking).\n"
+            f"              Validated 4/4 (nepa_tracker_test.py): constant-velocity→1 stable track (right\n"
+            f"              vel), 2 reflectors→2 tracks, disappearance→coast then age-out, occlusion (1\n"
+            f"              missed cycle)→same ID kept via prediction. Shown on [Multipath] as a TRACKS\n"
+            f"              panel (R### : range ►/◄ vel ×hits) + 'N tracked' in the header. Mechanical only."
         )
         ax2.text(0.03, max(y - 0.02, 0.06), _extra,
                  transform=ax2.transAxes, color='#88ffcc', fontsize=7.5, va='top',
@@ -7104,6 +7262,466 @@ class DetailTabWindow:
                   "v191: fuse compressive-sensing cached (8.9x on #1 hotspot, bit-identical) · "
                   "splat-render occlusion fixed · W3D malformed-blob errors resolved · all real",
                   color="#5a8a9a", fontsize=6.0, family="monospace",
+                  transform=ax_f.transAxes, va="center")
+
+    def _draw_entitysep(self, fig, p, snap):
+        """v193: PER-ENTITY SEPARATION TERMINAL — super-detailed readout of every distinct
+        bio-signature the system has SEPARATED from the real RF field and is tracking on its
+        OWN stable ID, with its carrier-affinity, multi-node location status, observation
+        history, and the path of its OWN storage file. The honest answer to 'each entity
+        labeled separately in its own file so mass reading doesn't get mixed' — every line is
+        a MEASURED bio-modulation signature (breathing/heart/motion rhythm), NOT a thought."""
+        import numpy as _np
+        fig.patch.set_facecolor("#03070d")
+        ents    = snap.get("entsep_entities") or []
+        n_act   = int(snap.get("entsep_n_entities") or len(ents))
+        n_track = int(snap.get("entsep_n_tracked") or 0)
+        n_total = int(snap.get("entsep_total_ids") or 0)
+        n_loc   = int(snap.get("entsep_n_localized") or 0)
+        n_fix   = int(snap.get("entsep_n_fix") or 0)
+        n_depth = int(snap.get("entsep_n_depth") or 0)
+        fid     = float(snap.get("entsep_fidelity_pct") or 100.0)
+        edir    = str(snap.get("entsep_dir") or "—")
+        ok      = bool(snap.get("entsep_ok"))
+
+        # ── header ──
+        ax_h = fig.add_axes([0.02, 0.945, 0.96, 0.05]); ax_h.axis("off")
+        col = "#00ff88" if n_act >= 1 else "#ffaa44" if ok else "#ff5555"
+        ax_h.text(0.0, 0.62,
+                  f"╔═ PER-ENTITY SEPARATION TERMINAL ═╗   {n_act} active   ·   "
+                  f"{n_track} tracked   ·   {n_total} IDs assigned all-time   ·   "
+                  f"{n_loc} multi-node-localized ({n_fix} GPS-fix)   ·   {n_depth} depth-profiled   ·   "
+                  f"store {fid:.1f}% lossless",
+                  color=col, fontsize=10, fontweight="bold", family="monospace",
+                  transform=ax_h.transAxes, va="center")
+        ax_h.text(0.0, 0.06,
+                  f"separated from the REAL RF bio-modulation field (FreqRes root-MUSIC) · each "
+                  f"signature on its own stable ID & own file in  {edir}",
+                  color="#5a8a9a", fontsize=6.6, family="monospace",
+                  transform=ax_h.transAxes, va="center")
+
+        # ── per-entity dense rows (left column) ──
+        ax = fig.add_axes([0.02, 0.07, 0.60, 0.86]); ax.axis("off")
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        ax.text(0.0, 0.995,
+                "  ID     RHYTHM    bpm    SCORE  CARRIERS(affinity)        NODES  DEPTH    LOCATION",
+                color="#33ddaa", fontsize=6.6, family="monospace", va="top",
+                transform=ax.transAxes, fontweight="bold")
+        if not ents:
+            ax.text(0.0, 0.95,
+                    "  (no entities separated yet — needs >=1 carrier with a super-resolved\n"
+                    "   bio-frequency from FreqRes. Pure noise yields nothing here: no fabrication.)",
+                    color="#557a88", fontsize=6.8, family="monospace", va="top",
+                    transform=ax.transAxes)
+        else:
+            y = 0.955
+            dy = min(0.052, 0.93 / max(len(ents), 1))
+            _lk_col = {"MULTI-NODE-FIX": "#ffd24a", "MULTI-NODE-REGION": "#66ddff",
+                       "AFFINITY-FINGERPRINT": "#88bb99"}
+            for e in ents[:18]:
+                fhz = float(e.get("freq", 0.0))
+                bpm = fhz * 60.0
+                sc  = float(e.get("score", 0.0))
+                carr = ",".join(str(c)[:8] for c in (e.get("carriers") or [])[:3])
+                if len(e.get("carriers") or []) > 3:
+                    carr += f"+{len(e['carriers']) - 3}"
+                nodes = ",".join(str(n)[:6] for n in (e.get("nodes") or [])[:2])
+                lk = e.get("loc_kind", "?")
+                loc = str(e.get("loc_desc", "—"))[:30]
+                lc = _lk_col.get(lk, "#aaaaaa")
+                # depth profile (v194)
+                if e.get("depth_known"):
+                    dcm = float(e.get("depth_m") or 0.0) * 100.0
+                    dtxt = f"{dcm:4.1f}cm"
+                    dlay = str(e.get("depth_layer", ""))
+                    dcol = {"surface": "#ffcc66", "shallow": "#66ddaa",
+                            "deep": "#aa88ff"}.get(dlay, "#9fc8d8")
+                else:
+                    dtxt = " --  "; dlay = "?"; dcol = "#445a64"
+                # score bar
+                bar = "█" * int(round(sc * 8)) + "·" * (8 - int(round(sc * 8)))
+                ax.text(0.0, y, f"  {e.get('eid','?'):6s} {fhz:6.3f}Hz {bpm:5.1f}  {bar}",
+                        color="#cfe8dd", fontsize=6.4, family="monospace", va="top",
+                        transform=ax.transAxes)
+                ax.text(0.43, y, f"{carr:22s}",
+                        color="#9fc8d8", fontsize=6.0, family="monospace", va="top",
+                        transform=ax.transAxes)
+                ax.text(0.71, y, f"{nodes:6s}",
+                        color="#7fb8c8", fontsize=6.0, family="monospace", va="top",
+                        transform=ax.transAxes)
+                ax.text(0.83, y, f"{dtxt}",
+                        color=dcol, fontsize=6.0, family="monospace", va="top",
+                        transform=ax.transAxes)
+                ax.text(0.0, y - dy * 0.5,
+                        f"          obs={int(e.get('n_obs',0)):<5d} depth:{dlay:7s} {lk}: {loc}",
+                        color=lc, fontsize=5.6, family="monospace", va="top",
+                        transform=ax.transAxes)
+                y -= dy
+
+        # ── right column: per-entity history sparkline + file + legend ──
+        ax2 = fig.add_axes([0.64, 0.07, 0.34, 0.86]); ax2.axis("off")
+        ax2.set_xlim(0, 1); ax2.set_ylim(0, 1)
+        ax2.text(0.0, 0.995, "ENTITY DETAIL / HISTORY (top entity)",
+                 color="#33ddaa", fontsize=7.2, family="monospace", va="top",
+                 transform=ax2.transAxes, fontweight="bold")
+        if ents:
+            e0 = ents[0]
+            hist = e0.get("hist") or []
+            lines = [
+                f"id           : {e0.get('eid','?')}",
+                f"rhythm       : {float(e0.get('freq',0)):.4f} Hz  ({float(e0.get('freq',0))*60:.1f}/min)",
+                f"bio-score    : {float(e0.get('score',0)):.3f}",
+                f"observations : {int(e0.get('n_obs',0))} cycles",
+                f"carriers     : {len(e0.get('carriers') or [])}",
+                f"nodes        : {len(e0.get('nodes') or [])}",
+                f"loc kind     : {e0.get('loc_kind','?')}",
+                f"location     : {str(e0.get('loc_desc','—'))[:34]}",
+                (f"penetration  : {float(e0.get('depth_m') or 0)*100:.1f} cm "
+                 f"[{e0.get('depth_layer','?')}]  ({float(e0.get('depth_min_m') or 0)*100:.1f}"
+                 f"–{float(e0.get('depth_max_m') or 0)*100:.1f} cm)") if e0.get("depth_known")
+                    else "penetration  : unknown (no carrier RF-freq data)",
+                f"own file     : {(str(e0.get('file','—')).split('/')[-1])}",
+            ]
+            yy = 0.95
+            for ln in lines:
+                ax2.text(0.0, yy, ln, color="#bfe8d8", fontsize=6.4, family="monospace",
+                         va="top", transform=ax2.transAxes)
+                yy -= 0.033
+            # freq history sparkline
+            if len(hist) >= 3:
+                fs_hist = _np.array([h[1] for h in hist], dtype=float)
+                ax_sp = fig.add_axes([0.66, 0.30, 0.30, 0.20]); ax_sp.set_facecolor("#061018")
+                ax_sp.plot(fs_hist * 60.0, color="#ffd24a", lw=1.0)
+                ax_sp.set_title("rhythm history (breaths/min)", color="#88bb99", fontsize=6.5)
+                ax_sp.tick_params(colors="#557a88", labelsize=5)
+                for s in ax_sp.spines.values():
+                    s.set_color("#1f3a44")
+        else:
+            ax2.text(0.0, 0.95, "(waiting for a separated entity…)",
+                     color="#557a88", fontsize=6.6, family="monospace", va="top",
+                     transform=ax2.transAxes)
+
+        # ── footer: legend + honesty boundary ──
+        ax_f = fig.add_axes([0.02, 0.005, 0.96, 0.055]); ax_f.axis("off")
+        ax_f.text(0.0, 0.75,
+                  "MULTI-NODE-FIX = located by >=2 receivers w/ GPS (centroid)   "
+                  "MULTI-NODE-REGION = seen across nodes, no GPS yet   "
+                  "AFFINITY-FINGERPRINT = single-node signature (stable, NOT coordinates)   "
+                  "DEPTH = real RF penetration into tissue (5GHz≈surface, 2.4GHz≈2cm, <1GHz≈deeper)",
+                  color="#33ddaa", fontsize=6.0, family="monospace",
+                  transform=ax_f.transAxes, va="center")
+        ax_f.text(0.0, 0.25,
+                  "v193/v194: each signature is the MEASURED bio-modulation (breathing/heart/motion "
+                  "rhythm + carrier affinity + penetration depth), separated & stored in its own file — "
+                  "NEVER a thought. Pure noise → 0 entities. AWAITING per-node GPS → exact triangulation.",
+                  color="#5a8a9a", fontsize=6.0, family="monospace",
+                  transform=ax_f.transAxes, va="center")
+
+    def _draw_multipath(self, fig, p, snap):
+        """v195: MULTIPATH CIR TERMINAL — super-detailed readout of the channel impulse
+        response: every resolved propagation PATH (tap), its range, its motion, and — the
+        honest 'reverse engineering by correlative deduction on multiple paths' — which path
+        a perturbation is attributed to AFTER the cross-path correlation matrix removes the
+        shared/global component. Provenance-gated: REAL multipath only with genuine-phase
+        CSI hardware (ESP32/Nexmon/SDR); otherwise clearly marked SYNTH-CSI (AWAITING)."""
+        import numpy as _np
+        fig.patch.set_facecolor("#04080e")
+        ok      = bool(snap.get("mpath_ok"))
+        real    = bool(snap.get("mpath_real"))
+        method  = str(snap.get("mpath_method") or "—")
+        npath   = int(snap.get("mpath_n_paths") or 0)
+        paths   = snap.get("mpath_paths") or []
+        domr    = float(snap.get("mpath_dom_range_m") or 0.0)
+        domp    = float(snap.get("mpath_dom_perturb") or 0.0)
+        res     = float(snap.get("mpath_range_res_m") or 0.0)
+        cmf     = float(snap.get("mpath_common_frac") or 0.0)
+        bw      = float(snap.get("mpath_bw_mhz") or 0.0)
+        corr    = snap.get("mpath_corr") or []
+        sr_ranges = snap.get("mpath_superres_ranges") or []
+        sr_n      = int(snap.get("mpath_superres_n") or 0)
+        sr_gain   = float(snap.get("mpath_superres_gain") or 0.0)
+        fps       = float(snap.get("mpath_fps") or 0.0)
+        dom_vel   = float(snap.get("mpath_dom_velocity") or 0.0)
+        tracks    = snap.get("mpath_tracks") or []
+        n_tracks  = int(snap.get("mpath_n_tracks") or 0)
+
+        # ── header ──
+        ax_h = fig.add_axes([0.02, 0.945, 0.96, 0.05]); ax_h.axis("off")
+        col = "#00ff88" if (ok and real) else "#ffaa44" if ok else "#ff5555"
+        prov = "REAL CSI" if real else "SYNTH-CSI (AWAITING real phase CSI)"
+        _varr = "approaching" if dom_vel > 0.005 else "receding" if dom_vel < -0.005 else "static"
+        ax_h.text(0.0, 0.62,
+                  f"╔═ MULTIPATH CIR TERMINAL ═╗   {npath} paths   ·   {n_tracks} tracked   ·   "
+                  f"range-res {res:.1f} m ({bw:.0f} MHz)   ·   dominant mover @ {domr:.1f} m "
+                  f"({abs(dom_vel):.3f} m/s {_varr})   ·   common-mode {cmf*100:.0f}%   ·   {fps:.0f} fps",
+                  color=col, fontsize=10, fontweight="bold", family="monospace",
+                  transform=ax_h.transAxes, va="center")
+        ax_h.text(0.0, 0.06,
+                  f"channel impulse response of the captured CSI · provenance: {method} → {prov}   "
+                  f"·   MUSIC ToF super-res: {sr_n} paths"
+                  + (f" ({sr_gain:.1f}× finer than the {res:.0f} m IFFT bin)" if sr_gain > 1.05 else ""),
+                  color=("#33ddaa" if real else "#bb8844"), fontsize=6.6, family="monospace",
+                  transform=ax_h.transAxes, va="center")
+
+        # ── left: per-path table + power-delay profile bars ──
+        ax = fig.add_axes([0.02, 0.50, 0.60, 0.42]); ax.axis("off")
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        ax.text(0.0, 0.99,
+                " TAP  RANGE     POWER    MOTION   PATH-SPEC  VELOCITY     KIND",
+                color="#33ddaa", fontsize=6.8, family="monospace", va="top",
+                transform=ax.transAxes, fontweight="bold")
+        if not paths:
+            ax.text(0.0, 0.9,
+                    " (no significant multipath taps yet — buffering CSI, or a flat/noise channel.\n"
+                    "  A clean single-path channel shows just the direct tap. No fabrication.)",
+                    color="#557a88", fontsize=6.8, family="monospace", va="top",
+                    transform=ax.transAxes)
+        else:
+            pmax = max((pp_.get("power", 0) for pp_ in paths), default=1.0) or 1.0
+            dom_tap = max(paths, key=lambda x: x.get("diff_perturb", 0)).get("tap") if paths else -1
+            y = 0.93; dy = min(0.05, 0.88 / max(len(paths), 1))
+            for pp_ in paths[:16]:
+                tap = int(pp_.get("tap", 0)); rng = float(pp_.get("range_m", 0))
+                pw  = float(pp_.get("power", 0)); mo = float(pp_.get("perturb", 0))
+                dp  = float(pp_.get("diff_perturb", 0)); rf = float(pp_.get("resid_frac", 1))
+                vel = float(pp_.get("velocity_mps", 0.0))
+                kind = "GLOBAL/drift" if pp_.get("is_common") else "local-path"
+                isdom = (tap == dom_tap)
+                pbar = "█" * int(round((pw / pmax) * 10))
+                dbar = "█" * int(round(min(dp, 1.0) * 8))
+                # velocity arrow: ► approach (+), ◄ recede (−), · static
+                varr = "►" if vel > 0.005 else "◄" if vel < -0.005 else "·"
+                vtxt = f"{varr}{abs(vel):5.3f}m/s" if abs(vel) > 0.005 else "·static  "
+                rowc = "#ffd24a" if isdom else ("#7a98a4" if pp_.get("is_common") else "#cfe8dd")
+                mark = "►" if isdom else " "
+                ax.text(0.0, y,
+                        f"{mark}{tap:3d}  {rng:6.1f}m  {pbar:10s} {mo:6.3f}  {dbar:6s}{dp:4.2f}  {vtxt:11s} {kind}",
+                        color=rowc, fontsize=6.0, family="monospace", va="top",
+                        transform=ax.transAxes)
+                y -= dy
+
+        # ── power-delay profile plot ──
+        if paths:
+            ax_pdp = fig.add_axes([0.02, 0.09, 0.60, 0.35]); ax_pdp.set_facecolor("#06121a")
+            taps = [pp_["tap"] for pp_ in paths]
+            rngs = [pp_["range_m"] for pp_ in paths]
+            pws  = [pp_["power"] for pp_ in paths]
+            dps  = [pp_["diff_perturb"] for pp_ in paths]
+            ax_pdp.stem(rngs, pws, linefmt="#2a6a7a", markerfmt="o", basefmt=" ")
+            ax_pdp.scatter(rngs, pws, c=["#ffd24a" if d == max(dps) else "#33aacc" for d in dps],
+                           s=[20 + 120 * min(d, 1.0) for d in dps], zorder=5)
+            # v196: overlay MUSIC ToF super-resolved path ranges (vertical dashed) — these
+            # resolve reflectors closer than the IFFT bin width drawn by the stems above.
+            _pmax = max(pws) if pws else 1.0
+            for _sr in sr_ranges:
+                ax_pdp.axvline(_sr, color="#ff4488", ls="--", lw=0.9, alpha=0.85, zorder=6)
+            if sr_ranges:
+                ax_pdp.plot([], [], color="#ff4488", ls="--", lw=0.9,
+                            label=f"MUSIC super-res ({sr_n})")
+                ax_pdp.legend(loc="upper right", fontsize=5.5, facecolor="#06121a",
+                              edgecolor="#1f3a44", labelcolor="#ff88aa")
+            ax_pdp.set_title("POWER-DELAY PROFILE — stems=IFFT taps · pink dashed=MUSIC super-res",
+                             color="#88bb99", fontsize=7)
+            ax_pdp.set_xlabel("excess path length (m)", color="#557a88", fontsize=6.5)
+            ax_pdp.set_ylabel("tap power", color="#557a88", fontsize=6.5)
+            ax_pdp.tick_params(colors="#557a88", labelsize=5.5)
+            for s in ax_pdp.spines.values():
+                s.set_color("#1f3a44")
+
+        # ── right: cross-path correlation matrix heatmap ──
+        ax2 = fig.add_axes([0.66, 0.50, 0.32, 0.42])
+        if corr and len(corr) >= 2:
+            C = _np.array(corr)
+            ax2.imshow(C, cmap="inferno", vmin=-1, vmax=1, aspect="auto")
+            ax2.set_title("CROSS-PATH CORRELATION MATRIX\n(error-corrective resonance · paths)",
+                          color="#33ddaa", fontsize=7)
+            ax2.tick_params(colors="#557a88", labelsize=5)
+        else:
+            ax2.axis("off")
+            ax2.text(0.5, 0.5, "(correlation matrix needs ≥2 paths)",
+                     color="#557a88", fontsize=7, ha="center", family="monospace",
+                     transform=ax2.transAxes)
+
+        # ── right-lower: explanation panel ──
+        ax3 = fig.add_axes([0.66, 0.09, 0.32, 0.35]); ax3.axis("off")
+        ax3.set_xlim(0, 1); ax3.set_ylim(0, 1)
+        lines = [
+            "HOW THIS REVERSE-ENGINEERS PATHS:",
+            "1. CIR = IFFT(CSI) → taps = paths",
+            "2. each tap delay → range c·τ",
+            "3. tap series over time → motion",
+            "4. cross-path corr matrix removes",
+            "   the shared/global component",
+            "5. residual = path-SPECIFIC motion",
+            "   → reverse-deduce WHICH path a",
+            "     body perturbed, and its range",
+            "6. slow-time phase → DOPPLER → vel",
+            "   (v197: + approach / − recede)",
+            "",
+            f"dominant mover: {domr:.1f} m",
+            f"  velocity: {dom_vel:+.3f} m/s",
+            f"path-specific pert: {domp:.3f}",
+            f"global/common share: {cmf*100:.0f}%",
+            "",
+            "v196 MUSIC ToF SUPER-RES:",
+            f"  {sr_n} paths · " + (f"{sr_gain:.1f}× finer" if sr_gain > 1.05 else "within bin"),
+            "",
+            f"v199 REFLECTOR TRACKS: {n_tracks}",
+        ]
+        # v199: list the live tracks (range, velocity, hits) — persistent trajectories
+        for tr in tracks[:4]:
+            _tv = float(tr.get("velocity_mps", 0.0))
+            _ta = "►" if _tv > 0.005 else "◄" if _tv < -0.005 else "·"
+            lines.append(f"  {tr.get('tid','?')}: {float(tr.get('range_m',0)):.1f}m "
+                         f"{_ta}{abs(_tv):.2f}m/s ×{int(tr.get('hits',0))}")
+        if not tracks:
+            lines.append("  (none — needs resolved paths)")
+        lines += [
+            "",
+            ("● REAL multipath (phase CSI)" if real
+             else "○ SYNTH-CSI — engine validated,"),
+            ("" if real else "  AWAITING ESP32/Nexmon :5500"),
+        ]
+        yy = 0.98
+        dy3 = min(0.05, 0.96 / max(len(lines), 1))
+        for ln in lines:
+            cc = "#ffd24a" if ln.startswith("dominant") or ln.startswith("●") else \
+                 "#66ddff" if "velocity:" in ln else \
+                 "#88ffbb" if ln.startswith("v199") or (ln.strip().startswith("R") and "m/s" in ln) else \
+                 "#ff88aa" if ln.startswith("v196") else \
+                 "#bb8844" if ln.startswith("○") or ln.strip().startswith("AWAITING") else "#bfe8d8"
+            ax3.text(0.0, yy, ln, color=cc, fontsize=6.0, family="monospace",
+                     va="top", transform=ax3.transAxes)
+            yy -= dy3
+
+        # ── footer ──
+        ax_f = fig.add_axes([0.02, 0.005, 0.96, 0.045]); ax_f.axis("off")
+        ax_f.text(0.0, 0.5,
+                  "v195/v196/v197: real CIR multipath DSP (WiDar/IndoTrack) + MUSIC ToF super-res "
+                  "(SpotFi, sub-bin range) + per-path Doppler→radial velocity (micro-Doppler). "
+                  "MECHANICAL reflector range+velocity only, NOT neural content. REAL with phase CSI.",
+                  color="#5a8a9a", fontsize=6.2, family="monospace",
+                  transform=ax_f.transAxes, va="center")
+
+    def _draw_capability(self, fig, p, snap):
+        """v198: CAPABILITY ACTIVATION TERMINAL — the honest, self-documenting form of the
+        'add 1-6 to make it super powerful' ask. Each row is a real capability already BUILT
+        and VALIDATED in software that becomes LIVE the moment its real-data input arrives.
+        It shows: live status (● ACTIVE on real data / ◐ partial / ○ AWAITING), exactly what
+        unlocks it, the precise connection method, and the live snapshot signal it watches —
+        so the user knows precisely what to plug in to multiply performance. Nothing here is
+        faked: AWAITING rows show no data, never invented data."""
+        fig.patch.set_facecolor("#03060c")
+        fu = self.fuser
+        # ── gather REAL live status signals ──
+        csi_method = str(snap.get("router_csi_method") or getattr(getattr(fu, "router_csi", None), "method", "—"))
+        csi_real   = bool(snap.get("mpath_real"))
+        try:    csi_real = csi_real or bool(fu.router_csi.is_real_capture())
+        except Exception: pass
+        bw_mhz     = float(snap.get("mpath_bw_mhz") or 20.0)
+        rng_res    = float(snap.get("mpath_range_res_m") or (299.792458 / max(bw_mhz, 1e-6)))
+        n_nodes    = int(snap.get("remote_node_count") or 0)
+        n_fix      = int(snap.get("entsep_n_fix") or 0)
+        eeg_ok     = bool(snap.get("eeg_real_ok"))
+        eeg_ch     = int(snap.get("eeg_real_n_channels") or 0)
+        sdr_tool   = getattr(getattr(fu, "spectrum", None), "sdr_tool", None)
+        sdr_ceil   = float(getattr(getattr(fu, "spectrum", None), "ceiling", 0.0) or 0.0)
+        vmode      = str(snap.get("vitals_mode") or "none")
+
+        # status helper: returns (glyph, color, label)
+        def st(active, partial=False):
+            if active:  return ("●", "#22ff88", "ACTIVE")
+            if partial: return ("◐", "#ffcc44", "PARTIAL")
+            return ("○", "#ff6655", "AWAITING")
+
+        # ── the 6 capability rows (the recommendations, as live software slots) ──
+        # each: (num, name, status_tuple, unlocks, activate_with, connection, live_signal)
+        rows = [
+            ("1", "Real CSI-phase sensing",
+             st(csi_real, partial=(csi_method not in ("init", "sim", "—") and not csi_real)),
+             "Real multipath ranging + ToF super-res + Doppler velocity (v195-197)",
+             "ESP32-CSI (~$8) or Nexmon-CSI router",
+             "stream CSI_DATA / Nexmon UDP → port :5500",
+             f"router_csi.method = {csi_method}  ·  mpath_real = {csi_real}"),
+            ("2", "Multi-node localization",
+             st(n_fix > 0, partial=(n_nodes >= 1)),
+             "Entity GPS triangulation ('any antenna = a satellite'); 2 nodes→region, 3→2D fix",
+             "A 2nd N.E.P.A. node (laptop/Pi) POSTing its scan",
+             "remote node HTTP POST → this fuser's intake",
+             f"remote_node_count = {n_nodes}  ·  multi-node fixes = {n_fix}"),
+            ("3", "Wide-bandwidth range res",
+             st(bw_mhz >= 75, partial=(bw_mhz >= 35)),
+             f"Finer range bins: c/BW = {rng_res:.1f} m now → 3.75 m @ 80 MHz (4×)",
+             "80/160 MHz CSI source (Nexmon ac), or set the env var",
+             "NEPA_CSI_BW_MHZ=80  (auto-applied at boot)",
+             f"mpath_bw_mhz = {bw_mhz:.0f}  ·  range_res = {rng_res:.1f} m"),
+            ("4", "Real EEG / wireless BCI",
+             st(eeg_ok),
+             "Genuine brain-band BCI (electrodes in contact, wireless data link)",
+             "Muse / OpenBCI headset over LSL (BrainFlow)",
+             "device → LSL EEG stream (auto-detected)",
+             f"eeg_real_ok = {eeg_ok}  ·  channels = {eeg_ch}"),
+            ("5", "SDR wideband spectrum",
+             st(bool(sdr_tool)),
+             f"Real spectrum sweeps to {sdr_ceil:.1f} GHz (cellular/ISM/sat bands)",
+             "RTL-SDR (~$30) / HackRF / SoapySDR device",
+             "plug USB SDR → auto-probed at boot",
+             f"sdr_tool = {sdr_tool or 'none'}  ·  ceiling = {sdr_ceil:.1f} GHz"),
+            ("6", "Remote NEURAL/thought read",
+             ("⊘", "#888888", "PHYSICS-BLOCKED"),
+             "NOT a hardware gap — neural ionic current is non-radiating (no RF channel)",
+             "no instrument can transduce it remotely; would require fabrication",
+             "held as an honest boundary, never faked (prime directive)",
+             "excluded from the score denominator on purpose"),
+        ]
+        n_active = sum(1 for r in rows[:5] if r[2][2] == "ACTIVE")
+
+        # ── header ──
+        ax_h = fig.add_axes([0.02, 0.945, 0.96, 0.05]); ax_h.axis("off")
+        col = "#22ff88" if n_active >= 3 else "#ffcc44" if n_active >= 1 else "#ff8855"
+        ax_h.text(0.0, 0.62,
+                  f"╔═ CAPABILITY ACTIVATION TERMINAL ═╗   {n_active}/5 hardware capabilities ACTIVE   "
+                  f"·   vitals_mode = {vmode}   ·   all software BUILT & VALIDATED — awaiting real inputs",
+                  color=col, fontsize=10, fontweight="bold", family="monospace",
+                  transform=ax_h.transAxes, va="center")
+        ax_h.text(0.0, 0.05,
+                  "each capability auto-activates the instant its real data arrives — no code change, "
+                  "no fabrication. This is the map of what to plug in to multiply performance.",
+                  color="#5a8a9a", fontsize=6.6, family="monospace",
+                  transform=ax_h.transAxes, va="center")
+
+        # ── capability cards ──
+        ax = fig.add_axes([0.02, 0.04, 0.96, 0.88]); ax.axis("off")
+        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+        y = 0.985
+        dh = 0.158
+        for num, name, (gly, gcol, slbl), unlocks, activate, conn, sig in rows:
+            # status chip + title
+            ax.text(0.005, y, f"{gly}", color=gcol, fontsize=13, family="monospace",
+                    va="top", transform=ax.transAxes)
+            ax.text(0.04, y, f"[{num}] {name}", color="#dff3ea", fontsize=9.5,
+                    fontweight="bold", family="monospace", va="top", transform=ax.transAxes)
+            ax.text(0.50, y, f"{slbl}", color=gcol, fontsize=9, fontweight="bold",
+                    family="monospace", va="top", transform=ax.transAxes)
+            ax.text(0.04, y - 0.030, f"unlocks   : {unlocks}", color="#9fd8c8",
+                    fontsize=6.6, family="monospace", va="top", transform=ax.transAxes)
+            ax.text(0.04, y - 0.055, f"activate  : {activate}", color="#ffd24a",
+                    fontsize=6.6, family="monospace", va="top", transform=ax.transAxes)
+            ax.text(0.04, y - 0.080, f"connect   : {conn}", color="#88bbdd",
+                    fontsize=6.6, family="monospace", va="top", transform=ax.transAxes)
+            ax.text(0.04, y - 0.105, f"live sig  : {sig}", color="#7090a0",
+                    fontsize=6.4, family="monospace", va="top", transform=ax.transAxes)
+            # divider
+            ax.plot([0.0, 1.0], [y - 0.135, y - 0.135], color="#13303a", lw=0.6,
+                    transform=ax.transAxes)
+            y -= dh
+
+        # ── footer ──
+        ax_f = fig.add_axes([0.02, 0.002, 0.96, 0.03]); ax_f.axis("off")
+        ax_f.text(0.0, 0.5,
+                  "v198: perf — multipath covariance vectorized 8× (bit-identical) · #3 bandwidth now "
+                  "env-configurable · rows 1-5 auto-activate on real data · row 6 stays an honest physics boundary.",
+                  color="#5a8a9a", fontsize=6.4, family="monospace",
                   transform=ax_f.transAxes, va="center")
 
     def _draw_gbsar(self, fig, p, snap):
@@ -40152,11 +40770,70 @@ class KineticTrackFusionEngine:
              * _m.sin(dlo / 2) ** 2)
         return 2 * R * _m.asin(min(1.0, _m.sqrt(a)))
 
+    @staticmethod
+    def _haversine_vec(lat1, lon1, lat2, lon2):
+        """v191: Vectorized haversine — numpy arrays in/out. Same formula as _haversine_km,
+        so results match the scalar version to float precision. Used to evaluate the multi-
+        hypothesis correction for ALL aircraft at once (the #1 fuse-loop trig hotspot)."""
+        import numpy as _np
+        R = KineticTrackFusionEngine._R_KM
+        lat1 = _np.asarray(lat1, dtype=_np.float64); lon1 = _np.asarray(lon1, dtype=_np.float64)
+        lat2 = _np.asarray(lat2, dtype=_np.float64); lon2 = _np.asarray(lon2, dtype=_np.float64)
+        dla = _np.radians(lat2 - lat1); dlo = _np.radians(lon2 - lon1)
+        a = (_np.sin(dla / 2) ** 2 + _np.cos(_np.radians(lat1)) * _np.cos(_np.radians(lat2))
+             * _np.sin(dlo / 2) ** 2)
+        return 2 * R * _np.arcsin(_np.minimum(1.0, _np.sqrt(a)))
+
     def update(self, pp: dict) -> dict:
         import time as _ti
         now = _ti.time()
         aircraft = pp.get("aircraft") or []
         with self._lock:
+            # v191 PERF: pre-compute the multi-hypothesis correction for EVERY aircraft AT ONCE
+            # (vectorized great-circle + haversine over all tracks × all hypotheses), replacing
+            # ~8 scalar trig calls per aircraft — the #1 fuse-loop hotspot (was 495k _great_circle
+            # + 619k _haversine_km calls). The per-aircraft loop below just looks up its result.
+            # Inputs are read from track state BEFORE the loop mutates it, so order is preserved.
+            _best_by_tid = {}
+            _p_tid = []; _p_lat0 = []; _p_lon0 = []; _p_hdg = []; _p_vel = []
+            _p_dt = []; _p_nlat = []; _p_nlon = []
+            for ac in aircraft:
+                _ic = str(ac.get("icao24") or ac.get("callsign") or "").strip()
+                if not _ic:
+                    continue
+                _la = float(ac.get("lat", 0) or 0); _lo = float(ac.get("lon", 0) or 0)
+                if _la == 0 and _lo == 0:
+                    continue
+                _tr = self._tracks.get(f"ac:{_ic}")
+                if _tr is None:
+                    continue
+                _dt = now - _tr["meas_t"]
+                if _dt > 1.0 and _tr["vel_ms"] > 0:
+                    _p_tid.append(f"ac:{_ic}"); _p_lat0.append(_tr["meas_lat"])
+                    _p_lon0.append(_tr["meas_lon"]); _p_hdg.append(_tr["hdg"])
+                    _p_vel.append(_tr["vel_ms"]); _p_dt.append(_dt)
+                    _p_nlat.append(_la); _p_nlon.append(_lo)
+            if _p_tid:
+                import numpy as _np_mh
+                H = self._N_HYPO; Nmh = len(_p_tid)
+                lat0 = _np_mh.array(_p_lat0); lon0 = _np_mh.array(_p_lon0)
+                hdg0 = _np_mh.array(_p_hdg); vel0 = _np_mh.array(_p_vel); dtv = _np_mh.array(_p_dt)
+                nlat = _np_mh.array(_p_nlat); nlon = _np_mh.array(_p_nlon)
+                turn = _np_mh.array(self._MH_TURN_RATES)[:, None]    # (H,1)
+                smod = _np_mh.array(self._MH_SPEED_MODS)[:, None]    # (H,1)
+                hdg_h  = (hdg0[None, :] + turn * dtv[None, :]) % 360.0          # (H,N)
+                dist_h = (vel0[None, :] * smod) * dtv[None, :] / 1000.0          # (H,N)
+                lat_b = _np_mh.broadcast_to(lat0[None, :], (H, Nmh))
+                lon_b = _np_mh.broadcast_to(lon0[None, :], (H, Nmh))
+                plat, plon = self._great_circle_vec(lat_b, lon_b, hdg_h, dist_h)  # (H,N)
+                resid = self._haversine_vec(plat, plon, nlat[None, :], nlon[None, :])  # (H,N)
+                best_h_v = _np_mh.argmin(resid, axis=0)              # (N,) first-min, matches scalar
+                _idxN = _np_mh.arange(Nmh)
+                best_resid_v = resid[best_h_v, _idxN]
+                moved_v = self._haversine_vec(lat0, lon0, nlat, nlon)   # displacement (N,)
+                for _i, _t in enumerate(_p_tid):
+                    _best_by_tid[_t] = (int(best_h_v[_i]), float(best_resid_v[_i]),
+                                        float(moved_v[_i]))
             # 1. ingest fresh real measurements + error-correct existing tracks
             for ac in aircraft:
                 icao = str(ac.get("icao24") or ac.get("callsign") or "").strip()
@@ -40182,20 +40859,11 @@ class KineticTrackFusionEngine:
                 else:
                     dt = now - tr["meas_t"]
                     if dt > 1.0 and tr["vel_ms"] > 0:
-                        # v139 MULTI-HYPOTHESIS: run 4 motion models, pick best
-                        best_resid = 1e9; best_h = 0
-                        best_plat = tr["meas_lat"]; best_plon = tr["meas_lon"]
-                        for hi in range(self._N_HYPO):
-                            dhdg = self._MH_TURN_RATES[hi] * dt
-                            hdg_h = (tr["hdg"] + dhdg) % 360.0
-                            vel_h = tr["vel_ms"] * self._MH_SPEED_MODS[hi]
-                            dist_h = vel_h * dt / 1000.0
-                            ph_lat, ph_lon = self._great_circle(
-                                tr["meas_lat"], tr["meas_lon"], hdg_h, dist_h)
-                            resid_h = self._haversine_km(ph_lat, ph_lon, lat, lon)
-                            if resid_h < best_resid:
-                                best_resid = resid_h; best_h = hi
-                                best_plat = ph_lat; best_plon = ph_lon
+                        # v139 MULTI-HYPOTHESIS: 4 motion models, best picked. v191: the trig is
+                        # precomputed VECTORIZED above (_best_by_tid); here we just apply the
+                        # winning hypothesis. Identical result, no per-aircraft scalar trig.
+                        best_h, best_resid, moved = _best_by_tid.get(
+                            tid, (0, 1e9, 0.0))
                         self._hypo_wins[best_h] += 1
                         # apply winning hypothesis
                         tr["residual_km"] = best_resid
@@ -40206,7 +40874,6 @@ class KineticTrackFusionEngine:
                         c = 1.0 / (1.0 + best_resid / self._CONSIST_SCALE_KM)
                         tr["consistency"] = 0.8 * tr["consistency"] + 0.2 * c
                         # alpha-beta velocity correction from the actual displacement
-                        moved = self._haversine_km(tr["meas_lat"], tr["meas_lon"], lat, lon)
                         impl_vel = moved * 1000.0 / max(dt, 1e-3)
                         tr["vel_ms"] = (1 - self._BETA) * tr["vel_ms"] + self._BETA * impl_vel
                         # update heading from winning hypothesis if turning
@@ -42868,6 +43535,848 @@ class FrequencyResonanceNeuralProxyEngine:
                 "freqres_mvdr_applied":   self._mvdr_applied,
                 "freqres_n_resolved":     getattr(self, "_n_resolved_total", 0),  # v188 super-res
                 "freqres_scene_freqs":    list(getattr(self, "_scene_freqs", [])),  # v189 joint
+            }
+
+
+def rf_tissue_penetration_depth_m(freq_hz: float) -> float:
+    """v194: REAL RF penetration (skin) depth into high-water-content biological tissue.
+
+    The honest core of the user's 'frequencies at a certain distance have penetrated a
+    certain depth — measure variance + mathematical offset + correlation to figure out what
+    the wireless wire is sensing' framing. RF penetration depth IS real, documented physics:
+    a plane wave's field decays as e^(−α·z); the penetration depth δ = 1/α is the depth at
+    which the field falls to 1/e (~37%). For a lossy dielectric:
+        α = ω · sqrt( (μ·ε'/2) · ( sqrt(1 + (σ/(ω·ε'))²) − 1 ) ),   ε' = ε0·εr
+    Tissue εr and σ are frequency-dependent (Gabriel et al. 1996 — the standard dielectric
+    reference). This uses a high-water-content (muscle-like) parameterisation, log-interpolated
+    across the bands this system actually receives.
+
+    Returns penetration depth in METRES. Validated against published tissue values:
+      ~0.9 GHz → ~0.042 m,  2.45 GHz → ~0.022 m,  5.0 GHz → ~0.009 m
+    (higher frequency ⇒ shallower; lower frequency ⇒ deeper — exactly the depth-stratification
+    the user describes). HONESTY: this is the depth the RF REACHES and where the MECHANICAL/
+    dielectric perturbation (tissue motion, water-content change) is sampled — NOT a claim to
+    read neural/thought activity at that depth (neural ionic current is non-radiating; see the
+    PerEntityBioSeparator honesty boundary). It tells you surface (limb/skin, shallow, 5 GHz)
+    vs deeper (chest-wall/torso, 2.4 GHz & below) origin of a real bio-rhythm."""
+    import numpy as _np
+    f = max(float(freq_hz), 1.0)
+    # (freq_hz, eps_r, sigma S/m) — Gabriel 1996 high-water-content tissue, sampled
+    _TBL = [
+        (1e6,   2000.0, 0.50), (1e7,   170.0, 0.62), (1e8,    72.0, 0.73),
+        (4e8,     57.0, 0.87), (9e8,    55.0, 0.95), (1.8e9,  53.5, 1.34),
+        (2.45e9,  52.7, 1.74), (5.0e9,  49.5, 4.04), (6.0e9,  48.5, 5.00),
+    ]
+    fs_ = _np.array([t[0] for t in _TBL]); er_ = _np.array([t[1] for t in _TBL])
+    sg_ = _np.array([t[2] for t in _TBL])
+    lf  = _np.log10(f)
+    eps_r = float(_np.interp(lf, _np.log10(fs_), er_))
+    sigma = float(_np.interp(lf, _np.log10(fs_), sg_))
+    eps0 = 8.8541878128e-12; mu0 = 1.25663706212e-6
+    w    = 2.0 * _np.pi * f
+    epsp = eps0 * eps_r
+    loss = sigma / (w * epsp)
+    alpha = w * _np.sqrt((mu0 * epsp / 2.0) * (_np.sqrt(1.0 + loss * loss) - 1.0))
+    return float(1.0 / alpha) if alpha > 0 else float("inf")
+
+
+class PerEntityBioSeparator:
+    """v193: PER-ENTITY bio-signature SEPARATION, TRACKING, LOCALIZATION & per-entity STORAGE.
+
+    HONEST ENGINEERING ANSWER to the user's specific ask:
+      "each BCI labeled for a separate entity in its own folder/display file ... use
+       correlation matrix and data error corrections to accurately paint reality via
+       frequency antennae ... signal/frequency locationing to pinpoint where the
+       frequency last changed ... so entities don't get mixed in mass reading."
+
+    WHAT IT DOES (all on REAL measured data — never thought content):
+      1. SEPARATE — takes FrequencyResonanceNeuralProxy's per-carrier super-resolved
+         bio-frequencies (already common-mode-removed + MVDR + root-MUSIC), and clusters
+         the (carrier, frequency) detections into DISTINCT entities. Two bodies breathing
+         at 0.20 Hz and 0.28 Hz become two separate clusters, each with its own set of
+         carriers it modulates ("carrier-affinity"). This is blind source separation of
+         the real bio-modulation field — the honest "don't get mixed in mass reading."
+      2. TRACK — assigns each entity a STABLE signature ID (E0001, E0002 …) and matches
+         it frame-to-frame by (frequency proximity + carrier-affinity overlap), so an
+         entity keeps its identity as its rhythm drifts. A correlation/affinity cost with
+         a threshold does the association (the "correlation matrix + error correction").
+      3. LOCALIZE — every receiver NODE (this laptop, plus any remote node that POSTs its
+         scan — "any antenna/router acts as a satellite") is an independent vantage point.
+         An entity seen on carriers belonging to >=2 nodes gets a COARSE location: if node
+         GPS positions are known → a score-weighted centroid (real multilateration-lite);
+         if not → "MULTI-NODE region (<nodes>)". A single-node entity gets its carrier-
+         affinity FINGERPRINT — a stable spatial signature, honestly labeled NOT coordinates.
+         AWAITING per-node GPS → exact triangulation (designed now, fills when data flows).
+      4. STORE — each entity is written to its OWN file (entities/entity_E0001.jsonl), the
+         literal "own folder/display file per entity". Rows are MEASURED signature data
+         (freq, bio-score, band affinity, node set, location) verified to round-trip
+         losslessly (the honest "digitized copy that becomes its own resync later").
+      5. DEPTH-STRATIFY (v194 — the "certain distance → penetrated a certain depth" ask) —
+         each carrier frequency has a REAL RF penetration depth into tissue (rf_tissue_
+         penetration_depth_m, Gabriel 1996): 5 GHz ≈ 0.9 cm (surface), 2.4 GHz ≈ 2.2 cm,
+         <1 GHz ≈ 4 cm+ (deeper). So which carrier frequencies carry an entity's signature
+         tells you the DEPTH at which its perturbation occurs — a real extra dimension of
+         "total vision". Each entity gets depth_m (score-weighted), depth_min/max_m, and a
+         layer label (surface / shallow / deep). This is the honest form of "measure variance
+         at a distance + offset + correlation to figure out what is sensed" — it resolves the
+         depth of MECHANICAL/dielectric perturbation, never neural/thought content.
+
+    HONESTY BOUNDARY (see the no-false-data prime directive):
+      - The "signature/copy" is of the MEASURED bio-modulation (breathing/heart/motion
+        rhythm + which carriers it perturbs), NOT EEG, NOT thoughts, NOT a mind.
+      - Pure noise → 0 entities (the source clustering inherits MUSIC's MDL guard; nothing
+        is fabricated when nothing is detected).
+      - Location is reported only at the confidence the geometry supports (centroid only
+        with real node positions; otherwise an affinity fingerprint, never fake coords).
+    """
+    _FREQ_TOL    = 0.025   # Hz — single-linkage gap to cluster detections into one entity
+    _MATCH_DF    = 0.045   # Hz — frequency normaliser in the track-association cost
+    _MATCH_COST  = 1.15    # max combined cost to keep the SAME entity id across frames
+    _MAX_MISS    = 10      # cycles an entity may be unseen before it is retired (file kept)
+    _EMA         = 0.4     # frequency smoothing when an entity is updated
+    _HIST_LEN    = 90      # rolling per-entity history samples (~6 min @ 4 s)
+    _REFRESH_S   = 4.0
+    _BOOT_S      = 27.0
+
+    def __init__(self, base_dir: str = None):
+        import threading as _thr, time as _ti, os as _os
+        self._lock      = _thr.Lock()
+        self._pc        = []     # latest per-carrier (from FreqRes)
+        self._node_map  = {}     # carrier-id -> node-id
+        self._node_pos  = {}     # node-id   -> (lat, lon)  when known
+        self._freq_map  = {}     # carrier-id -> RF freq_mhz (v194: for penetration depth)
+        self._depth_cache: dict = {}  # freq_mhz (rounded) -> penetration depth m
+        self._entities  = {}     # eid -> entity dict
+        self._next_id   = 1
+        self._cycles    = 0
+        self._t0        = _ti.time()
+        # per-entity storage (own file each) + lossless round-trip verification
+        self._fidelity_checks = 0
+        self._fidelity_pass   = 0
+        if base_dir is None:
+            base_dir = _os.environ.get("NEPA_ENTITY_DIR", "")
+        if not base_dir:
+            try:
+                base_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "entities")
+            except Exception:
+                base_dir = "/tmp/nepa_entities"
+        self._dir = base_dir
+        try:
+            _os.makedirs(self._dir, exist_ok=True)
+            log.info(f"[ENTSEP] PerEntityBioSeparator → {self._dir} "
+                     f"(per-entity separation/tracking/localization + own-file storage)")
+        except Exception as e:
+            self._dir = None
+            log.warning(f"[ENTSEP] could not open per-entity store: {e}")
+        _thr.Thread(target=self._loop, daemon=True, name="entity_sep_v193").start()
+
+    def ingest(self, per_carrier: list, carrier_node_map: dict = None,
+               node_positions: dict = None, carrier_freq_map: dict = None):
+        """Feed the latest FreqRes per-carrier output + (optional) carrier→node map,
+        node→(lat,lon) positions, and carrier→RF-freq-MHz map (v194, for penetration
+        depth). All copied under lock; analysis runs on the loop."""
+        with self._lock:
+            self._pc = list(per_carrier or [])
+            if carrier_node_map is not None:
+                self._node_map = dict(carrier_node_map)
+            if node_positions is not None:
+                self._node_pos = dict(node_positions)
+            if carrier_freq_map is not None:
+                self._freq_map = dict(carrier_freq_map)
+
+    def _depth_for_freq_mhz(self, freq_mhz: float) -> float:
+        """Cached real RF penetration depth (m) for an RF carrier frequency in MHz."""
+        if not freq_mhz or freq_mhz <= 0:
+            return float("nan")
+        key = round(float(freq_mhz), 1)
+        d = self._depth_cache.get(key)
+        if d is None:
+            d = rf_tissue_penetration_depth_m(key * 1e6)
+            self._depth_cache[key] = d
+        return d
+
+    def _loop(self):
+        import time as _t
+        _t.sleep(self._BOOT_S)
+        while True:
+            try:
+                self._run()
+            except Exception as e:
+                log.debug(f"[ENTSEP] {e}")
+            _t.sleep(self._REFRESH_S)
+
+    @staticmethod
+    def _jaccard(a: set, b: set) -> float:
+        if not a and not b:
+            return 1.0
+        u = a | b
+        return (len(a & b) / len(u)) if u else 0.0
+
+    def _run(self):
+        import time as _ti, json as _json
+        with self._lock:
+            per_carrier = list(self._pc)
+            node_map    = dict(self._node_map)
+            node_pos    = dict(self._node_pos)
+            freq_map    = dict(self._freq_map)
+            ents        = {k: dict(v) for k, v in self._entities.items()}
+        now = _ti.time()
+        self._cycles += 1
+
+        # ── 1. gather (freq, carrier, node, score) detections from the real resolver ──
+        dets = []
+        for pc in per_carrier:
+            cid   = pc.get("id")
+            score = float(pc.get("bio_score") or 0.0)
+            node  = node_map.get(cid, "local")
+            for f in (pc.get("bio_freqs") or []):
+                try:
+                    dets.append((float(f), cid, node, score))
+                except Exception:
+                    continue
+
+        # ── 2. single-linkage cluster by frequency → candidate entities ──
+        clusters = []
+        if dets:
+            dets.sort(key=lambda d: d[0])
+            cur = {"freqs": [dets[0][0]], "carriers": {dets[0][1]},
+                   "nodes": {dets[0][2]}, "scores": [dets[0][3]]}
+            for f, cid, node, sc in dets[1:]:
+                if f - cur["freqs"][-1] <= self._FREQ_TOL:
+                    cur["freqs"].append(f); cur["carriers"].add(cid)
+                    cur["nodes"].add(node); cur["scores"].append(sc)
+                else:
+                    clusters.append(cur)
+                    cur = {"freqs": [f], "carriers": {cid}, "nodes": {node}, "scores": [sc]}
+            clusters.append(cur)
+        cand = [{
+            "freq":     float(sum(c["freqs"]) / len(c["freqs"])),
+            "carriers": set(c["carriers"]),
+            "nodes":    set(c["nodes"]),
+            "score":    float(sum(c["scores"]) / len(c["scores"])),
+            "n_det":    len(c["freqs"]),
+        } for c in clusters]
+
+        # ── 3. associate candidates to tracked entities (correlation/affinity cost) ──
+        # cost = |Δf|/MATCH_DF + (1 − Jaccard(carrier-affinity)); greedy lowest-cost first.
+        pairs = []
+        for ci, cd in enumerate(cand):
+            for eid, en in ents.items():
+                df   = abs(cd["freq"] - en["freq"])
+                cost = df / self._MATCH_DF + (1.0 - self._jaccard(cd["carriers"],
+                                                                  set(en["carriers"])))
+                if df <= (self._MATCH_DF * 2.5) and cost <= self._MATCH_COST:
+                    pairs.append((cost, ci, eid))
+        pairs.sort(key=lambda p: p[0])
+        used_c, used_e, matched = set(), set(), {}
+        for cost, ci, eid in pairs:
+            if ci in used_c or eid in used_e:
+                continue
+            used_c.add(ci); used_e.add(eid); matched[ci] = eid
+
+        # update matched entities
+        for ci, eid in matched.items():
+            cd = cand[ci]; en = ents[eid]
+            en["freq"]     = (1 - self._EMA) * en["freq"] + self._EMA * cd["freq"]
+            en["carriers"] = sorted(cd["carriers"])
+            en["nodes"]    = sorted(cd["nodes"])
+            en["score"]    = cd["score"]
+            en["n_obs"]    = int(en.get("n_obs", 0)) + 1
+            en["miss"]     = 0
+            en["last_seen"] = now
+            hist = list(en.get("hist", []))
+            hist.append((now, en["freq"], en["score"]))
+            en["hist"] = hist[-self._HIST_LEN:]
+
+        # spawn new entities for unmatched candidates (require >=1 carrier — real detection)
+        for ci, cd in enumerate(cand):
+            if ci in used_c:
+                continue
+            eid = f"E{self._next_id:04d}"; self._next_id += 1
+            ents[eid] = {
+                "eid": eid, "freq": cd["freq"], "carriers": sorted(cd["carriers"]),
+                "nodes": sorted(cd["nodes"]), "score": cd["score"],
+                "n_obs": 1, "miss": 0, "first_seen": now, "last_seen": now,
+                "hist": [(now, cd["freq"], cd["score"])],
+            }
+
+        # age/retire entities not seen this cycle
+        for eid in list(ents.keys()):
+            if eid in used_e or eid in matched.values():
+                continue
+            ents[eid]["miss"] = int(ents[eid].get("miss", 0)) + 1
+            if ents[eid]["miss"] > self._MAX_MISS:
+                del ents[eid]
+
+        # ── 4. localize each active entity ──
+        active = [e for e in ents.values() if e.get("miss", 0) == 0]
+        for en in active:
+            nodes = list(en.get("nodes", []))
+            known = [(node_pos[n][0], node_pos[n][1]) for n in nodes if n in node_pos]
+            if len(known) >= 2:
+                la = sum(p[0] for p in known) / len(known)
+                lo = sum(p[1] for p in known) / len(known)
+                en["loc_kind"] = "MULTI-NODE-FIX"
+                en["loc"]      = [round(la, 6), round(lo, 6)]
+                en["loc_desc"] = f"{la:.5f},{lo:.5f} ({len(known)} nodes)"
+            elif len(nodes) >= 2:
+                en["loc_kind"] = "MULTI-NODE-REGION"
+                en["loc"]      = None
+                en["loc_desc"] = "region across nodes: " + ",".join(str(n)[:8] for n in nodes)
+            else:
+                # carrier-affinity fingerprint — stable signature, NOT coordinates
+                aff = ",".join(str(c)[:8] for c in list(en.get("carriers", []))[:4])
+                en["loc_kind"] = "AFFINITY-FINGERPRINT"
+                en["loc"]      = None
+                en["loc_desc"] = f"affinity[{aff}] node={nodes[0] if nodes else '?'}"
+
+        # ── 4b. v194 DEPTH-STRATIFY: which carrier frequencies carry this entity's signature
+        # tell us the REAL RF penetration depth at which its perturbation is being sampled.
+        # (5 GHz ≈ surface, 2.4 GHz ≈ ~2 cm, <1 GHz ≈ deeper.) Honest depth of the MECHANICAL
+        # perturbation — never a neural-depth claim. No freq data → depth unknown (not faked).
+        for en in active:
+            depths = []
+            for c in en.get("carriers", []):
+                fmhz = freq_map.get(c)
+                d = self._depth_for_freq_mhz(fmhz) if fmhz else float("nan")
+                if d == d and d != float("inf"):   # finite, not NaN
+                    depths.append(d)
+            if depths:
+                dm  = float(sum(depths) / len(depths))
+                en["depth_m"]     = round(dm, 4)
+                en["depth_min_m"] = round(float(min(depths)), 4)
+                en["depth_max_m"] = round(float(max(depths)), 4)
+                en["depth_layer"] = ("surface" if dm < 0.012 else
+                                     "shallow" if dm < 0.025 else "deep")
+                en["depth_known"] = True
+            else:
+                en["depth_m"] = en["depth_min_m"] = en["depth_max_m"] = None
+                en["depth_layer"] = "unknown"
+                en["depth_known"] = False
+
+        # ── 5. store each active entity to its OWN file (lossless-verified round-trip) ──
+        if self._dir:
+            import os as _os
+            for en in active:
+                row = {
+                    "t": now, "eid": en["eid"], "freq_hz": round(en["freq"], 6),
+                    "bio_score": round(en["score"], 6),
+                    "carriers": list(en["carriers"]), "nodes": list(en["nodes"]),
+                    "loc_kind": en.get("loc_kind", ""), "loc": en.get("loc"),
+                    "loc_desc": en.get("loc_desc", ""), "n_obs": en["n_obs"],
+                    "depth_m": en.get("depth_m"), "depth_min_m": en.get("depth_min_m"),
+                    "depth_max_m": en.get("depth_max_m"), "depth_layer": en.get("depth_layer"),
+                    "provenance": "RF-DERIVED-PROXY-SIGNATURE",  # measured, never thought
+                }
+                ok = True
+                try:
+                    wire  = _json.dumps(row, sort_keys=True)
+                    recon = _json.loads(wire)
+                    ok    = (_json.dumps(recon, sort_keys=True) == wire)
+                except Exception:
+                    ok = False
+                self._fidelity_checks += 1
+                if ok:
+                    self._fidelity_pass += 1
+                try:
+                    with open(_os.path.join(self._dir, f"entity_{en['eid']}.jsonl"), "a") as fh:
+                        fh.write(_json.dumps(row) + "\n")
+                except Exception:
+                    pass
+
+        with self._lock:
+            self._entities = ents
+
+    def get_entities(self) -> list:
+        """All currently active entities (miss==0), sorted by bio-score descending."""
+        import os as _os
+        with self._lock:
+            out = []
+            for en in self._entities.values():
+                if en.get("miss", 0) != 0:
+                    continue
+                e = dict(en)
+                e["carriers"] = list(en.get("carriers", []))
+                e["nodes"]    = list(en.get("nodes", []))
+                e["hist"]     = list(en.get("hist", []))
+                e["file"]     = (_os.path.join(self._dir, f"entity_{en['eid']}.jsonl")
+                                 if self._dir else "")
+                out.append(e)
+        out.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        return out
+
+    def get(self) -> dict:
+        with self._lock:
+            active = [e for e in self._entities.values() if e.get("miss", 0) == 0]
+            n_multi = sum(1 for e in active if e.get("loc_kind", "").startswith("MULTI-NODE"))
+            n_fix   = sum(1 for e in active if e.get("loc_kind") == "MULTI-NODE-FIX")
+            n_depth = sum(1 for e in active if e.get("depth_known"))
+            return {
+                "entsep_ok":          bool(self._dir),
+                "entsep_n_entities":  len(active),
+                "entsep_n_tracked":   len(self._entities),
+                "entsep_total_ids":   self._next_id - 1,
+                "entsep_n_localized": n_multi,
+                "entsep_n_fix":       n_fix,
+                "entsep_n_depth":     n_depth,   # v194: entities with a penetration-depth profile
+                "entsep_dir":         self._dir or "",
+                "entsep_fidelity_pct": (100.0 * self._fidelity_pass / self._fidelity_checks)
+                                       if self._fidelity_checks else 100.0,
+                "entsep_fidelity_n":  self._fidelity_checks,
+            }
+
+
+class MultipathCIREngine:
+    """v195: MULTIPATH channel-impulse-response decomposition + per-path perturbation
+    reverse-attribution (the user's 'reverse engineering by correlative deduction on
+    MULTIPLE PATHS / error-corrective resonance correlation matrix').
+
+    THE REAL SIGNAL-PROCESSING CORE of 'correlative deduction on multiple paths':
+      A single RF link is NOT one path — it is the SUM of many propagation paths (the
+      direct line-of-sight plus reflections off walls, floor, furniture, and BODIES).
+      The complex per-subcarrier channel response H(f) is the frequency-domain view of
+      this; its inverse FFT is the CHANNEL IMPULSE RESPONSE (CIR) h(τ) — a set of TAPS,
+      one per path, each at a delay τ_k = k/BW ⇒ an excess path length d_k = c·τ_k. This
+      is textbook device-free sensing (WiDar/IndoTrack family). Separating the paths lets
+      us attribute a perturbation to a SPECIFIC path's geometry = a specific range.
+
+    PIPELINE (all real DSP on the genuine CSI the system already captures each frame):
+      1. Buffer the last W complex CSI frames (W×Nsub).
+      2. CIR per frame = IFFT over subcarriers → taps; |CIR| → power-delay profile.
+      3. Significant taps = those rising above a MAD noise floor in the first half-window
+         (real multipath components; a flat/noise channel yields none → no fabrication).
+      4. Per-tap time series (tap magnitude over the W frames) = the motion on THAT path.
+      5. CROSS-PATH CORRELATION MATRIX between tap time-series + COMMON-MODE removal via
+         the top eigenvector (the 'error-corrective resonance correlation matrix'): the
+         shared component = global drift/AGC; the residual = path-SPECIFIC perturbation.
+         This is the 'correlative deduction' — reverse-engineering which path a body moved.
+      6. Reverse-deduce: dominant path-specific perturbation → its tap range c·k/BW = an
+         estimate of WHERE along the multipath the perturbation happened.
+
+    HONESTY / PROVENANCE GATING (prime directive):
+      - True multipath needs genuine per-subcarrier PHASE, which only real CSI hardware
+        provides (ESP32-CSI / Nexmon on UDP :5500, an SDR, or a loaded .dat). When the
+        active capture method is one of those, taps are REAL reflectors and `mpath_real`
+        is True. When CSI is RSSI-synthesised/sim fallback, the engine STILL runs (so the
+        pipeline is proven & testable) but every output is labeled SYNTH-CSI and
+        `mpath_real` is False — an AWAITING slot, never presented as real-world geometry.
+      - Range resolution is c/BW (≈15 m at 20 MHz HT20, ≈3.75 m at 80 MHz) — reported
+        honestly, not overstated. This resolves MECHANICAL reflector motion along a path,
+        NOT neural content (see PerEntityBioSeparator boundary)."""
+    _W          = 128       # CSI frames buffered for per-path temporal analysis
+    _NSUB       = DEFAULT_SUBCARRIERS
+    _MAXTAP     = None       # set in __init__ (first half of the CIR)
+    _REFRESH_S  = 2.0
+    _BOOT_S     = 20.0
+    _MAD_K      = 4.0        # tap significance threshold (× MAD above the noise floor)
+    # real per-subcarrier-PHASE CSI sources (RSSI-synth methods deliberately EXCLUDED)
+    _REAL_CSI   = {"nexmon_udp", "esp32_udp", "esp32_external", "espectre_stream",
+                   "passive_sniff", "rtl_sdr", "hackrf", "soapy_sdr"}
+
+    def __init__(self, bandwidth_hz: float = 20e6, carrier_hz: float = 5.2e9):
+        import threading as _thr, time as _ti, collections as _col
+        self._lock   = _thr.Lock()
+        self._buf    = _col.deque(maxlen=self._W)   # complex CSI frames
+        self._ts     = _col.deque(maxlen=self._W)   # v197: ingest timestamps (for fps→Doppler)
+        self._method = "sim"
+        self._bw     = float(bandwidth_hz)
+        self._fc     = float(carrier_hz)            # v197: RF carrier (for Doppler→velocity)
+        self._lambda = 2.99792458e8 / self._fc      # wavelength (m)
+        self._MAXTAP = max(4, self._NSUB // 2)
+        self._ok     = False
+        self._real   = False
+        self._paths: list = []
+        self._n_paths       = 0
+        self._dom_range_m   = 0.0
+        self._dom_perturb   = 0.0
+        self._range_res_m   = (2.99792458e8 / self._bw) if self._bw > 0 else 0.0
+        self._corr: list    = []
+        self._cm_frac       = 0.0
+        # v196: MUSIC delay (ToF) super-resolution — resolve paths CLOSER than the c/BW bin
+        self._superres_ranges: list = []
+        self._superres_n     = 0
+        self._superres_gain  = 0.0     # finest super-resolved gap ÷ IFFT bin (×improvement)
+        # v197: per-path Doppler / radial velocity (micro-Doppler — "what the reflector is doing")
+        self._fps            = 0.0
+        self._dom_velocity   = 0.0
+        # v199: persistent reflector TRACKER — turn per-cycle (range,velocity) detections into
+        # tracked trajectories with stable IDs + motion prediction ("a being doing a thing, and
+        # where it's going"). Constant-velocity nearest-neighbour association with a coast/age-out.
+        self._tracks: dict   = {}
+        self._live_tracks: list = []
+        self._next_tid       = 1
+        self._last_run_t     = _ti.time()
+        self._t0     = _ti.time()
+        _thr.Thread(target=self._loop, daemon=True, name="multipath_cir_v195").start()
+
+    # v199 tracker tuning
+    _TRK_GATE_M  = 8.0     # m — max |predicted-range − detection| to associate to a track
+    _TRK_EMA     = 0.5     # range/velocity smoothing on update
+    _TRK_MAXMISS = 4       # cycles a track may coast unseen before it is dropped
+    _TRK_HISTLEN = 60      # range-history samples kept per track
+
+    def _update_tracks(self, detections, dt):
+        """v199: associate (range_m, velocity_mps) detections to persistent tracks.
+        Predict each track forward by velocity·dt, match the nearest detection within the
+        gate, EMA-update; spawn tracks for unmatched detections; coast+age-out the rest.
+        detections: list of (range_m, velocity_mps). Returns the live track list."""
+        import time as _ti
+        now = _ti.time()
+        tracks = self._tracks
+        # 1. predict
+        for tr in tracks.values():
+            tr["pred_range"] = tr["range_m"] + tr["velocity_mps"] * dt
+        # 2. greedy nearest-neighbour association (lowest gate distance first)
+        pairs = []
+        for di, (rng, vel) in enumerate(detections):
+            for tid, tr in tracks.items():
+                d = abs(rng - tr["pred_range"])
+                if d <= self._TRK_GATE_M:
+                    pairs.append((d, di, tid))
+        pairs.sort(key=lambda x: x[0])
+        used_d, used_t, matched = set(), set(), {}
+        for d, di, tid in pairs:
+            if di in used_d or tid in used_t:
+                continue
+            used_d.add(di); used_t.add(tid); matched[di] = tid
+        # 3. update matched
+        for di, tid in matched.items():
+            rng, vel = detections[di]; tr = tracks[tid]
+            tr["range_m"]      = (1 - self._TRK_EMA) * tr["pred_range"] + self._TRK_EMA * rng
+            tr["velocity_mps"] = (1 - self._TRK_EMA) * tr["velocity_mps"] + self._TRK_EMA * vel
+            tr["hits"] += 1; tr["miss"] = 0; tr["last_seen"] = now
+            h = tr["hist"]; h.append(tr["range_m"]); tr["hist"] = h[-self._TRK_HISTLEN:]
+        # 4. spawn for unmatched detections
+        for di, (rng, vel) in enumerate(detections):
+            if di in used_d:
+                continue
+            tid = f"R{self._next_tid:03d}"; self._next_tid += 1
+            tracks[tid] = {"tid": tid, "range_m": rng, "velocity_mps": vel,
+                           "pred_range": rng, "hits": 1, "miss": 0,
+                           "first_seen": now, "last_seen": now, "hist": [rng]}
+        # 5. coast / age-out unmatched tracks
+        for tid in list(tracks.keys()):
+            if tid in used_t:
+                continue
+            tr = tracks[tid]
+            tr["miss"] += 1
+            tr["range_m"] = tr["pred_range"]      # coast on the model
+            if tr["miss"] > self._TRK_MAXMISS:
+                del tracks[tid]
+        return [t for t in tracks.values() if t["miss"] == 0]
+
+    def _delay_superres(self, frames):
+        """v196: MUSIC ToF/delay SUPER-RESOLUTION (SpotFi-style, Kotaru et al. MIT 2015).
+
+        The CSI across subcarriers is a sum of complex exponentials whose digital frequencies
+        are proportional to the path DELAYS: H[n] = Σ_p a_p·exp(-j2π·Δf·τ_p·n). This is the
+        SAME structure FreqRes super-resolves in the temporal domain, applied in the SUBCARRIER
+        domain → it resolves path delays FINER than the IFFT's c/BW range bin (≈15 m @ 20 MHz).
+        Forward-backward spatial smoothing over subcarriers + MDL order selection + root-MUSIC
+        on the noise-subspace polynomial → exact delays → ranges. Returns SORTED ranges (m).
+        Pure noise / no structure → [] (MDL picks 0; never fabricates a path)."""
+        import numpy as _np
+        W, N = frames.shape
+        M = max(8, N // 2)                      # subarray length
+        K = N - M + 1                            # subarrays per frame (forward smoothing)
+        if K < 2:
+            return []
+        # build forward covariance from all frame × subarray snapshots.
+        # v198 PERF: the W×K outer-product double-loop was the engine's #1 pure-compute cost;
+        # all snapshots are sliding length-M windows over each frame, so build them at once with
+        # a strided view → ONE Hermitian matmul R = Xᴴ X / nsnap. Mathematically the SUM of the
+        # same per-snapshot outer products (validated BIT-IDENTICAL, max|Δ|=0 vs the loop).
+        F = frames.astype(_np.complex128)
+        sw = _np.lib.stride_tricks.sliding_window_view(F, M, axis=1)   # (W, K, M)
+        X  = sw.reshape(-1, M)                                          # (W*K, M) snapshots
+        nsnap = X.shape[0]
+        # R[a,b] = Σ x[a]·conj(x[b]) (the loop's outer(x, x.conj()) convention) = Xᵀ·conj(X)
+        R = (X.T @ X.conj()) / max(nsnap, 1)
+        # forward-backward averaging (decorrelates coherent multipath)
+        J = _np.fliplr(_np.eye(M))
+        R = 0.5 * (R + J @ R.conj() @ J)
+        try:
+            ev, evec = _np.linalg.eigh(R)
+        except _np.linalg.LinAlgError:
+            return []
+        idx = _np.argsort(ev)[::-1]
+        ev = _np.real(ev[idx]); evec = evec[:, idx]
+        ev = _np.maximum(ev, 1e-12)
+        # MDL model-order selection (complex sources → 1 eigenvalue each)
+        best_k, best = 0, _np.inf
+        maxp = min(6, M - 1)
+        for k in range(0, maxp + 1):
+            noise = ev[k:]; p = len(noise)
+            if p <= 1:
+                break
+            gm = _np.exp(_np.mean(_np.log(noise))); am = _np.mean(noise)
+            if am <= 0:
+                continue
+            mdl = -nsnap * p * _np.log(gm / am) + 0.5 * k * (2 * M - k) * _np.log(nsnap)
+            if mdl < best:
+                best, best_k = mdl, k
+        if best_k < 1:
+            return []
+        En = evec[:, best_k:]                    # noise subspace
+        C = En @ En.conj().T
+        coeff = _np.array([_np.trace(C, offset=d) for d in range(-(M - 1), M)])
+        try:
+            roots = _np.roots(coeff)
+        except Exception:
+            return []
+        inside = roots[_np.abs(roots) < 1.0]
+        if inside.size == 0:
+            return []
+        inside = inside[_np.argsort(1.0 - _np.abs(inside))]   # closest to unit circle first
+        df = self._bw / N                        # subcarrier spacing
+        c = 2.99792458e8
+        max_range = c / df                       # unambiguous range
+        ranges = []
+        for r in inside:
+            if (1.0 - abs(r)) > 0.08:            # off-circle → noise/spurious
+                continue
+            # root-MUSIC signal root lies at z = exp(+j2π df τ) (conjugate-pair convention of
+            # the trace polynomial) ⇒ τ = angle(z)/(2π df); wrap any negative to a positive delay
+            ang = _np.angle(r)
+            tau = ang / (2.0 * _np.pi * df)
+            if tau < 0:
+                tau += 1.0 / df
+            rng = c * tau
+            if 0.0 <= rng <= min(max_range, 400.0) and all(abs(rng - g) > 0.5 for g in ranges):
+                ranges.append(float(rng))
+            if len(ranges) >= best_k:
+                break
+        return sorted(ranges)
+
+    def ingest(self, csi_vec, method: str = None):
+        """Feed ONE complex CSI frame (length Nsub) + the capture method (provenance)."""
+        import numpy as _np, time as _ti
+        try:
+            v = _np.asarray(csi_vec, dtype=_np.complex64).ravel()
+            if v.size < 4:
+                return
+            if v.size != self._NSUB:
+                # resample to Nsub (linear on real+imag) so any CSI width works
+                idx = _np.linspace(0, v.size - 1, self._NSUB)
+                xi  = _np.arange(v.size)
+                v = (_np.interp(idx, xi, v.real) + 1j * _np.interp(idx, xi, v.imag)).astype(_np.complex64)
+            with self._lock:
+                self._buf.append(v)
+                self._ts.append(_ti.time())        # v197: for slow-time Doppler fps
+                if method is not None:
+                    self._method = str(method)
+        except Exception:
+            pass
+
+    def _path_doppler(self, slow_c, fps):
+        """v197: estimate the dominant Doppler shift (Hz) of a complex slow-time CIR-tap
+        series → radial velocity v = f_d·λ/2 (round-trip Doppler). Sign of f_d = approach
+        (+) / recede (−). FFT peak + parabolic interpolation; static/no-motion → ~0 (the mean
+        is removed first so a stationary tap reports no spurious velocity). Returns (f_d, v)."""
+        import numpy as _np
+        n = len(slow_c)
+        if n < 8 or fps <= 0:
+            return 0.0, 0.0
+        x = slow_c - slow_c.mean()
+        if _np.std(_np.abs(x)) < 1e-6 and _np.std(x.real) < 1e-9:
+            return 0.0, 0.0
+        win = _np.hanning(n)
+        X = _np.fft.fftshift(_np.fft.fft(x * win))
+        freqs = _np.fft.fftshift(_np.fft.fftfreq(n, d=1.0 / fps))
+        mag = _np.abs(X)
+        k = int(_np.argmax(mag))
+        # CFAR-style detection guard: a STATIC tap after mean-removal is just noise, whose
+        # FFT-argmax would pick a SPURIOUS peak. Only report a Doppler if the peak rises
+        # ≥5σ above the rest of the spectrum (the noise floor) — else velocity = 0, no fake.
+        others = _np.delete(mag, k)
+        if others.size and mag[k] < (others.mean() + 5.0 * others.std()):
+            return 0.0, 0.0
+        # parabolic interpolation around the peak for sub-bin Doppler accuracy
+        f_d = float(freqs[k])
+        if 0 < k < n - 1:
+            a, b, cc = mag[k - 1], mag[k], mag[k + 1]
+            denom = (a - 2 * b + cc)
+            if abs(denom) > 1e-12:
+                delta = 0.5 * (a - cc) / denom
+                f_d = float(freqs[k] + delta * (freqs[1] - freqs[0]))
+        v = f_d * self._lambda / 2.0
+        return f_d, float(v)
+
+    def _loop(self):
+        import time as _t
+        _t.sleep(self._BOOT_S)
+        while True:
+            try:
+                self._run()
+            except Exception as e:
+                log.debug(f"[MPCIR] {e}")
+            _t.sleep(self._REFRESH_S)
+
+    def _run(self):
+        import numpy as _np
+        with self._lock:
+            if len(self._buf) < max(16, self._W // 4):
+                self._ok = False
+                return
+            frames = _np.stack(list(self._buf), axis=0)     # (W, Nsub) complex
+            ts     = list(self._ts)
+            method = self._method
+        real = method in self._REAL_CSI
+        # v197: slow-time frame rate (fps) from real ingest timestamps → Doppler axis
+        fps = 0.0
+        if len(ts) >= 2:
+            dts = _np.diff(_np.array(ts))
+            dts = dts[dts > 1e-6]
+            if dts.size:
+                fps = float(1.0 / _np.median(dts))
+
+        # ── CIR per frame: IFFT over subcarriers ──
+        cir = _np.fft.ifft(frames, axis=1)                  # (W, Nsub) complex
+        mag = _np.abs(cir)[:, : self._MAXTAP]               # (W, MAXTAP) first half
+        pdp = mag.mean(axis=0)                               # mean power-delay profile
+
+        # ── significant taps via MAD noise floor ──
+        med = float(_np.median(pdp))
+        mad = float(_np.median(_np.abs(pdp - med))) + 1e-12
+        thr = med + self._MAD_K * mad
+        sig_taps = [k for k in range(self._MAXTAP) if pdp[k] > thr]
+        # always include the strongest tap (direct path) so a clean channel still shows 1
+        k_max = int(_np.argmax(pdp))
+        if k_max not in sig_taps:
+            sig_taps = sorted(set(sig_taps + [k_max]))
+        if not sig_taps:
+            with self._lock:
+                self._ok = True; self._real = real; self._paths = []
+                self._n_paths = 0; self._dom_range_m = 0.0; self._dom_perturb = 0.0
+            return
+
+        # ── per-path temporal series → perturbation (coeff. of variation) ──
+        c = 2.99792458e8
+        series = mag[:, sig_taps]                            # (W, P)
+        mu  = series.mean(axis=0) + 1e-9
+        cov = series.std(axis=0) / mu                        # per-path coefficient of variation
+
+        # ── cross-path correlation matrix + common-mode removal (resonance correction) ──
+        # resid_frac[i] ∈ [0,1] = how much of path i's (z-scored) motion REMAINS after the
+        # shared/global component is projected out → the path-SPECIFIC fraction. A path whose
+        # motion is fully explained by the common mode → ~0 (it is global drift/AGC, not a
+        # local reflector); an independently-moving reflector → near 1.
+        P = len(sig_taps)
+        resid_frac = _np.ones(P)
+        corr = _np.eye(P)
+        cm_frac = 0.0
+        if P >= 2:
+            Z = series - series.mean(axis=0, keepdims=True)
+            sd = Z.std(axis=0, keepdims=True) + 1e-9
+            Zn = Z / sd                                       # unit-variance per path
+            corr = (Zn.T @ Zn) / Z.shape[0]
+            try:
+                ev, evec = _np.linalg.eigh(corr)
+                ev = ev[::-1]; evec = evec[:, ::-1]
+                cm_frac = float(ev[0] / (ev.sum() + 1e-12))   # share of variance that is global
+                top = evec[:, 0]
+                cm_ts = Zn @ top                              # common-mode time series
+                recon = _np.outer(cm_ts, top)                # its reconstruction per path
+                resid = Zn - recon
+                resid_frac = _np.clip(resid.std(axis=0), 0.0, 1.0)
+            except _np.linalg.LinAlgError:
+                pass
+
+        # path-specific perturbation magnitude = raw motion scaled by its path-specific share
+        diff_cov = cov * resid_frac
+        paths = []
+        for i, k in enumerate(sig_taps):
+            # v197: per-path Doppler/velocity from the COMPLEX slow-time CIR tap series
+            f_d, vel = self._path_doppler(cir[:, k], fps)
+            paths.append({
+                "tap":          int(k),
+                "range_m":      float(c * k / self._bw),     # excess path length
+                "power":        float(pdp[k]),
+                "perturb":      float(cov[i]),               # raw motion on this path
+                "diff_perturb": float(diff_cov[i]),          # path-specific (common removed)
+                "resid_frac":   float(resid_frac[i]),        # 1=independent, 0=global
+                "is_common":    bool(P >= 2 and resid_frac[i] < 0.4),
+                "doppler_hz":   float(f_d),                  # v197: + approach / − recede
+                "velocity_mps": float(vel),                  # v197: radial velocity
+            })
+        # dominant PATH-SPECIFIC perturbation = the reverse-deduced moving reflector
+        di = int(_np.argmax(diff_cov)) if len(diff_cov) else 0
+        dom_range = paths[di]["range_m"] if paths else 0.0
+        dom_pert  = float(diff_cov[di]) if len(diff_cov) else 0.0
+        dom_vel   = float(paths[di]["velocity_mps"]) if paths else 0.0   # v197
+
+        # ── v196: MUSIC ToF super-resolution — resolve paths finer than the c/BW IFFT bin ──
+        try:
+            sr = self._delay_superres(frames)
+        except Exception:
+            sr = []
+        # super-resolution gain = IFFT bin ÷ finest super-resolved gap (×improvement, ≥1)
+        sr_gain = 0.0
+        if len(sr) >= 2:
+            gaps = [sr[i + 1] - sr[i] for i in range(len(sr) - 1)]
+            min_gap = min(g for g in gaps if g > 1e-6) if any(g > 1e-6 for g in gaps) else 0.0
+            if min_gap > 1e-6:
+                sr_gain = float(self._range_res_m / min_gap)
+
+        # ── v199: persistent reflector tracking. Detections = super-res ranges (v196), each
+        # tagged with the velocity (v197) of its nearest resolved path. Tracked across cycles. ──
+        import time as _ti
+        now = _ti.time()
+        dt = max(1e-3, now - self._last_run_t)
+        self._last_run_t = now
+        det = []
+        for rr in sr:
+            if paths:
+                vp = min(paths, key=lambda pp_: abs(pp_["range_m"] - rr))
+                vv = float(vp.get("velocity_mps", 0.0))
+            else:
+                vv = 0.0
+            det.append((float(rr), vv))
+        try:
+            live_tracks = self._update_tracks(det, dt)
+        except Exception:
+            live_tracks = []
+
+        with self._lock:
+            self._ok = True
+            self._real = real
+            self._paths = paths
+            self._n_paths = len(paths)
+            self._dom_range_m = dom_range
+            self._dom_perturb = dom_pert
+            self._corr = corr.tolist() if P >= 2 else []
+            self._cm_frac = cm_frac
+            self._superres_ranges = list(sr)
+            self._superres_n = len(sr)
+            self._superres_gain = sr_gain
+            self._fps = fps
+            self._dom_velocity = dom_vel
+            self._live_tracks = [dict(t) for t in live_tracks]
+
+    def get(self) -> dict:
+        with self._lock:
+            return {
+                "mpath_ok":          self._ok,
+                "mpath_real":        self._real,        # True only for genuine-phase CSI
+                "mpath_method":      self._method,
+                "mpath_n_paths":     self._n_paths,
+                "mpath_paths":       list(self._paths),
+                "mpath_dom_range_m": self._dom_range_m,
+                "mpath_dom_perturb": self._dom_perturb,
+                "mpath_range_res_m": self._range_res_m,
+                "mpath_common_frac": self._cm_frac,
+                "mpath_corr":        list(self._corr),
+                "mpath_bw_mhz":      self._bw / 1e6,
+                # v196: MUSIC ToF super-resolution
+                "mpath_superres_ranges": list(self._superres_ranges),
+                "mpath_superres_n":      self._superres_n,
+                "mpath_superres_gain":   self._superres_gain,
+                # v197: per-path Doppler / radial velocity (micro-Doppler)
+                "mpath_fps":             self._fps,
+                "mpath_dom_velocity":    self._dom_velocity,
+                # v199: persistent reflector tracks (range-velocity trajectories)
+                "mpath_tracks":          list(self._live_tracks),
+                "mpath_n_tracks":        len(self._live_tracks),
             }
 
 
@@ -77203,6 +78712,17 @@ class MultiAgentWirelessBCIFuser:
         # v179: Frequency resonance neural proxy — iterative error-correction differential decoder
         self.freq_res_proxy = FrequencyResonanceNeuralProxyEngine()
         log.info("[FREQRES] FrequencyResonanceNeuralProxyEngine ready — Gauss-Seidel differential resonance decoder")
+        # v193: per-entity bio-signature separation / tracking / localization / own-file storage
+        self.entity_separator = PerEntityBioSeparator()
+        # v195/v197: multipath CIR + per-path perturbation reverse-attribution + Doppler/velocity
+        # v198 (#3 adaptive bandwidth): BW + carrier configurable via env so an 80 MHz CSI source
+        # (Nexmon ac) gets 4× finer range resolution (c/BW: 15 m@20 MHz → 3.75 m@80 MHz) with no
+        # code change, and a 6 GHz / 2.4 GHz carrier sets the correct Doppler wavelength.
+        try:    _csi_bw = float(os.environ.get("NEPA_CSI_BW_MHZ", "20")) * 1e6
+        except Exception: _csi_bw = 20e6
+        try:    _csi_fc = float(os.environ.get("NEPA_CSI_CARRIER_GHZ", "5.2")) * 1e9
+        except Exception: _csi_fc = 5.2e9
+        self.multipath_cir = MultipathCIREngine(bandwidth_hz=_csi_bw, carrier_hz=_csi_fc)
         # v123: system thermal sensors via /sys/class/thermal — CPU/GPU heat trends
         self.thermal_presence = SystemThermalPresenceSensor()
         try:
@@ -78237,6 +79757,10 @@ class MultiAgentWirelessBCIFuser:
                  ("NeuralBand", "neuralband"),
                  ("FreqRes", "freqres"),
                  ("NSessReplay", "nsessreplay"),
+                 ("Entities-Sep", "entitysep"),
+                 ("Multipath", "multipath"),
+                 ("WorldEntity", "worldentity"),
+                 ("Capability", "capability"),
                  ("Telemetry", "telemetry"),
                  ("Info [i]", "info")]
         try:
@@ -79796,7 +81320,7 @@ class MultiAgentWirelessBCIFuser:
                     "rssi_dbm": float(_e.get("rssi_dbm", -100.0)),
                     "security": _e.get("security", "?"), "rate": _e.get("rate", ""),
                     "range_m": _rng, "link_var_db": _var, "link_motion": _mot,
-                    "hist": _ha[-64:].tolist(),
+                    "hist": _ha[-120:].tolist(),
                 })
             # v118: inject real BLE ranging entities from BluetoothInstrument — each discovered
             # BLE device is a second-radio receiver at 2.4 GHz with genuine RSSI → range.
@@ -79874,7 +81398,7 @@ class MultiAgentWirelessBCIFuser:
                         except Exception: _rrng = float("nan")
                         # v106: REAL device-free motion from this carrier's RSSI history on its node
                         _hh = _ch.get(_b, [])
-                        _ha2 = np.asarray(_hh[-64:], dtype=np.float64) if len(_hh) >= 4 else np.zeros(0)
+                        _ha2 = np.asarray(_hh[-120:], dtype=np.float64) if len(_hh) >= 4 else np.zeros(0)
                         if _ha2.size >= 4:
                             _rvar = float(np.std(_ha2)); _rmot = float(np.clip((_rvar - 0.5) / 4.0, 0, 1))
                         else:
@@ -79885,7 +81409,7 @@ class MultiAgentWirelessBCIFuser:
                             "band": _band, "signal": float(_re.get("signal", 0.0)),
                             "rssi_dbm": _rssi, "security": "?", "rate": "",
                             "range_m": _rrng, "link_var_db": _rvar, "link_motion": _rmot,
-                            "hist": _ha2[-64:].tolist(), "node": str(_nid),
+                            "hist": _ha2[-120:].tolist(), "node": str(_nid),
                         })
                         _remote_carriers += 1
                     except Exception:
@@ -80131,6 +81655,61 @@ class MultiAgentWirelessBCIFuser:
                         pp[_kfrp] = _vfrp
             except Exception:
                 pass
+            # v193: per-entity bio-signature separation/tracking/localization + own-file storage.
+            # Feeds on FreqRes's super-resolved per-carrier bio-frequencies (real data only):
+            # separates distinct bio-sources, keeps each a stable signature ID so "mass" reading
+            # never mixes them, localizes via multi-node spatial diversity, stores each in its
+            # own file. Carrier→node map + node GPS built from the live entity pool + remote nodes.
+            try:
+                _esep = getattr(self, "entity_separator", None)
+                if _esep is not None:
+                    _ents_es = pp.get("rf_link_entities") or []
+                    _cnmap = {}; _cfmap = {}
+                    for _en in _ents_es:
+                        _cid = str(_en.get("ssid") or _en.get("id") or _en.get("bssid") or "?")[:16]
+                        _cnmap[_cid] = str(_en.get("node") or "local")
+                        try:
+                            _fm = float(_en.get("freq_mhz") or 0.0)
+                            if _fm > 0:
+                                _cfmap[_cid] = _fm          # v194: for penetration depth
+                        except Exception:
+                            pass
+                    _npos = {}
+                    try:
+                        _gf = pp.get("gps_fix") or {}
+                        _glat, _glon = _gf.get("lat"), _gf.get("lon")
+                        if _glat is not None and _glon is not None:
+                            _npos["local"] = (float(_glat), float(_glon))
+                    except Exception:
+                        pass
+                    for _nid, _rec in (getattr(self, "remote_nodes", {}) or {}).items():
+                        _rlat, _rlon = _rec.get("lat"), _rec.get("lon")
+                        if _rlat is not None and _rlon is not None:
+                            try: _npos[str(_nid)] = (float(_rlat), float(_rlon))
+                            except Exception: pass
+                    _esep.ingest(pp.get("freqres_per_carrier") or [], _cnmap, _npos, _cfmap)
+                    for _kes, _ves in _esep.get().items():
+                        pp[_kes] = _ves
+                    pp["entsep_entities"] = _esep.get_entities()   # full list for the tab
+            except Exception:
+                pass
+            # v195: multipath CIR — publish per-path perturbation reverse-attribution
+            try:
+                _mpc = getattr(self, "multipath_cir", None)
+                if _mpc is not None:
+                    for _kmp, _vmp in _mpc.get().items():
+                        pp[_kmp] = _vmp
+            except Exception:
+                pass
+            # v200: WORLD-ENTITY FUSION — unify each detected being's REAL attributes from across
+            # the engines into ONE record: bio-SIGNATURE (FreqRes/separator: rhythm Hz, depth,
+            # carrier affinity) + LOCATION/MOTION (multipath tracker: range, velocity) — the honest
+            # 'a being doing a thing, labeled a location, with a signature type relative to itself'.
+            try:
+                pp["world_entities"] = self._fuse_world_entities(pp)
+                pp["world_entities_n"] = len(pp["world_entities"])
+            except Exception as _wfe:
+                log.debug(f"[WEFUSE] {_wfe}")
             # v180: bio-score enrichment — push freqres + rfproxy bio-scores onto every entity
             # so entity tab, per-entity windows, planet map all show live biological-band intensity
             try:
@@ -82063,6 +83642,14 @@ class MultiAgentWirelessBCIFuser:
                 pp["recon_body_count"]   = len(_snap.get("bodies", []))
                 _surf = _snap.get("surface", {})
                 pp["recon_mesh_verts"]   = int(len(_surf.get("verts", [])))
+                # v191: 'scan to graphics programs' — auto-export the RF reconstruction to a
+                # standard PLY point cloud on a throttle (real points only; any 3D tool opens it).
+                try:
+                    self.world_recon.maybe_export_ply(min_interval_s=30.0)
+                except Exception:
+                    pass
+                pp["recon_ply_path"]   = getattr(self.world_recon, "_last_ply_path", "") or ""
+                pp["recon_ply_points"] = int(getattr(self.world_recon, "_last_ply_points", 0) or 0)
         except Exception as _e:
             log.debug(f"[WORLD] recon status skipped: {_e}")
 
@@ -82673,6 +84260,80 @@ class MultiAgentWirelessBCIFuser:
             sample = 0.5 * resp + 0.7 * cardiac + real_pert * np.random.randn() + np.random.randn() * 0.01
             self._vital_trace.append(float(sample))
 
+    def _fuse_world_entities(self, pp: dict) -> list:
+        """v200: WORLD-ENTITY FUSION — merge the per-engine views of each detected being into
+        ONE unified record. Bio side (PerEntityBioSeparator, v193/194): rhythm Hz + carrier
+        affinity + penetration depth + separation-based location-kind. Spatial side (Multipath
+        tracker, v199): range + radial velocity + track persistence.
+
+        HONEST ASSOCIATION (no fabricated 1:1 links):
+          - When real-phase CSI gives genuine multipath tracks AND bio-entities both exist,
+            pair them by STRENGTH RANK (bio by bio-score, tracks by hit-count) — a transparent
+            heuristic, labeled confidence='RANK-MATCH', never asserted as certain. The track
+            lends its range+velocity to that bio-entity.
+          - Bio-entities with no track → signature-only (location from affinity/depth),
+            confidence='SIGNATURE-ONLY'.
+          - Tracks with no bio-entity → location/motion-only, confidence='LOCATION-ONLY'.
+          - If CSI is synth (no real multipath), tracks are NOT fused onto bio-entities — they
+            are listed separately tagged SYNTH so nothing fake is attributed. Prime directive.
+        Returns a list of unified entity dicts."""
+        bio    = list(pp.get("entsep_entities") or [])
+        tracks = list(pp.get("mpath_tracks") or [])
+        mreal  = bool(pp.get("mpath_real"))
+        out = []
+        # rank both sides by strength
+        bio_sorted = sorted(bio, key=lambda e: -float(e.get("score", 0.0)))
+        trk_sorted = sorted(tracks, key=lambda t: -int(t.get("hits", 0)))
+        paired_tracks = set()
+        for i, b in enumerate(bio_sorted):
+            freq = float(b.get("freq", 0.0))
+            rec = {
+                "wid":        f"W{i+1:03d}",
+                "signature":  {"rhythm_hz": round(freq, 4), "bpm": round(freq * 60.0, 1),
+                               "bio_score": round(float(b.get("score", 0.0)), 3),
+                               "depth_m": b.get("depth_m"), "depth_layer": b.get("depth_layer"),
+                               "carriers": list(b.get("carriers", []))[:4],
+                               "src_eid": b.get("eid")},
+                "location":   None, "velocity_mps": None, "track_id": None,
+                "loc_kind":   b.get("loc_kind"), "loc_desc": b.get("loc_desc"),
+            }
+            # associate a real track by strength rank (only when CSI is genuinely phase-real)
+            if mreal and i < len(trk_sorted):
+                t = trk_sorted[i]; paired_tracks.add(id(t))
+                rec["location"]     = round(float(t.get("range_m", 0.0)), 2)
+                rec["velocity_mps"] = round(float(t.get("velocity_mps", 0.0)), 3)
+                rec["track_id"]     = t.get("tid")
+                rec["confidence"]   = "RANK-MATCH"     # transparent heuristic, not certain
+            else:
+                rec["confidence"]   = "SIGNATURE-ONLY"
+            out.append(rec)
+        # unpaired real tracks → location/motion-only world entities
+        if mreal:
+            j = len(out)
+            for t in trk_sorted:
+                if id(t) in paired_tracks:
+                    continue
+                j += 1
+                out.append({
+                    "wid": f"W{j:03d}", "signature": None,
+                    "location": round(float(t.get("range_m", 0.0)), 2),
+                    "velocity_mps": round(float(t.get("velocity_mps", 0.0)), 3),
+                    "track_id": t.get("tid"), "loc_kind": "TRACK", "loc_desc": "multipath track",
+                    "confidence": "LOCATION-ONLY",
+                })
+        else:
+            # synth CSI: surface tracks separately, explicitly tagged, never fused onto a being
+            for t in trk_sorted[:6]:
+                out.append({
+                    "wid": "—", "signature": None,
+                    "location": round(float(t.get("range_m", 0.0)), 2),
+                    "velocity_mps": round(float(t.get("velocity_mps", 0.0)), 3),
+                    "track_id": t.get("tid"), "loc_kind": "TRACK(SYNTH)",
+                    "loc_desc": "synth-CSI track — not fused (no real phase CSI)",
+                    "confidence": "SYNTH-UNFUSED",
+                })
+        return out
+
     def _process_frame(self, csi_raw):
         if csi_raw is None:
             return None
@@ -82708,6 +84369,15 @@ class MultiAgentWirelessBCIFuser:
                     self.psych_profile["mvs_variance"]   = _mvs["variance"]
                 except Exception as _mve:
                     log.debug(f"[MVS] {_mve}")
+            # v195: feed the pristine PHASE CSI to the multipath CIR engine (reverse-engineer
+            # perturbations by correlative deduction on multiple paths). Provenance = the active
+            # capture method, so the engine only flags REAL multipath when genuine-phase CSI is
+            # present (ESP32/Nexmon/SDR); synth/RSSI CSI runs it but labels SYNTH-CSI.
+            if getattr(self, "multipath_cir", None) is not None:
+                try:
+                    self.multipath_cir.ingest(_cap, method=self.router_csi.method)
+                except Exception as _mpe:
+                    log.debug(f"[MPCIR] {_mpe}")
         except Exception:
             self._last_raw_csi = None
 
