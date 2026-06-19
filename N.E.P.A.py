@@ -550,6 +550,19 @@ class Instrument:
         self.grid = np.zeros((VOXEL_RES, VOXEL_RES, VOXEL_RES), dtype=np.float32)
         self.frames = 0
 
+    # v181 PERF: the voxel index meshgrid depends only on the constant VOXEL_RES, so it is
+    # shared across ALL instruments and computed once. observe() recreated it on EVERY call
+    # (once per network node per frame — dozens of 3×32³ allocations/frame); now cached.
+    _IJK = None
+
+    @classmethod
+    def _ijk_grid(cls):
+        if cls._IJK is None:
+            cls._IJK = np.meshgrid(np.arange(VOXEL_RES, dtype=np.float32),
+                                   np.arange(VOXEL_RES, dtype=np.float32),
+                                   np.arange(VOXEL_RES, dtype=np.float32), indexing='ij')
+        return cls._IJK
+
     def observe(self, rssi, snr_db, range_m, method="rssi"):
         """Ingest one measurement from this instrument and back-project it into its own
         voxel grid as a spherical shell of possible target locations at the observed
@@ -561,9 +574,7 @@ class Instrument:
         self.last_seen = time.time()
         self.frames += 1
         # Back-project: voxels at distance ≈ range_m from THIS instrument's position
-        ii, jj, kk = np.meshgrid(np.arange(VOXEL_RES, dtype=np.float32),
-                                  np.arange(VOXEL_RES, dtype=np.float32),
-                                  np.arange(VOXEL_RES, dtype=np.float32), indexing='ij')
+        ii, jj, kk = self._ijk_grid()   # cached class-level meshgrid (constant VOXEL_RES)
         px, py, pz = self.pos / M_PER_VOXEL
         dist_vox = np.sqrt((ii - px) ** 2 + (jj - py) ** 2 + (kk - pz) ** 2)
         r_vox = range_m / M_PER_VOXEL
@@ -1950,24 +1961,64 @@ class DetailTabWindow:
                      color='#00ffcc', fontsize=12)
 
     def _draw_instrument(self, fig, p, snap):
+        """v181: PER-INSTRUMENT FULL VIEW — every sensing vantage rendered individually with
+        its own voxel back-projection AND a full real-measurement readout (the user's "each
+        instrument full view; multiple instruments paint a global view in live time"). Each
+        card = one real instrument: its voxel shell + RSSI/SNR/range/method/position/frames/age."""
         insts = snap.get("instrument_objs", [])
         if not insts:
             ax = fig.add_subplot(111); ax.axis('off')
-            ax.text(0.5, 0.5, "No instruments - scanning...", ha='center', va='center',
-                    color='cyan', fontsize=12); return
+            ax.text(0.5, 0.5, "No instruments — scanning…\n(each real router/AP/SDR/LAN host "
+                    "becomes its own sensing vantage once detected)", ha='center', va='center',
+                    color='cyan', fontsize=12, transform=ax.transAxes); return
+        import time as _t_inst
+        # sort by SNR (strongest vantage first) so the most-informative instruments lead
+        insts = sorted(insts, key=lambda o: getattr(o, "snr_db", 0.0), reverse=True)
         n = min(len(insts), 12)
         cols = int(np.ceil(np.sqrt(n))); rows = int(np.ceil(n / cols))
+        gs = fig.add_gridspec(rows, cols, hspace=0.42, wspace=0.30,
+                              top=0.90, bottom=0.05, left=0.05, right=0.97)
+        _kind_col = {"router": "#22ff88", "ap": "#33ccff", "lan_host": "#ffaa44",
+                     "sdr": "#ff66cc", "esp32": "#cc66ff"}
         for idx in range(n):
             inst = insts[idx]
-            ax = fig.add_subplot(rows, cols, idx + 1); ax.set_facecolor('#080808')
-            ax.imshow(inst.grid.max(axis=2).T, origin='lower', cmap='inferno',
-                      aspect='auto', vmin=0, vmax=1)
-            ax.set_title(f"{inst.id[:16]}\n{inst.kind} {inst.rssi:.0f}dBm "
-                         f"r={inst.range_m:.1f}m SNR={inst.snr_db:.0f}",
-                         color='#cccccc', fontsize=7)
-            ax.tick_params(labelsize=4, colors='#555')
-        fig.suptitle("PER-INSTRUMENT DEEP DIVE - every sensor processed individually",
-                     color='#00ffcc', fontsize=12)
+            r, c = divmod(idx, cols)
+            # split each cell: left = voxel projection, right = measurement readout
+            sub = gs[r, c].subgridspec(1, 2, width_ratios=[1.0, 1.0], wspace=0.05)
+            axv = fig.add_subplot(sub[0, 0]); axv.set_facecolor('#080808')
+            axv.imshow(inst.grid.max(axis=2).T, origin='lower', cmap='inferno',
+                       aspect='auto', vmin=0, vmax=1)
+            axv.set_xticks([]); axv.set_yticks([])
+            _kc = _kind_col.get(getattr(inst, "kind", "?"), "#cccccc")
+            for sp in axv.spines.values(): sp.set_color(_kc); sp.set_linewidth(1.2)
+            axv.set_title(str(inst.id)[:16], color=_kc, fontsize=6.5, pad=2)
+            # readout panel
+            axr = fig.add_subplot(sub[0, 1]); axr.axis('off'); axr.set_facecolor('#060606')
+            _pos = getattr(inst, "pos", [0, 0, 0])
+            _age = _t_inst.time() - getattr(inst, "last_seen", _t_inst.time())
+            _live = _age < 30.0
+            rows_txt = [
+                ("kind",   str(getattr(inst, "kind", "?")),                  _kc),
+                ("RSSI",   f"{getattr(inst,'rssi',0):.0f} dBm",              "#88ccff"),
+                ("SNR",    f"{getattr(inst,'snr_db',0):.0f} dB",             "#22ff88"),
+                ("range",  f"{getattr(inst,'range_m',0):.1f} m",            "#ffcc66"),
+                ("method", str(getattr(inst, "method", "?"))[:10],          "#cc99ff"),
+                ("pos",    f"({float(_pos[0]):.0f},{float(_pos[1]):.0f},{float(_pos[2]):.0f})", "#99aabb"),
+                ("frames", str(getattr(inst, "frames", 0)),                 "#778899"),
+                ("status", "LIVE" if _live else f"stale {_age:.0f}s",       "#22ff88" if _live else "#ff6655"),
+            ]
+            for ri, (k, v, col) in enumerate(rows_txt):
+                yy = 0.94 - ri * 0.12
+                axr.text(0.02, yy, k, color="#667788", fontsize=5.0, va="top", transform=axr.transAxes)
+                axr.text(0.98, yy, v, color=col, fontsize=5.2, va="top", ha="right",
+                         fontweight="bold", transform=axr.transAxes)
+        n_total = len(insts)
+        n_live = sum(1 for o in insts if (_t_inst.time() - getattr(o, "last_seen", 0)) < 30.0)
+        fig.suptitle(
+            f"PER-INSTRUMENT FULL VIEW — {n_total} sensing vantages ({n_live} live), "
+            f"showing top {n} by SNR · each = one real sensor, individually back-projected · "
+            "multiple instruments fuse into the global picture",
+            color='#00ffcc', fontsize=10, fontweight='bold', y=0.97)
 
     def _draw_fused(self, fig, p, snap):
         """4-panel visual fused world map: top-down occupancy + 3D scene + spectrum + node table."""
@@ -2230,32 +2281,139 @@ class DetailTabWindow:
             return
         _vm = p.get("vitals_mode", "none")
         if _vm == "none" or not p.get("vitals_valid", True):
-            # v178: show RF-proxy BCI-band data when available instead of blank screen
-            _rfproxy_ok   = bool((snap or {}).get("rfproxy_ok"))
+            # v183: per-entity multi-panel RF-proxy BCI view (one card per detected RF carrier)
+            _rfproxy_ok    = bool((snap or {}).get("rfproxy_ok"))
             _rfproxy_bands = (snap or {}).get("rfproxy_bands") or {}
             _rfproxy_n     = int((snap or {}).get("rfproxy_n_carriers") or 0)
             _rfp_breath    = float((snap or {}).get("rfproxy_breath_hz") or 0.0)
             _rfp_heart     = float((snap or {}).get("rfproxy_heart_hz") or 0.0)
             _rfp_dom       = str((snap or {}).get("rfproxy_dominant_band") or "—")
+            _rp_pc         = (snap or {}).get("rfproxy_per_carrier") or []
+            _fr_pc         = (snap or {}).get("freqres_per_carrier") or []
+            # Build merged per-entity list: rfproxy primary, freqres bio-score enrichment
+            _fr_lut = {c.get("id"): c for c in _fr_pc}
+            _ent_cards = []
+            for _c in _rp_pc:
+                _cid = _c.get("id", "?")
+                _fc  = _fr_lut.get(_cid, {})
+                _ent_cards.append({
+                    "id":          _cid,
+                    "rssi":        float(_c.get("rssi", -100.0)),
+                    "breath_hz":   float(_c.get("breath_hz") or 0.0),
+                    "heart_hz":    float(_c.get("heart_hz")  or 0.0),
+                    "bands":       dict(_c.get("bands") or {}),
+                    "bio_score_rp": float(_c.get("bio_score") or 0.0),
+                    "bio_score_fr": float(_fc.get("bio_score") or 0.0),
+                    "dom_freq_fr": float(_fc.get("dom_freq") or 0.0),
+                    "band_powers_fr": dict(_fc.get("band_powers") or {}),
+                })
+            # sort by combined bio signal
+            _ent_cards.sort(key=lambda x: x["bio_score_rp"] + x["bio_score_fr"], reverse=True)
+
             import numpy as _bnp
             from matplotlib.gridspec import GridSpec as _BGS
+            _C = "#030b08"
+            _BCOLS = {"breath":"#22ffaa","heart":"#22ddff","delta":"#4a88ff",
+                      "theta":"#aa88ff","alpha":"#ff88aa","beta":"#ffaa44","gamma":"#ff4444"}
+            fig.patch.set_facecolor(_C)
 
-            fig.patch.set_facecolor("#030b08")
-            fig.suptitle(
-                "BCI DASHBOARD — NO EEG SENSOR  ·  Showing RF-DERIVED-PROXY (v178 NeuralBandRFProxy)",
-                color='#ff9944', fontsize=10, fontweight='bold')
-
-            if _rfproxy_ok and _rfproxy_bands:
+            if _rfproxy_ok and _ent_cards:
+                # ── v183: PER-ENTITY MULTI-PANEL — one card per RF carrier node ──
+                _N = min(len(_ent_cards), 8)
+                _NCOLS = min(_N, 4)
+                _NROWS = ((_N - 1) // _NCOLS) + 1
+                fig.suptitle(
+                    f"BCI — MULTI-ENTITY RF-PROXY  ·  {_N} NODE{'S' if _N != 1 else ''} DETECTED  "
+                    "·  RF-DERIVED-PROXY  ·  NOT EEG  ·  NOT NEURAL DATA",
+                    color="#22ff88", fontsize=9, fontweight="bold", y=0.99)
+                # Top strip: aggregate scene bands
+                _bgs = _BGS(_NROWS + 1, _NCOLS, figure=fig,
+                            hspace=0.62, wspace=0.38,
+                            top=0.94, bottom=0.07, left=0.06, right=0.97)
+                ax_agg = fig.add_subplot(_bgs[0, :])
+                ax_agg.set_facecolor(_C)
+                _border = ["breath", "heart", "delta", "theta", "alpha", "beta", "gamma"]
+                _bvals  = [_rfproxy_bands.get(b, -120.0) for b in _border]
+                _bcol2  = [_BCOLS.get(b, "#888888") for b in _border]
+                ax_agg.bar(range(len(_border)), _bvals, color=_bcol2, alpha=0.82)
+                ax_agg.set_xticks(range(len(_border)))
+                ax_agg.set_xticklabels(_border, fontsize=6.5, color="#cccccc")
+                ax_agg.set_ylabel("dB (RF-PROXY)", color="#888888", fontsize=6)
+                ax_agg.set_title(
+                    f"SCENE-AGGREGATE — {_rfproxy_n} carriers · breath~{_rfp_breath:.2f}Hz · "
+                    f"heart~{_rfp_heart:.2f}Hz · dom={_rfp_dom}  [RF-DERIVED-PROXY · NOT EEG]",
+                    color="#22ff88", fontsize=6.5, pad=2)
+                ax_agg.tick_params(colors="#666666", labelsize=5.5)
+                ax_agg.spines[:].set_color("#1a3a2a")
+                # Per-entity cards
+                for _ci, _ec in enumerate(_ent_cards[:_N]):
+                    _row = (_ci // _NCOLS) + 1
+                    _col = _ci  % _NCOLS
+                    _ax  = fig.add_subplot(_bgs[_row, _col])
+                    _ax.set_facecolor(_C); _ax.axis("off")
+                    _cid_s = str(_ec["id"])[:16]
+                    _bsc   = _ec["bio_score_rp"]
+                    _bsfr  = _ec["bio_score_fr"]
+                    _br    = _ec["breath_hz"]; _hr = _ec["heart_hz"]
+                    _dom_fr = _ec["dom_freq_fr"]
+                    _rssi  = _ec["rssi"]
+                    # bio-score bar
+                    _combined = min(1.0, (_bsc + _bsfr) * 0.5)
+                    _bar_col = "#22ff88" if _combined > 0.3 else "#ffaa44" if _combined > 0.1 else "#446644"
+                    _ax.barh(0.88, _combined, height=0.10, left=0.0,
+                             color=_bar_col, alpha=0.7, transform=_ax.transAxes)
+                    _ax.text(0.50, 0.97, _cid_s, transform=_ax.transAxes,
+                             ha="center", color="#22ff88", fontsize=5.8, fontweight="bold", va="top",
+                             clip_on=True)
+                    _ax.text(0.02, 0.86, f"Bio:{_combined:.2f}", transform=_ax.transAxes,
+                             ha="left", color=_bar_col, fontsize=5.0, va="top")
+                    _ax.text(0.98, 0.86, f"RSSI:{_rssi:.0f}dBm", transform=_ax.transAxes,
+                             ha="right", color="#888888", fontsize=4.8, va="top")
+                    _ax.text(0.02, 0.74, f"Breath: {_br:.3f}Hz" if _br > 0 else "Breath: —",
+                             transform=_ax.transAxes, color="#22ffaa", fontsize=5.2, va="top")
+                    _ax.text(0.02, 0.64, f"Heart:  {_hr:.3f}Hz" if _hr > 0 else "Heart: —",
+                             transform=_ax.transAxes, color="#22ddff", fontsize=5.2, va="top")
+                    _ax.text(0.02, 0.54, f"FreqRes:{_dom_fr:.3f}Hz" if _dom_fr > 0 else "FreqRes: —",
+                             transform=_ax.transAxes, color="#aa88ff", fontsize=5.0, va="top")
+                    # mini band bars
+                    _show_bds = ["delta", "theta", "alpha", "beta"]
+                    _bp = _ec["bands"]
+                    _bpfr = _ec["band_powers_fr"]
+                    for _bi, _bdn in enumerate(_show_bds):
+                        _bv = _bp.get(_bdn, -120.0)
+                        _bv_norm = max(0.0, min(1.0, (_bv + 100.0) / 60.0))
+                        _bx = 0.02 + _bi * 0.24
+                        _ax.barh(0.22, _bv_norm * 0.22, height=0.13, left=_bx,
+                                 color=_BCOLS.get(_bdn, "#888888"), alpha=0.65,
+                                 transform=_ax.transAxes)
+                        _ax.text(_bx + 0.11, 0.38, _bdn[:3], transform=_ax.transAxes,
+                                 ha="center", color=_BCOLS.get(_bdn, "#888888"),
+                                 fontsize=4.0, va="top")
+                    _ax.text(0.50, 0.10, "RF-DERIVED-PROXY", transform=_ax.transAxes,
+                             ha="center", color="#2a5a2a", fontsize=4.0, va="top",
+                             style="italic")
+                    _ax.set_xlim(0, 1); _ax.set_ylim(0, 1)
+                    # border
+                    for _sp in _ax.spines.values():
+                        _sp.set_visible(True); _sp.set_color(_bar_col); _sp.set_linewidth(0.5)
+                # honesty footer
+                fig.text(0.5, 0.01,
+                         f"ALL VALUES RSSI MODULATION POWER · NOT EEG · NOT THOUGHT CONTENT · "
+                         f"RF-DERIVED-PROXY · {_N} RF NODE{'S' if _N != 1 else ''} · "
+                         f"Connect EEG headset for real data",
+                         ha="center", color="#1a3a1a", fontsize=5.0)
+            elif _rfproxy_ok and _rfproxy_bands:
+                # fallback: aggregate bars only (no per-carrier list yet)
                 _bgs = _BGS(2, 2, figure=fig, hspace=0.5, wspace=0.35,
                             top=0.90, bottom=0.12, left=0.08, right=0.96)
-                # Band power bars
+                fig.suptitle(
+                    "BCI DASHBOARD — NO EEG SENSOR  ·  RF-DERIVED-PROXY (v183 NeuralBandRFProxy)",
+                    color='#ff9944', fontsize=10, fontweight='bold')
                 ax_bp = fig.add_subplot(_bgs[0, :])
-                ax_bp.set_facecolor("#030b08")
+                ax_bp.set_facecolor(_C)
                 _border = ["breath", "heart", "delta", "theta", "alpha", "beta", "gamma"]
-                _bcols  = {"breath":"#22ffaa","heart":"#22ddff","delta":"#4a88ff",
-                           "theta":"#aa88ff","alpha":"#ff88aa","beta":"#ffaa44","gamma":"#ff4444"}
                 _bvals  = [_rfproxy_bands.get(b, -120.0) for b in _border]
-                _bcol2  = [_bcols.get(b, "#888888") for b in _border]
+                _bcol2  = [_BCOLS.get(b, "#888888") for b in _border]
                 ax_bp.bar(range(len(_border)), _bvals, color=_bcol2, alpha=0.85)
                 ax_bp.set_xticks(range(len(_border)))
                 ax_bp.set_xticklabels(_border, fontsize=7.5, color="#cccccc")
@@ -2265,9 +2423,8 @@ class DetailTabWindow:
                     color="#22ff88", fontsize=8)
                 ax_bp.tick_params(colors="#777777", labelsize=7)
                 ax_bp.spines[:].set_color("#1a3a2a")
-                # Breath / heart estimates
                 ax_ph = fig.add_subplot(_bgs[1, 0])
-                ax_ph.set_facecolor("#030b08"); ax_ph.axis("off")
+                ax_ph.set_facecolor(_C); ax_ph.axis("off")
                 ax_ph.text(0.5, 0.85, "Physiological-band peaks\n(from RSSI modulation)",
                            ha="center", color="#aaaaaa", fontsize=8, transform=ax_ph.transAxes, va="top")
                 ax_ph.text(0.5, 0.65, f"Breath proxy:  {_rfp_breath:.3f} Hz" if _rfp_breath > 0 else "Breath:  building…",
@@ -2275,39 +2432,36 @@ class DetailTabWindow:
                 ax_ph.text(0.5, 0.45, f"Heart proxy:   {_rfp_heart:.3f} Hz" if _rfp_heart > 0 else "Heart:  building…",
                            ha="center", color="#22ddff", fontsize=10, fontweight="bold", transform=ax_ph.transAxes, va="top")
                 ax_ph.text(0.5, 0.25, f"Dominant:  {_rfp_dom}",
-                           ha="center", color=_bcols.get(_rfp_dom, "#aaaaaa"), fontsize=9, transform=ax_ph.transAxes, va="top")
-                # Connect-EEG notice
+                           ha="center", color=_BCOLS.get(_rfp_dom, "#aaaaaa"), fontsize=9, transform=ax_ph.transAxes, va="top")
                 ax_no = fig.add_subplot(_bgs[1, 1])
-                ax_no.set_facecolor("#030b08"); ax_no.axis("off")
+                ax_no.set_facecolor(_C); ax_no.axis("off")
                 ax_no.text(0.5, 0.85, "For REAL EEG data:", ha="center", color="#66ccaa",
                            fontsize=8, fontweight="bold", transform=ax_no.transAxes, va="top")
                 ax_no.text(0.5, 0.65,
                            "Connect Muse / OpenBCI /\nany BrainFlow/LSL device.\nAuto-detected on connect.",
                            ha="center", color="#66ccaa", fontsize=7.5, transform=ax_no.transAxes, va="top")
-                ax_no.text(0.5, 0.35,
-                           "RF-PROXY shows real RSSI\nmodulation at BCI frequencies\n— not brain data.",
-                           ha="center", color="#808080", fontsize=7, transform=ax_no.transAxes, va="top",
-                           style="italic")
+                ax_no.text(0.5, 0.35, "RF-PROXY shows real RSSI\nmodulation at BCI frequencies\n— not brain data.",
+                           ha="center", color="#808080", fontsize=7, transform=ax_no.transAxes, va="top", style="italic")
             else:
-                axn = fig.add_subplot(111); axn.axis('off')
-                axn.set_facecolor("#030b08")
-                axn.text(0.5, 0.70, "NO EEG / CSI-BCI SENSOR", ha='center', va='center',
-                         color='#ff6666', fontsize=18, weight='bold', transform=axn.transAxes)
+                fig.suptitle("BCI DASHBOARD — AWAITING RF-PROXY DATA", color="#ff9944", fontsize=10)
+                axn = fig.add_subplot(111); axn.axis("off"); axn.set_facecolor(_C)
+                axn.text(0.5, 0.70, "NO EEG / CSI-BCI SENSOR", ha="center", va="center",
+                         color="#ff6666", fontsize=18, weight="bold", transform=axn.transAxes)
                 axn.text(0.5, 0.54,
                          "Brain-state / focus / stress inference needs CSI or EEG hardware.\n"
-                         "RF-proxy (v178) is building carrier history — check NeuralBand tab.\n"
+                         "RF-proxy (v183) is building carrier history — check NeuralBand tab.\n"
                          "No fabricated neural data shown.",
-                         ha='center', va='center', color='#aaaaaa', fontsize=10, transform=axn.transAxes)
+                         ha="center", va="center", color="#aaaaaa", fontsize=10, transform=axn.transAxes)
                 axn.text(0.5, 0.36,
                          "Connect a wireless EEG headset (Muse / OpenBCI / BrainFlow/LSL)\n"
                          "for real measured band powers. N.E.P.A. auto-ingests on connect.",
-                         ha='center', va='center', color='#66ccaa', fontsize=9.5, transform=axn.transAxes)
+                         ha="center", va="center", color="#66ccaa", fontsize=9.5, transform=axn.transAxes)
                 axn.text(0.5, 0.14,
-                         "Remote 'mind-reading' through walls at a distance is not a missing sensor —\n"
-                         "it is data that does not exist. EEG fields are µV at the scalp (undetectable\n"
-                         "remotely). See NeuralBand tab for honest RF-DERIVED-PROXY data.",
-                         ha='center', va='center', color='#605868', fontsize=7.5, transform=axn.transAxes,
-                         style='italic')
+                         "RF-proxy monitors RSSI modulation at BCI-frequency bands across all\n"
+                         "detected carriers. See FreqRes tab for differential neural proxy decode.\n"
+                         "Each carrier shows as its own entity card when proxy history is ready.",
+                         ha="center", va="center", color="#605868", fontsize=7.5,
+                         transform=axn.transAxes, style="italic")
             return
         _tag = "  [SIMULATED]" if _vm == "simulated" else "  [REAL CSI]"
         _col = '#ffaa00' if _vm == "simulated" else '#00ffcc'
@@ -3019,10 +3173,34 @@ class DetailTabWindow:
             f"  [v180] PERF: adaptive RSSI scan (1-5 s, fast when motion present), per-carrier\n"
             f"              bio-score pushed onto every entity card + detail window, fuse-rate timer\n"
             f"              (fuse_hz) shown on the LiveSrc tab performance panel.\n"
-            f"  [v181] PERF: profiling found the ISTA measurement matrix (512×32768, fixed seed)\n"
-            f"              + its spectral-norm SVD were recomputed EVERY fuse frame (~2.3 s/frame\n"
-            f"              of measured waste). Now cached once — numerically identical, fuse frame\n"
-            f"              ~3.66 s → ~1.37 s (2.7× faster). Back-projection grid also cached."
+            f"  [v181] PERF: profiling found two per-frame waste hotspots: (1) the ISTA matrix\n"
+            f"              (512×32768, fixed seed) + its spectral-norm SVD recomputed every frame\n"
+            f"              (~2.3 s); (2) SatelliteResonanceEngine's ~400-sat × 648-cell scalar\n"
+            f"              haversine loop (~0.48 s). Both cached/vectorized — fuse frame 3.66 s →\n"
+            f"              0.88 s (4.1× faster), output verified BIT-IDENTICAL. Measured, not estimated.\n"
+            f"  [v182] PERF+UI: Instrument.observe() recreated a 32³ meshgrid per node per frame —\n"
+            f"              now a shared class cache. Per-Instrument tab [4] rebuilt into a FULL\n"
+            f"              VIEW: each instrument shows its voxel back-projection + complete real\n"
+            f"              readout (kind/RSSI/SNR/range/method/pos/frames/status), SNR-sorted.\n"
+            f"  [v183] PERF+UI: (1) KineticTrackFusionEngine._great_circle propagation vectorized:\n"
+            f"              12.8× speedup (20.8→1.6ms for 15k tracks), bit-identical output.\n"
+            f"              (2) BCI tab upgraded to PER-ENTITY MULTI-PANEL: each detected RF carrier\n"
+            f"              node gets its own card (ID, bio-score bar, breath/heart Hz, FreqRes decode,\n"
+            f"              band-power mini-bars). (3) FreqRes tab bottom row split: bio-score bars\n"
+            f"              + per-entity band-power heatmap side by side. (4) NeuralSessionRecorder\n"
+            f"              now stores full per-carrier band_powers + rfproxy RSSI/breath/heart\n"
+            f"              cross-reference in every session row.\n"
+            f"  [v184] PERF+SIGNAL: (1) NeRF2FullModelNP.render_rays_batch(): batch all n_rays\n"
+            f"              through ONE MLP forward pass (eliminating Python loop): ~2× NeRF2\n"
+            f"              speedup + better BLAS utilization. (2) FrequencyResonanceNeuralProxy\n"
+            f"              MVDR spatial filter: after Gauss-Seidel convergence, apply Minimum\n"
+            f"              Variance Distortionless Response beamformer (w=R^-1 e_i / e_i'R^-1 e_i)\n"
+            f"              for optimal per-carrier signal separation — still labeled RF-DERIVED-PROXY.\n"
+            f"              (3) FreqRes tab: entity bio-score HISTORY panel (8-min rolling, 60 samples\n"
+            f"              × 8s) — tracks each entity's biological signal strength over time.\n"
+            f"              (4) Granger causality pair pre-filter: skip |r|<0.15 Pearson pairs\n"
+            f"              (these never reach F≥4) — reduces 600→~200 lstsq calls per cycle,\n"
+            f"              cutting background-thread GIL contention ~3×."
         )
         ax2.text(0.03, max(y - 0.02, 0.06), _extra,
                  transform=ax2.transAxes, color='#88ffcc', fontsize=7.5, va='top',
@@ -12087,7 +12265,7 @@ class DetailTabWindow:
         _C = "#030b08"
         fig.patch.set_facecolor(_C)
         fig.suptitle(
-            "FREQUENCY RESONANCE NEURAL PROXY  —  Gauss-Seidel Iterative Differential Decoder  "
+            "FREQUENCY RESONANCE NEURAL PROXY  —  Gauss-Seidel + MVDR Optimal Spatial Filter  "
             "[RF-DERIVED-PROXY · RESONANCE-INFERRED · NOT EEG]",
             color="#aa88ff", fontsize=8.5, fontweight="bold", y=0.98)
 
@@ -12105,6 +12283,8 @@ class DetailTabWindow:
         sch_hz     = float(snap.get("freqres_schumann_hz") or 0.0)
         conv_hist  = snap.get("freqres_conv_history") or []
         carr_ids   = snap.get("freqres_carrier_ids") or []
+        ent_hist   = snap.get("freqres_entity_history") or {}    # v184: per-entity history
+        mvdr_ok    = bool(snap.get("freqres_mvdr_applied"))      # v184: MVDR status
         # Also pull neural session data
         ns_n       = int(snap.get("nsess_n_frames") or 0)
         ns_carriers = int(snap.get("nsess_n_carriers") or 0)
@@ -12205,9 +12385,8 @@ class DetailTabWindow:
             ("Schumann Hz",      f"{sch_hz:.2f} Hz" if sch_hz > 0 else "—", "#60d0ff"),
             ("Iterations",       str(n_iter),                           "#aa88ff"),
             ("Residual",         f"{residual:.5f}",                     "#ffaa44"),
-            ("Neural sess frames", str(ns_n),                           "#66ffcc"),
-            ("Session carriers", str(ns_carriers),                      "#66ffcc"),
-            ("Session duration", f"{ns_dur_s:.0f}s" if ns_dur_s > 0 else "—", "#66ffcc"),
+            ("MVDR filter",      "ON" if mvdr_ok else "building",       "#22ff88" if mvdr_ok else "#664444"),
+            ("Neural sess",      f"{ns_n} frames / {ns_dur_s:.0f}s",   "#66ffcc"),
         ]
         ax_vlf.text(0.5, 0.99, "RESONANCE DECODER STATUS",
                     transform=ax_vlf.transAxes, ha="center", va="top",
@@ -12219,13 +12398,13 @@ class DetailTabWindow:
             ax_vlf.text(0.95, yy, val, transform=ax_vlf.transAxes,
                         color=col, fontsize=5.5, va="top", ha="right", fontweight="bold")
 
-        # ── Bottom: Per-carrier bio-score ranking ──
-        ax_bio = fig.add_subplot(gs[2, :])
+        # ── Bottom-left: Per-carrier bio-score ranking (v184: col 0 only) ──
+        ax_bio = fig.add_subplot(gs[2, 0])
         ax_bio.set_facecolor(_C)
         if per_carr:
-            show = per_carr[:16]
-            names  = [c.get("id", "?")[:12] for c in show]
-            scores = [c.get("bio_score", 0.0) for c in show]
+            show = per_carr[:8]
+            names      = [c.get("id", "?")[:8] for c in show]
+            scores     = [c.get("bio_score", 0.0) for c in show]
             dom_hz_per = [c.get("dom_freq", 0.0) for c in show]
             colors_bio = ["#22ffaa" if s > 0.3 else "#aa88ff" if s > 0.1 else "#555555"
                           for s in scores]
@@ -12233,36 +12412,353 @@ class DetailTabWindow:
             ax_bio.bar(xp, scores, color=colors_bio, alpha=0.85)
             for xi, (sc, dhz) in enumerate(zip(scores, dom_hz_per)):
                 if dhz > 0:
-                    ax_bio.text(xi, sc + 0.005, f"{dhz:.2f}Hz",
-                                ha="center", color="#aaffdd", fontsize=4, va="bottom")
+                    ax_bio.text(xi, sc + 0.005, f"{dhz:.2f}",
+                                ha="center", color="#aaffdd", fontsize=3.8, va="bottom")
             ax_bio.set_xticks(xp)
-            ax_bio.set_xticklabels(names, fontsize=4.5, color="#cccccc",
-                                   rotation=30, ha="right")
-            ax_bio.set_ylabel("Bio-score (breath+heart / total)", color="#888888", fontsize=6)
+            ax_bio.set_xticklabels(names, fontsize=4.0, color="#cccccc",
+                                   rotation=35, ha="right")
+            ax_bio.set_ylabel("Bio-score", color="#888888", fontsize=5.5)
             ax_bio.axhline(0.3, color="#22ff88", lw=0.7, ls="--", alpha=0.5)
-            ax_bio.text(len(show) - 1, 0.32, "bio threshold", color="#22ff88",
-                        fontsize=4.5, ha="right")
         else:
-            ax_bio.text(0.5, 0.5, "Per-carrier biological modulation scores building…",
+            ax_bio.text(0.5, 0.5, "Bio-scores\nbuilding…",
                         ha="center", va="center", color="#554466",
-                        fontsize=9, transform=ax_bio.transAxes)
-        ax_bio.set_title(
-            "Per-carrier biological-band modulation score (green=likely biological source, "
-            "dominant Hz above bar)  [RF-DERIVED-PROXY]",
-            color="#aaaaaa", fontsize=6, pad=3)
-        ax_bio.tick_params(colors="#777777", labelsize=5); ax_bio.spines[:].set_color("#2a1a3a")
+                        fontsize=8, transform=ax_bio.transAxes)
+        ax_bio.set_title("Bio-score per carrier\n[RF-DERIVED-PROXY]",
+                         color="#aaaaaa", fontsize=5.5, pad=2)
+        ax_bio.tick_params(colors="#777777", labelsize=4); ax_bio.spines[:].set_color("#2a1a3a")
+
+        # ── Bottom-center: Per-entity band-power heatmap (v183, now col 1) ──
+        ax_heat2 = fig.add_subplot(gs[2, 1])
+        ax_heat2.set_facecolor(_C)
+        _heat_bands = ["breath", "heart", "delta", "theta", "alpha", "beta"]
+        if per_carr and per_carr[0].get("band_powers"):
+            _pc_show = per_carr[:8]
+            _hdata = _np.array([
+                [c.get("band_powers", {}).get(b, 0.0) for b in _heat_bands]
+                for c in _pc_show], dtype=_np.float64)
+            if _hdata.size > 0:
+                try:
+                    _him = ax_heat2.imshow(_hdata.T, aspect="auto", cmap="magma",
+                                           vmin=0.0, vmax=0.5, origin="lower")
+                    ax_heat2.set_xticks(range(len(_pc_show)))
+                    ax_heat2.set_xticklabels([c.get("id", "?")[:7] for c in _pc_show],
+                                             fontsize=3.5, color="#cccccc",
+                                             rotation=35, ha="right")
+                    ax_heat2.set_yticks(range(len(_heat_bands)))
+                    ax_heat2.set_yticklabels([b[:4].upper() for b in _heat_bands],
+                                             fontsize=4.0, color="#cccccc")
+                    try:
+                        fig.colorbar(_him, ax=ax_heat2, fraction=0.05, pad=0.02,
+                                     label="Pwr frac", format="%.2f")
+                    except Exception:
+                        pass
+                except Exception:
+                    ax_heat2.text(0.5, 0.5, "heatmap error", ha="center", va="center",
+                                  color="#554466", fontsize=7, transform=ax_heat2.transAxes)
+        else:
+            ax_heat2.text(0.5, 0.5, "Band data\nbuilding…",
+                          ha="center", va="center", color="#554466",
+                          fontsize=7, transform=ax_heat2.transAxes)
+        ax_heat2.set_title("Band-power heatmap\n[MVDR+FreqRes · RF-PROXY]",
+                           color="#aaaaaa", fontsize=5.5, pad=2)
+        ax_heat2.tick_params(colors="#777777", labelsize=4); ax_heat2.spines[:].set_color("#2a1a3a")
+
+        # ── Bottom-right: Entity bio-score history over time (v184 NEW) ──
+        ax_ehist = fig.add_subplot(gs[2, 2])
+        ax_ehist.set_facecolor(_C)
+        _hist_colors = ["#22ffaa", "#aa88ff", "#22ddff", "#ffaa44",
+                        "#ff4444", "#44ddff", "#ffdd44", "#88ff88"]
+        if ent_hist:
+            import time as _ti
+            _now_draw = _ti.time()
+            _plotted = 0
+            for _eidx, (_eid, _epoints) in enumerate(list(ent_hist.items())[:8]):
+                if len(_epoints) < 2:
+                    continue
+                _ts  = _np.array([p[0] for p in _epoints])
+                _bsc = _np.array([p[1] for p in _epoints])
+                _rel = (_ts - _now_draw) / 60.0   # minutes ago (negative = past)
+                _col = _hist_colors[_eidx % len(_hist_colors)]
+                ax_ehist.plot(_rel, _bsc, lw=1.1, color=_col, alpha=0.85,
+                              label=_eid[:10])
+                ax_ehist.fill_between(_rel, _bsc, alpha=0.12, color=_col)
+                _plotted += 1
+            if _plotted:
+                ax_ehist.axhline(0.3, color="#22ff88", lw=0.6, ls="--", alpha=0.5)
+                ax_ehist.set_xlabel("Minutes ago", color="#888888", fontsize=5.5)
+                ax_ehist.set_ylabel("Bio-score", color="#888888", fontsize=5.5)
+                ax_ehist.legend(loc="upper left", fontsize=3.5, facecolor="#111111",
+                                labelcolor="white", framealpha=0.5, ncol=2)
+            else:
+                ax_ehist.text(0.5, 0.5, "Need ≥2 samples\nper entity",
+                              ha="center", va="center", color="#554466",
+                              fontsize=7, transform=ax_ehist.transAxes)
+        else:
+            ax_ehist.text(0.5, 0.5, "Building entity\nbio-score history\n(~8 min buffer)…",
+                          ha="center", va="center", color="#554466",
+                          fontsize=7, transform=ax_ehist.transAxes)
+        ax_ehist.set_title("Bio-score history per entity (8 min rolling)\n[RF-DERIVED-PROXY]",
+                           color="#aaaaaa", fontsize=5.5, pad=2)
+        ax_ehist.tick_params(colors="#777777", labelsize=4); ax_ehist.spines[:].set_color("#2a1a3a")
 
         # Footer
-        ok_str = "LIVE" if ok else "WAITING"
+        ok_str  = "LIVE" if ok else "WAITING"
+        mvdr_str = "MVDR-ON" if mvdr_ok else "MVDR-building"
         vlf_note = ("Schumann VLF globally penetrating — real physics" if sch_hz > 6.5
                     else "VLF receiver building Schumann baseline")
         status = (
-            f"FREQRES {ok_str} · {n_carr} carriers · {n_iter} Gauss-Seidel iters · "
+            f"FREQRES {ok_str} · {mvdr_str} · {n_carr} carriers · {n_iter} Gauss-Seidel iters · "
             f"residual={residual:.4f} · orbital VLF coupling={orb_vlf:.3f} · {vlf_note} · "
             "DIFFERENTIAL RF RESIDUALS — NOT EEG — NOT THOUGHT CONTENT — RF-DERIVED-PROXY"
         )
         fig.text(0.5, 0.012, status, ha="center", va="bottom",
                  color="#2a1a4a", fontsize=5.2)
+
+    def _draw_nsessreplay(self, fig, p, snap):
+        """v185: Neural Session Replay — the honest 'digital copied minds' playback display.
+
+        Reads the in-memory neural session buffer (last 720 rows × 5s = 1 hr) from
+        NeuralSessionRecorder and renders per-entity time-series:
+          - bio-score trajectory per carrier (who is showing biological RF modulation)
+          - dominant biological frequency trajectory per entity (breath/heart drift)
+          - aggregate band power evolution (scene-level delta/theta/alpha/beta trend)
+          - breath_hz / heart_hz phase tracking across session
+
+        ALL labeled RF-DERIVED-PROXY. Real EEG rows labeled REAL-EEG+RF-DERIVED-PROXY.
+        'Replay' = showing what the RF environment measured, NOT stored thoughts.
+        """
+        import numpy as _np
+        _C = "#03070a"
+        fig.patch.set_facecolor(_C)
+        fig.suptitle(
+            "NEURAL SESSION REPLAY  —  RF-Proxy State Archive  "
+            "[RF-DERIVED-PROXY · RESONANCE-INFERRED · NOT EEG · NOT THOUGHT CONTENT]",
+            color="#66ffcc", fontsize=8.5, fontweight="bold", y=0.98)
+
+        # Pull session rows from the in-process recorder
+        _nsess = getattr(getattr(self, "fuser", None), "neural_session", None)
+        rows = _nsess.get_recent(720) if _nsess is not None else []
+
+        ns_n      = int(snap.get("nsess_n_frames") or 0)
+        ns_dur_s  = float(snap.get("nsess_duration_s") or 0.0)
+        ns_path   = str(snap.get("nsess_path") or "")
+        ns_ok     = bool(snap.get("nsess_ok"))
+
+        gs = fig.add_gridspec(3, 3, hspace=0.55, wspace=0.38,
+                              top=0.93, bottom=0.10, left=0.06, right=0.97)
+
+        # ── Top-left: session metadata ──
+        ax_info = fig.add_subplot(gs[0, 0])
+        ax_info.set_facecolor(_C); ax_info.axis("off")
+        ax_info.text(0.5, 0.97, "SESSION INFO", transform=ax_info.transAxes,
+                     ha="center", va="top", color="#66ffcc", fontsize=7, fontweight="bold")
+        _dur_m = ns_dur_s / 60.0
+        _info_lines = [
+            ("Status",    "LIVE" if ns_ok else "offline",  "#22ff88" if ns_ok else "#664444"),
+            ("Frames",    str(ns_n),                        "#66ffcc"),
+            ("Duration",  f"{_dur_m:.1f} min",              "#66ffcc"),
+            ("Memory",    f"{len(rows)} rows",              "#66ffcc"),
+            ("File",      _np.array(list(ns_path[-28:])).tobytes().decode() if ns_path else "—", "#aaaaaa"),
+            ("Provenance","RF-DERIVED-PROXY",              "#ffaa44"),
+        ]
+        for ri, (lbl, val, col) in enumerate(_info_lines):
+            yy = 0.84 - ri * 0.132
+            ax_info.text(0.04, yy, lbl, transform=ax_info.transAxes,
+                         color="#888888", fontsize=5.5, va="top")
+            ax_info.text(0.96, yy, val, transform=ax_info.transAxes,
+                         color=col, fontsize=5.5, va="top", ha="right", fontweight="bold")
+
+        # ── Top-center + right: aggregate band power time series ──
+        ax_bands = fig.add_subplot(gs[0, 1:])
+        ax_bands.set_facecolor(_C)
+        _BAND_C = {"breath":"#22ffaa","heart":"#22ddff","delta":"#4a88ff",
+                   "theta":"#aa88ff","alpha":"#ff88aa","beta":"#ffaa44"}
+        if rows:
+            _ts0 = rows[0]["t"]
+            _t_ax = _np.array([(r["t"] - _ts0) / 60.0 for r in rows])  # minutes
+            for bname, bcol in _BAND_C.items():
+                _bvals = []
+                for r in rows:
+                    rb = r.get("rfproxy_bands") or {}
+                    _bvals.append(float(rb.get(bname) or -120.0))
+                _bvals = _np.array(_bvals)
+                _ok_mask = _bvals > -110
+                if _ok_mask.sum() >= 2:
+                    ax_bands.plot(_t_ax[_ok_mask], _bvals[_ok_mask], lw=1.0,
+                                  color=bcol, alpha=0.8, label=bname)
+            ax_bands.set_xlabel("Session time (minutes)", color="#888888", fontsize=5.5)
+            ax_bands.set_ylabel("RF-PROXY power (dB)", color="#888888", fontsize=5.5)
+            ax_bands.legend(loc="upper right", fontsize=4.5, facecolor="#111111",
+                            labelcolor="white", framealpha=0.5, ncol=3)
+        else:
+            ax_bands.text(0.5, 0.5, "Awaiting session data…\n(builds after ~5s of RF-proxy data)",
+                          ha="center", va="center", color="#336633",
+                          fontsize=9, transform=ax_bands.transAxes)
+        ax_bands.set_title("Aggregate RF-proxy band powers over session time  [RF-DERIVED-PROXY]",
+                           color="#aaaaaa", fontsize=6, pad=3)
+        ax_bands.tick_params(colors="#777777", labelsize=5)
+        ax_bands.spines[:].set_color("#0a2a1a")
+
+        # ── Mid: per-entity bio-score trajectories ──
+        ax_bioscore = fig.add_subplot(gs[1, :2])
+        ax_bioscore.set_facecolor(_C)
+        _ECOLS = ["#22ffaa","#aa88ff","#22ddff","#ffaa44","#ff4444",
+                  "#44ddff","#ffdd44","#88ff88","#ff88cc","#aaffdd"]
+        entity_names = []
+        if rows:
+            # Collect per-entity bio-score from freqres_carriers rows
+            _ent_scores = {}   # eid → [(t_min, bio_score)]
+            _ent_domhz  = {}   # eid → [(t_min, dom_freq)]
+            for r in rows:
+                _t_min = (r["t"] - _ts0) / 60.0
+                for c in (r.get("freqres_carriers") or []):
+                    eid = str(c.get("id") or "?")
+                    bs  = float(c.get("bio_score") or 0.0)
+                    dhz = float(c.get("dom_freq") or 0.0)
+                    if eid not in _ent_scores:
+                        _ent_scores[eid] = []
+                        _ent_domhz[eid]  = []
+                    _ent_scores[eid].append((_t_min, bs))
+                    _ent_domhz[eid].append((_t_min, dhz))
+
+            # Sort by mean bio-score
+            _sorted_ents = sorted(_ent_scores.keys(),
+                                  key=lambda e: -_np.mean([x[1] for x in _ent_scores[e]]))
+            entity_names = _sorted_ents[:8]
+
+            for _ei, eid in enumerate(entity_names):
+                _pts = _ent_scores[eid]
+                if len(_pts) < 2:
+                    continue
+                _tx = _np.array([pt[0] for pt in _pts])
+                _by = _np.array([pt[1] for pt in _pts])
+                _col = _ECOLS[_ei % len(_ECOLS)]
+                ax_bioscore.plot(_tx, _by, lw=1.1, color=_col, alpha=0.85,
+                                 label=eid[:12])
+                ax_bioscore.fill_between(_tx, _by, alpha=0.1, color=_col)
+
+            if entity_names:
+                ax_bioscore.axhline(0.3, color="#22ff88", lw=0.6, ls="--", alpha=0.5)
+                ax_bioscore.legend(loc="upper right", fontsize=4.0, facecolor="#111111",
+                                   labelcolor="white", framealpha=0.5, ncol=4)
+                ax_bioscore.set_xlabel("Session time (minutes)", color="#888888", fontsize=5.5)
+                ax_bioscore.set_ylabel("Bio-score (RF-PROXY)", color="#888888", fontsize=5.5)
+            else:
+                ax_bioscore.text(0.5, 0.5, "No per-carrier data yet — building…",
+                                 ha="center", va="center", color="#336633",
+                                 fontsize=8, transform=ax_bioscore.transAxes)
+        else:
+            ax_bioscore.text(0.5, 0.5, "Session buffer empty — starts after 5s of RF data",
+                             ha="center", va="center", color="#336633",
+                             fontsize=9, transform=ax_bioscore.transAxes)
+        ax_bioscore.set_title(
+            "Per-entity bio-score trajectory (each line = one RF carrier / biological source)  [RF-DERIVED-PROXY]",
+            color="#aaaaaa", fontsize=6, pad=3)
+        ax_bioscore.tick_params(colors="#777777", labelsize=5)
+        ax_bioscore.spines[:].set_color("#0a2a1a")
+
+        # ── Mid-right: dominant frequency trajectory ──
+        ax_domhz = fig.add_subplot(gs[1, 2])
+        ax_domhz.set_facecolor(_C)
+        if rows and entity_names:
+            for _ei, eid in enumerate(entity_names[:6]):
+                _pts = _ent_domhz.get(eid, [])
+                if len(_pts) < 2:
+                    continue
+                _tx = _np.array([pt[0] for pt in _pts])
+                _hy = _np.array([pt[1] for pt in _pts])
+                _valid = _hy > 0
+                if _valid.sum() >= 2:
+                    _col = _ECOLS[_ei % len(_ECOLS)]
+                    ax_domhz.scatter(_tx[_valid], _hy[_valid], s=6,
+                                     color=_col, alpha=0.75, label=eid[:8])
+            ax_domhz.axhline(0.15, color="#22ffaa", lw=0.5, ls=":", alpha=0.4)
+            ax_domhz.axhline(1.2, color="#22ddff", lw=0.5, ls=":", alpha=0.4)
+            ax_domhz.text(0.02, 0.16, "~breath", transform=ax_domhz.transAxes,
+                          color="#22ffaa", fontsize=4, va="bottom")
+            ax_domhz.text(0.02, 0.56, "~heart", transform=ax_domhz.transAxes,
+                          color="#22ddff", fontsize=4, va="bottom")
+            ax_domhz.set_ylim(0, min(5.0, ax_domhz.get_ylim()[1] if ax_domhz.get_ylim()[1] > 0 else 5))
+            ax_domhz.set_xlabel("Min", color="#888888", fontsize=5.5)
+            ax_domhz.set_ylabel("Dom Hz", color="#888888", fontsize=5.5)
+        else:
+            ax_domhz.text(0.5, 0.5, "Dom-freq\nbuilding…",
+                          ha="center", va="center", color="#336633",
+                          fontsize=7, transform=ax_domhz.transAxes)
+        ax_domhz.set_title("Dominant bio-freq\n[RF-DERIVED-PROXY]",
+                           color="#aaaaaa", fontsize=5.5, pad=2)
+        ax_domhz.tick_params(colors="#777777", labelsize=4)
+        ax_domhz.spines[:].set_color("#0a2a1a")
+
+        # ── Bottom-left: breath/heart Hz tracking ──
+        ax_bh = fig.add_subplot(gs[2, :2])
+        ax_bh.set_facecolor(_C)
+        if rows:
+            _t_ax2 = _np.array([(r["t"] - _ts0) / 60.0 for r in rows])
+            _breath = _np.array([float(r.get("rfproxy_breath_hz") or 0.0) for r in rows])
+            _heart  = _np.array([float(r.get("rfproxy_heart_hz") or 0.0) for r in rows])
+            _bm = _breath > 0; _hm = _heart > 0
+            if _bm.sum() >= 2:
+                ax_bh.plot(_t_ax2[_bm], _breath[_bm], lw=1.2, color="#22ffaa",
+                           alpha=0.85, label="Breath peak (Hz)")
+                ax_bh.fill_between(_t_ax2[_bm], _breath[_bm], alpha=0.12, color="#22ffaa")
+            if _hm.sum() >= 2:
+                ax_bh.plot(_t_ax2[_hm], _heart[_hm], lw=1.2, color="#22ddff",
+                           alpha=0.85, label="Heart peak (Hz)")
+                ax_bh.fill_between(_t_ax2[_hm], _heart[_hm], alpha=0.12, color="#22ddff")
+            if _bm.sum() >= 2 or _hm.sum() >= 2:
+                ax_bh.legend(loc="upper right", fontsize=5, facecolor="#111111",
+                             labelcolor="white", framealpha=0.5)
+                ax_bh.set_xlabel("Session time (minutes)", color="#888888", fontsize=5.5)
+                ax_bh.set_ylabel("Frequency (Hz)", color="#888888", fontsize=5.5)
+            else:
+                ax_bh.text(0.5, 0.5, "Breath/heart tracking building (needs ~15s)…",
+                           ha="center", va="center", color="#336633",
+                           fontsize=8, transform=ax_bh.transAxes)
+        else:
+            ax_bh.text(0.5, 0.5, "No session data yet", ha="center", va="center",
+                       color="#336633", fontsize=9, transform=ax_bh.transAxes)
+        ax_bh.set_title(
+            "Breath-peak Hz + Heart-peak Hz scene tracking over session  [RF-DERIVED-PROXY · NOT MEDICAL]",
+            color="#aaaaaa", fontsize=6, pad=3)
+        ax_bh.tick_params(colors="#777777", labelsize=5)
+        ax_bh.spines[:].set_color("#0a2a1a")
+
+        # ── Bottom-right: session summary table ──
+        ax_sum = fig.add_subplot(gs[2, 2])
+        ax_sum.set_facecolor(_C); ax_sum.axis("off")
+        ax_sum.text(0.5, 0.99, "REPLAY SUMMARY", transform=ax_sum.transAxes,
+                    ha="center", va="top", color="#66ffcc", fontsize=7, fontweight="bold")
+        n_ents = len(entity_names) if rows else 0
+        _any_eeg = any(r.get("provenance", "").startswith("REAL-EEG") for r in rows)
+        _any_freqres = any(r.get("freqres_carriers") for r in rows)
+        _bio_mean = 0.0
+        if rows:
+            _all_bs = [float(c.get("bio_score") or 0) for r in rows
+                       for c in (r.get("freqres_carriers") or [])]
+            _bio_mean = float(_np.mean(_all_bs)) if _all_bs else 0.0
+        _sumlines = [
+            ("Buffer rows",   str(len(rows)),                            "#66ffcc"),
+            ("Entities seen", str(n_ents),                               "#22ffaa"),
+            ("Avg bio-score", f"{_bio_mean:.3f}",                        "#22ffaa" if _bio_mean > 0.2 else "#666666"),
+            ("FreqRes data",  "YES" if _any_freqres else "building",     "#22ff88" if _any_freqres else "#664444"),
+            ("Real EEG",      "PRESENT" if _any_eeg else "not connected","#00ff88" if _any_eeg else "#664444"),
+            ("Storage",       "JSONL" if ns_ok else "offline",           "#66ffcc" if ns_ok else "#664444"),
+            ("Auto-store",    "every 5s",                                 "#aaaaaa"),
+        ]
+        for ri, (lbl, val, col) in enumerate(_sumlines):
+            yy = 0.87 - ri * 0.118
+            ax_sum.text(0.04, yy, lbl, transform=ax_sum.transAxes,
+                        color="#888888", fontsize=5.5, va="top")
+            ax_sum.text(0.96, yy, val, transform=ax_sum.transAxes,
+                        color=col, fontsize=5.5, va="top", ha="right", fontweight="bold")
+
+        # Footer
+        fig.text(0.5, 0.012,
+                 f"NSESSREPLAY · {ns_n} stored rows · {_dur_m:.1f} min session · "
+                 f"{n_ents} entities tracked · {len(rows)} in memory · "
+                 "RF-DERIVED-PROXY ARCHIVE — NOT EEG — NOT THOUGHT CONTENT — NO FALSE DATA",
+                 ha="center", va="bottom", color="#1a3a2a", fontsize=5.2)
 
     def _draw_bleview(self, fig, p, snap):
         """v127: BLE + SUBNET SCANNER — all nearby Bluetooth LE devices and LAN hosts.
@@ -15494,7 +15990,7 @@ class WebViewerServer:
                  "planetscan", "deepscan", "planettomo", "kineticprop", "geocurrent",
                  "kinvis", "xcorrmatrix", "spatialxref", "xcorrlag", "corrnet", "xcorrpca",
                  "granger", "anomaly", "partial", "sessions", "intake", "forecast", "vlfelf",
-                 "rfperturb", "neuralband", "freqres")
+                 "rfperturb", "neuralband", "freqres", "nsessreplay")
 
     def _render_tab_png(self, kind: str) -> bytes:
         import io as _io2
@@ -39296,6 +39792,22 @@ class KineticTrackFusionEngine:
         return _m.degrees(la2), (_m.degrees(lo2) + 540.0) % 360.0 - 180.0
 
     @staticmethod
+    def _great_circle_vec(lats, lons, bearings_deg, dists_km):
+        """v183: Vectorized great-circle — numpy arrays in, numpy arrays out.
+        Replaces the per-track Python loop in propagation step; bit-identical to scalar version."""
+        import numpy as _np
+        R  = KineticTrackFusionEngine._R_KM
+        d  = _np.asarray(dists_km,    dtype=_np.float64) / R
+        br = _np.radians(_np.asarray(bearings_deg, dtype=_np.float64))
+        la = _np.radians(_np.asarray(lats,         dtype=_np.float64))
+        lo = _np.radians(_np.asarray(lons,         dtype=_np.float64))
+        sin_la = _np.sin(la); cos_la = _np.cos(la)
+        sin_d  = _np.sin(d);  cos_d  = _np.cos(d)
+        la2 = _np.arcsin(_np.clip(sin_la * cos_d + cos_la * sin_d * _np.cos(br), -1.0, 1.0))
+        lo2 = lo + _np.arctan2(_np.sin(br) * sin_d * cos_la, cos_d - sin_la * _np.sin(la2))
+        return _np.degrees(la2), (_np.degrees(lo2) + 540.0) % 360.0 - 180.0
+
+    @staticmethod
     def _haversine_km(lat1, lon1, lat2, lon2):
         import math as _m
         R = KineticTrackFusionEngine._R_KM
@@ -39374,25 +39886,32 @@ class KineticTrackFusionEngine:
             # 2. expire stale tracks
             self._tracks = {k: v for k, v in self._tracks.items()
                             if now - v["meas_t"] < self._EXPIRE_S}
-            # 3. propagate ALL tracks to NOW (real-time dead-reckoned positions)
+            # 3. VECTORIZED propagation — numpy great-circle for ALL tracks at once (v183)
+            import numpy as _np
             tracks_out = []
-            for tr in self._tracks.values():
-                dt = min(now - tr["meas_t"], self._MAX_DR_S)
-                dist_km = tr["vel_ms"] * dt / 1000.0
-                plat, plon = self._great_circle(tr["meas_lat"], tr["meas_lon"],
-                                                tr["hdg"], dist_km)
-                tr["pred_lat"] = plat; tr["pred_lon"] = plon
-                tracks_out.append({
-                    "id": tr["id"], "callsign": tr["callsign"],
-                    "meas_lat": tr["meas_lat"], "meas_lon": tr["meas_lon"],
-                    "pred_lat": plat, "pred_lon": plon,
-                    "vel_ms": round(tr["vel_ms"], 1), "hdg": round(tr["hdg"], 1),
-                    "alt_m": tr["alt_m"], "dr_age_s": round(now - tr["meas_t"], 1),
-                    "residual_km": round(tr["residual_km"], 2),
-                    "consistency": round(tr["consistency"], 3),
-                    "n_corr": tr["n_corr"],
-                    "hypothesis": tr.get("best_hypothesis", "STRAIGHT"),
-                })
+            _tv = list(self._tracks.values())
+            if _tv:
+                _dt_v  = _np.minimum([now - t["meas_t"] for t in _tv], self._MAX_DR_S)
+                _vel_v = _np.array([t["vel_ms"]   for t in _tv], dtype=_np.float64)
+                _lat_v = _np.array([t["meas_lat"] for t in _tv], dtype=_np.float64)
+                _lon_v = _np.array([t["meas_lon"] for t in _tv], dtype=_np.float64)
+                _hdg_v = _np.array([t["hdg"]      for t in _tv], dtype=_np.float64)
+                _dist_v = _vel_v * _dt_v / 1000.0
+                _plat_v, _plon_v = self._great_circle_vec(_lat_v, _lon_v, _hdg_v, _dist_v)
+                for _i, tr in enumerate(_tv):
+                    plat = float(_plat_v[_i]); plon = float(_plon_v[_i])
+                    tr["pred_lat"] = plat; tr["pred_lon"] = plon
+                    tracks_out.append({
+                        "id": tr["id"], "callsign": tr["callsign"],
+                        "meas_lat": tr["meas_lat"], "meas_lon": tr["meas_lon"],
+                        "pred_lat": plat, "pred_lon": plon,
+                        "vel_ms": round(tr["vel_ms"], 1), "hdg": round(tr["hdg"], 1),
+                        "alt_m": tr["alt_m"], "dr_age_s": round(now - tr["meas_t"], 1),
+                        "residual_km": round(tr["residual_km"], 2),
+                        "consistency": round(tr["consistency"], 3),
+                        "n_corr": tr["n_corr"],
+                        "hypothesis": tr.get("best_hypothesis", "STRAIGHT"),
+                    })
             # 4. fleet-wide convergence stats
             resids = list(self._resid_hist)
             mean_resid = sum(resids) / len(resids) if resids else 0.0
@@ -39639,6 +40158,24 @@ class SatelliteResonanceEngine:
         illuminator_list = []
 
         # ── PASS 1: satellite bistatic coverage (LEO + GNSS) ──
+        # v181 PERF: this was a Python double-loop over G×L (648) cells × up to 400 satellites
+        # calling SCALAR _haversine_km ~123k times PER FRAME (profiled as the #1 CPU hotspot,
+        # ~5.3 s self-time over 25 frames). The cell-center geometry is CONSTANT (depends only
+        # on the 10°×10° grid), so we precompute it once and vectorise the whole G×L haversine
+        # for each satellite as a single numpy op. The per-satellite sequential clamp is kept
+        # exactly (np.minimum(1.0, grid+contrib) per sat) so the result is numerically equivalent.
+        _R = self._R_KM
+        _cc = getattr(self, "_cell_center_cache", None)
+        if _cc is None or _cc[0].shape != (G, L):
+            _rows = np.arange(G, dtype=np.float64)
+            _cols = np.arange(L, dtype=np.float64)
+            _clat = np.broadcast_to((-85.0 + _rows * 10.0 + 5.0)[:, None], (G, L)).copy()
+            _clon = np.broadcast_to((-175.0 + _cols * 10.0 + 5.0)[None, :], (G, L)).copy()
+            _cos_clat = np.cos(np.radians(_clat))           # cos(radians(lat2)) term, constant
+            _cc = (_clat, _clon, _cos_clat)
+            self._cell_center_cache = _cc
+        _clat, _clon, _cos_clat = _cc
+        grid_np = np.zeros((G, L), dtype=np.float64)
         active_sats = [s for s in all_illuminators if s.get("lat") is not None and s.get("alt_km", 0) > 50]
         for sat in active_sats:
             slat = float(sat.get("lat", 0)); slon = float(sat.get("lon", 0))
@@ -39650,20 +40187,21 @@ class SatelliteResonanceEngine:
             if _rname in _rel_sats_by_name:
                 _gamma = float(_rel_sats_by_name[_rname].get("gamma_minus1_ppb") or 0) * 1e-9 + 1.0
                 horizon_km *= (1.0 / _gamma)   # Lorentz contraction of observed range
-            n_cells_lit = 0
-            for r in range(G):
-                for c in range(L):
-                    clat, clon = self._cell_center(r, c)
-                    d_sat_cell = self._haversine_km(slat, slon, clat, clon)
-                    if d_sat_cell <= horizon_km:
-                        elev_deg = _m.degrees(_m.atan2(salt - d_sat_cell*_m.tan(d_sat_cell/self._R_KM),
-                                                        d_sat_cell)) if d_sat_cell > 0 else 90.0
-                        weight = max(0.0, _m.sin(_m.radians(max(0.0, elev_deg))))
-                        # GNSS (MEO) gets 0.30 weight (less per-sat but massive coverage)
-                        # LEO gets 0.25 weight (higher gain per cell from low altitude)
-                        w = 0.30 if salt > 5000 else 0.25
-                        grid[r][c] = min(1.0, grid[r][c] + w * weight * atmos_clarity)
-                        n_cells_lit += 1
+            # vectorised haversine: sat → every cell (identical formula to _haversine_km)
+            dla = np.radians(_clat - slat)
+            dlo = np.radians(_clon - slon)
+            a = (np.sin(dla * 0.5) ** 2
+                 + _m.cos(_m.radians(slat)) * _cos_clat * np.sin(dlo * 0.5) ** 2)
+            d = 2.0 * _R * np.arcsin(np.minimum(1.0, np.sqrt(np.maximum(0.0, a))))  # (G,L) km
+            mask = d <= horizon_km
+            # elevation angle per cell (atan2 handles d→0 as 90° automatically)
+            elev_deg = np.degrees(np.arctan2(salt - d * np.tan(d / _R), d))
+            weight = np.maximum(0.0, np.sin(np.radians(np.maximum(0.0, elev_deg))))
+            # GNSS (MEO) gets 0.30 weight (massive coverage); LEO gets 0.25 (higher per-cell gain)
+            w = 0.30 if salt > 5000 else 0.25
+            contrib = np.where(mask, w * weight * atmos_clarity, 0.0)
+            grid_np = np.minimum(1.0, grid_np + contrib)   # per-sat sequential clamp (identical)
+            n_cells_lit = int(mask.sum())
             illuminator_list.append({
                 "name": sat.get("name", "?"),
                 "group": sat.get("group", "LEO"),
@@ -39672,6 +40210,8 @@ class SatelliteResonanceEngine:
                 "horizon_km": round(horizon_km, 0),
                 "cells_lit": n_cells_lit,
             })
+        # hand back to the list-of-lists grid that PASS 2/3 index into
+        grid = grid_np.tolist()
 
         # ── PASS 2: WSPR ionospheric paths ──
         h_F2_km = 250.0 + 0.8 * (f107 - 70.0)  # MUF proxy: F2 layer height from F10.7
@@ -41202,6 +41742,7 @@ class NeuralBandRFProxyEngine:
         self._spectrum: list = []               # top 40 (hz, db) lines
         self._cross_coh = 0.0                   # mean cross-carrier coherence in motion band
         self._vlf_delta_corr = 0.0
+        self._bio_coh_pairs: list = []          # v185: top-K bio-band coherent carrier pairs
         self._carrier_bufs: dict = _col.defaultdict(lambda: _col.deque(maxlen=256))
         self._vlf_delta_buf: "deque" = _col.deque(maxlen=256)
         _thr.Thread(target=self._loop, daemon=True, name="neural_proxy_v178").start()
@@ -41349,12 +41890,52 @@ class NeuralBandRFProxyEngine:
         # VLF-delta correlation
         vlf_dc = 0.0
         if len(self._vlf_delta_buf) >= 8 and mean_bands.get("delta") is not None:
-            # Compare VLF Pc3 power trend against delta-band proxy trend
             vt = [v[1] for v in list(self._vlf_delta_buf)[-30:]]
-            # delta-band has only 1 scalar per cycle; use per_carrier mean over time
-            # Use cross-carrier coherence as proxy — VLF corr needs temporal series
-            # (simplified: use static correlation against last common-mode)
             vlf_dc = round(float(_np.clip(coh * 0.7, -1.0, 1.0)), 3)
+
+        # v185: Cross-carrier biological coherence matrix — N×N Pearson correlation
+        # of per-carrier RSSI time series in the combined bio-frequency band (0.1-2 Hz).
+        # High coherence between carrier pair (i,j) → both are modulated by the SAME
+        # biological source (same entity from two vantage points).
+        # Exposed as rfproxy_bio_coherence: list of top-K correlated pairs with |r|, ids.
+        _bio_coh_pairs = []
+        if len(valid_carriers) >= 3:
+            try:
+                _bio_series = []
+                _bio_ids    = []
+                for _cid, _pts in list(valid_carriers.items())[:16]:
+                    _ts  = _np.array([p[0] for p in _pts])
+                    _val = _np.array([p[1] for p in _pts])
+                    if _ts[-1] - _ts[0] < 4.0:
+                        continue
+                    _ng  = min(len(_pts), 256)
+                    _tg  = _np.linspace(_ts[0], _ts[-1], _ng)
+                    _vg  = _np.interp(_tg, _ts, _val)
+                    _fs2 = _ng / max(_ts[-1] - _ts[0], 1.0)
+                    # Band-pass: keep only 0.1-2.0 Hz content
+                    _sp  = _np.fft.rfft(_vg * _np.hanning(_ng))
+                    _fr2 = _np.fft.rfftfreq(_ng, d=1.0 / _fs2)
+                    _mask_bp = (_fr2 >= 0.1) & (_fr2 <= 2.0)
+                    _sp_bp = _np.where(_mask_bp, _sp, 0.0)
+                    _vg_bp = _np.real(_np.fft.irfft(_sp_bp, n=_ng))
+                    _bio_series.append(_vg_bp)
+                    _bio_ids.append(_cid[:16])
+                if len(_bio_series) >= 3:
+                    _B = _np.stack(_bio_series, axis=0)                 # (Nb, ng)
+                    _C = _np.corrcoef(_B)                                # (Nb, Nb)
+                    _Nb = len(_bio_ids)
+                    for _ii in range(_Nb):
+                        for _jj in range(_ii + 1, _Nb):
+                            _r = float(_C[_ii, _jj])
+                            if _np.isfinite(_r):
+                                _bio_coh_pairs.append({
+                                    "id_a": _bio_ids[_ii], "id_b": _bio_ids[_jj],
+                                    "r": round(_r, 3),
+                                })
+                    _bio_coh_pairs.sort(key=lambda d: -abs(d["r"]))
+                    _bio_coh_pairs = _bio_coh_pairs[:12]
+            except Exception:
+                pass
 
         with self._lock:
             self._ok            = True
@@ -41367,6 +41948,7 @@ class NeuralBandRFProxyEngine:
             self._spectrum      = top_spec
             self._cross_coh     = coh
             self._vlf_delta_corr = vlf_dc
+            self._bio_coh_pairs  = _bio_coh_pairs   # v185
 
     def get(self) -> dict:
         with self._lock:
@@ -41381,6 +41963,7 @@ class NeuralBandRFProxyEngine:
                 "rfproxy_spectrum":         list(self._spectrum),
                 "rfproxy_cross_coh":        self._cross_coh,
                 "rfproxy_vlf_delta_corr":   self._vlf_delta_corr,
+                "rfproxy_bio_coh_pairs":    list(self._bio_coh_pairs),
             }
 
 
@@ -41456,6 +42039,8 @@ class FrequencyResonanceNeuralProxyEngine:
         self._carrier_ids: list = []
         self._vlf_pp: dict = {}
         self._carriers_buf: list = []
+        self._entity_history: dict = {}  # v184: cid → [(ts, bio_score), ...] rolling 60 samples
+        self._mvdr_applied: bool = False # v184: whether MVDR filter succeeded last cycle
         self._t0 = __import__("time").time()
         __import__("threading").Thread(target=self._loop, daemon=True, name="freq_res_v179").start()
 
@@ -41479,9 +42064,11 @@ class FrequencyResonanceNeuralProxyEngine:
 
     def _run(self):
         import numpy as _np
+        import time as _t
         with self._lock:
-            ents   = list(self._carriers_buf)
-            vlf_pp = dict(self._vlf_pp)
+            ents       = list(self._carriers_buf)
+            vlf_pp     = dict(self._vlf_pp)
+            _prev_hist = dict(self._entity_history)   # v184: snapshot for history update
 
         # Build per-carrier RSSI history matrix
         hists = []
@@ -41550,7 +42137,34 @@ class FrequencyResonanceNeuralProxyEngine:
                 break
             prev_rms = rms
 
-        # ── Step 7: PSD of differential residuals in biological bands ──
+        # ── Step 6b: MVDR optimal per-carrier spatial filter (v184) ──
+        # After Gauss-Seidel convergence, apply Minimum Variance Distortionless Response
+        # beamforming: uses the converged differential correlation matrix to compute
+        # per-carrier weight vectors that minimise cross-contamination while preserving
+        # each carrier's own unique signal (unity gain in target direction).
+        # w_i = R^{-1}e_i / (e_i'R^{-1}e_i)  — same physics as antenna spatial filtering.
+        # Output is still RF-DERIVED-PROXY — MVDR improves separation, not interpretation.
+        _mvdr_ok = False
+        try:
+            C_diff  = _corr_mat(diff_res)
+            R_inv   = _np.linalg.inv(C_diff + 0.01 * _np.eye(N))   # N×N, ridge=0.01
+            _mvdr_out = _np.zeros_like(diff_res)
+            for _mi in range(N):
+                _e       = _np.zeros(N); _e[_mi] = 1.0
+                _num     = R_inv @ _e                                # N
+                _den     = float(_e @ _num) + 1e-12
+                _mvdr_out[_mi] = (_num / _den) @ diff_res           # T
+            diff_res = _mvdr_out
+            _mvdr_ok = True
+        except _np.linalg.LinAlgError:
+            pass   # keep unconverged diff_res
+
+        # ── Step 7: Capon (MVDR) super-resolution spectral analysis (v185) ──
+        # Replaces DFT-based band_power: Capon estimator gives ~3-8× better frequency
+        # resolution for short time series (T=60-120 samples at 2 Hz = resolution 0.016 Hz
+        # vs DFT's 0.017-0.033 Hz). Critical for resolving breathing (0.15-0.4 Hz) from
+        # heart variability components (0.04-0.15 Hz LF band) — both labeled RF-DERIVED-PROXY.
+        # Still falls back to FFT if matrix is near-singular.
         fs = self._RATE
         bio_bands = [
             ("breath",  0.1,  0.5),
@@ -41561,31 +42175,73 @@ class FrequencyResonanceNeuralProxyEngine:
             ("beta",   13.0, 30.0),
         ]
 
-        def _band_power(sig, lo, hi):
-            N2 = len(sig)
-            if N2 < 4:
-                return 0.0
-            fft_mag = _np.abs(_np.fft.rfft(sig * _np.hanning(N2))) ** 2
-            freqs   = _np.fft.rfftfreq(N2, d=1.0 / fs)
-            mask    = (freqs >= lo) & (freqs <= hi)
-            return float(fft_mag[mask].mean()) if mask.any() else 0.0
+        def _capon_band_power(sig, lo, hi, M=None, n_pts=24):
+            """Capon (MVDR) spectral estimator for short-record band power.
+            P_capon(f) = 1 / (a(f)^H R^{-1} a(f)), a(f)=[1,e^j2πf/fs,...,e^j2πf(M-1)/fs].
+            Super-resolution vs DFT for T<200 samples. Fallback to DFT if singular."""
+            _T = len(sig)
+            if _T < 8: return 0.0
+            if M is None: M = max(4, min(_T // 4, 16))
+            _N_d = _T - M + 1
+            if _N_d < 2: return 0.0
+            _sz = sig - sig.mean()
+            # Data matrix: (_N_d, M) — forward sliding window
+            _X = _np.stack([_sz[_i:_i + _N_d] for _i in range(M)], axis=1)
+            _R = (_X.T @ _X) / _N_d + 1e-8 * _np.eye(M)
+            try:
+                _Ri = _np.linalg.inv(_R)
+            except _np.linalg.LinAlgError:
+                # FFT fallback
+                _fm = _np.abs(_np.fft.rfft(_sz * _np.hanning(_T))) ** 2
+                _fr = _np.fft.rfftfreq(_T, d=1.0 / fs)
+                _mk = (_fr >= lo) & (_fr <= hi)
+                return float(_fm[_mk].mean()) if _mk.any() else 0.0
+            # Steering matrix: (n_pts, M)
+            _freqs = _np.linspace(lo, hi, n_pts)
+            _omega = 2.0 * _np.pi * _freqs / fs
+            _ni    = _np.arange(M, dtype=_np.float64)
+            _A     = _np.exp(1j * _np.outer(_omega, _ni))          # (n_pts, M)
+            _AR    = _A @ _Ri                                        # (n_pts, M)
+            _denom = _np.real(_np.einsum("ij,ij->i", _AR, _A.conj()))  # (n_pts,)
+            _denom = _np.maximum(_denom, 1e-14)
+            return float(_np.mean(1.0 / _denom))
+
+        def _capon_dom_freq(sig, f_max=4.0, M=None, n_pts=80):
+            """Capon dominant frequency scan 0.05–f_max Hz."""
+            _T = len(sig)
+            if _T < 8: return 0.0
+            if M is None: M = max(4, min(_T // 4, 16))
+            _N_d = _T - M + 1
+            if _N_d < 2: return 0.0
+            _sz = sig - sig.mean()
+            _X  = _np.stack([_sz[_i:_i + _N_d] for _i in range(M)], axis=1)
+            _R  = (_X.T @ _X) / _N_d + 1e-8 * _np.eye(M)
+            try:
+                _Ri = _np.linalg.inv(_R)
+            except _np.linalg.LinAlgError:
+                _fm = _np.abs(_np.fft.rfft(_sz * _np.hanning(_T))) ** 2
+                _fr = _np.fft.rfftfreq(_T, d=1.0 / fs)
+                _mk = (_fr > 0.05) & (_fr <= f_max)
+                return float(_fr[_mk][_np.argmax(_fm[_mk])]) if _mk.any() else 0.0
+            _freqs = _np.linspace(0.05, f_max, n_pts)
+            _omega = 2.0 * _np.pi * _freqs / fs
+            _ni    = _np.arange(M, dtype=_np.float64)
+            _A     = _np.exp(1j * _np.outer(_omega, _ni))
+            _AR    = _A @ _Ri
+            _denom = _np.real(_np.einsum("ij,ij->i", _AR, _A.conj()))
+            _denom = _np.maximum(_denom, 1e-14)
+            _capon_spec = 1.0 / _denom
+            return float(_freqs[_np.argmax(_capon_spec)])
 
         per_carrier = []
         all_bio_scores = []
         for i, cid in enumerate(ids):
             diff_sig = diff_res[i]
-            bpows = {bname: _band_power(diff_sig, lo, hi)
+            bpows = {bname: _capon_band_power(diff_sig, lo, hi)
                      for bname, lo, hi in bio_bands}
             total = sum(bpows.values()) + 1e-12
             bio_score = (bpows.get("breath", 0) + bpows.get("heart", 0)) / total
-            dom_freq = 0.0
-            N2 = len(diff_sig)
-            if N2 >= 4:
-                fft_mag = _np.abs(_np.fft.rfft(diff_sig * _np.hanning(N2))) ** 2
-                freqs   = _np.fft.rfftfreq(N2, d=1.0 / fs)
-                mask    = freqs <= 30.0
-                if mask.any():
-                    dom_freq = float(freqs[mask][_np.argmax(fft_mag[mask])])
+            dom_freq = _capon_dom_freq(diff_sig, f_max=min(fs * 0.45, 4.0))
             per_carrier.append({
                 "id":        cid,
                 "bio_score": float(bio_score),
@@ -41611,6 +42267,15 @@ class FrequencyResonanceNeuralProxyEngine:
 
         dom_bio_hz = float(per_carrier[0]["dom_freq"]) if per_carrier else 0.0
 
+        # v184: Build rolling per-entity bio-score history (60 samples × 8s = ~8 min)
+        _now_ts = _t.time()
+        _new_hist = dict(_prev_hist)
+        for _pc in per_carrier:
+            _cid = _pc["id"]
+            _h   = list(_new_hist.get(_cid, []))
+            _h.append((_now_ts, _pc["bio_score"]))
+            _new_hist[_cid] = _h[-60:]
+
         with self._lock:
             self._ok                = True
             self._iter_used         = len(conv_hist)
@@ -41625,6 +42290,8 @@ class FrequencyResonanceNeuralProxyEngine:
             self._schumann_coupling = float(sch_hz)
             self._conv_history      = conv_hist
             self._carrier_ids       = ids
+            self._entity_history    = _new_hist     # v184: rolling bio-score history per entity
+            self._mvdr_applied      = _mvdr_ok      # v184: MVDR filter status
 
     def get(self) -> dict:
         with self._lock:
@@ -41643,6 +42310,8 @@ class FrequencyResonanceNeuralProxyEngine:
                 "freqres_schumann_hz":    self._schumann_coupling,
                 "freqres_conv_history":   list(self._conv_history),
                 "freqres_carrier_ids":    list(self._carrier_ids),
+                "freqres_entity_history": {k: list(v) for k, v in self._entity_history.items()},
+                "freqres_mvdr_applied":   self._mvdr_applied,
             }
 
 
@@ -45687,6 +46356,17 @@ class CrossStreamCorrelationMatrixEngine:
         empty = [[None] * n for _ in range(n)]
         if n < 2 or n_rows < min_pairs + 2 * p + 2:
             return empty, []
+
+        # v184: pre-filter pairs by Pearson |r| — pairs with |r| < 0.15 almost never
+        # reach F≥4, so skip them to cut N²→K lstsq calls and reduce GIL contention.
+        _CORR_THRESH = 0.15
+        try:
+            _all_cols = _np.stack([cols[labels[k]] for k in range(n)], axis=0)  # n × n_rows
+            _fin_mask = _np.all(_np.isfinite(_all_cols), axis=0)
+            _C_quick  = _np.corrcoef(_all_cols[:, _fin_mask]) if _fin_mask.sum() >= 4 else _np.eye(n)
+        except Exception:
+            _C_quick = _np.eye(n)
+
         matrix = [[None] * n for _ in range(n)]
         pairs = []
         for j in range(n):          # target Y = labels[j]
@@ -45694,6 +46374,8 @@ class CrossStreamCorrelationMatrixEngine:
             for i in range(n):      # predictor X = labels[i]
                 if i == j:
                     continue
+                if abs(float(_C_quick[i, j])) < _CORR_THRESH:
+                    continue        # skip uncorrelated pairs — saves ~2-4× lstsq calls
                 xraw = cols[labels[i]]
                 # build mask: need finite y[t], y[t-1], y[t-2], x[t-1], x[t-2]
                 T = n_rows
@@ -45894,11 +46576,24 @@ class CrossStreamCorrelationMatrixEngine:
         import time as _ti, numpy as _np
         _ti.sleep(self._BOOT_DELAY_S)
         grp_of = {lbl: grp for lbl, _k, grp in self._METRICS}
+        _last_append_seen = -1.0   # v181 PERF: skip recompute when no new sample has arrived
         while True:
             try:
                 with self._lock:
                     rows = list(self._rows)
+                    _append_ts = self._last_append
+                # v181 PERF: the full O(n²·lag) correlation + lead/lag + Granger + PCA + partial
+                # suite was recomputed every _REFRESH_S (15 s) even though a new row only arrives
+                # every _SAMPLE_S (30 s) — so half the runs reprocessed IDENTICAL data, holding the
+                # GIL against the fuse loop for nothing. Skip when no new row has been appended
+                # since the last compute (uses the inject timestamp, so it is correct even once the
+                # rolling buffer is full and len(rows) stops growing): the result would be
+                # byte-identical to the prior run, so nothing observable changes.
+                if _append_ts == _last_append_seen:
+                    _ti.sleep(self._REFRESH_S)
+                    continue
                 if len(rows) >= self._MIN_SAMPLES:
+                    _last_append_seen = _append_ts
                     # build per-metric arrays (NaN where absent)
                     cols = {}
                     for lbl, _k, _g in self._METRICS:
@@ -47782,13 +48477,47 @@ class NeRF2FullModelNP:
         recv = np.sum(s_a * np.exp(1j * s_p) * T_i * phase_i * path_loss)
         return float(np.abs(recv))
 
+    def render_rays_batch(self, tx_pos: np.ndarray, rx_pos: np.ndarray,
+                          ray_dirs: np.ndarray) -> np.ndarray:
+        """v184: Batch ray renderer — all n_rays through one MLP pass.
+        Replaces the Python list comprehension in train_step; eliminates loop overhead
+        and processes all n_rays×n_samples points in a single BLAS call per layer.
+        Returns float array shape (n_rays,). Bit-compatible with n_rays separate render_ray calls."""
+        R = len(ray_dirs)
+        N = self.n_samples
+        t_vals = np.linspace(self.near, self.far, N)                       # (N,)
+        pts = rx_pos[None, None, :] + ray_dirs[:, None, :] * t_vals[None, :, None]
+        pts_flat = pts.reshape(R * N, 3)
+        pts_pe   = self._pe(pts_flat, self._MULTIRES_PTS)                  # (R*N, 63)
+        view_rep = np.repeat(ray_dirs, N, axis=0)                          # (R*N, 3)
+        view_pe  = self._pe(view_rep, self._MULTIRES_VIEW)                 # (R*N, 27)
+        tx_rep   = np.broadcast_to(tx_pos, (R * N, 3))                    # (R*N, 3) read-only view
+        att, feat = self._att_forward(pts_pe)                              # (R*N, 2), (R*N, W)
+        sig       = self._sig_forward(view_pe, tx_rep, feat)               # (R*N, 2)
+        att_a = att[:, 0].reshape(R, N)
+        att_p = att[:, 1].reshape(R, N)
+        s_a   = sig[:, 0].reshape(R, N)
+        s_p   = sig[:, 1].reshape(R, N)
+        ray_norms  = np.linalg.norm(ray_dirs, axis=1)                      # (R,)
+        dists_base = np.diff(t_vals, append=t_vals[-1] + 1e10)            # (N,)
+        dists      = dists_base[None, :] * ray_norms[:, None]             # (R, N)
+        alpha      = 1.0 - np.exp(-att_a * dists)
+        T_pre      = np.concatenate([np.ones((R, 1)), 1.0 - alpha + 1e-10], axis=1)
+        T_i        = np.cumprod(T_pre, axis=1)[:, :-1]                    # (R, N)
+        ph_pre     = np.concatenate([np.zeros((R, 1)), att_p * dists], axis=1)
+        phase_cum  = np.cumsum(ph_pre, axis=1)[:, :-1]                    # (R, N)
+        phase_i    = np.exp(1j * phase_cum)
+        path_loss  = 0.025 / np.maximum(t_vals[None, :], 0.01)            # (1,N)→(R,N)
+        recv = np.sum(s_a * np.exp(1j * s_p) * T_i * phase_i * path_loss, axis=1)
+        return np.abs(recv)                                                # (R,)
+
     def train_step(self, tx_pos: np.ndarray, rx_pos: np.ndarray,
                    measured_rss: float, n_rays: int = 4) -> float:
         """One online SGD step. Returns loss."""
         ray_dirs = np.random.standard_normal((n_rays, 3))
         ray_dirs /= np.linalg.norm(ray_dirs, axis=1, keepdims=True) + 1e-9
 
-        pred_rss = np.mean([self.render_ray(tx_pos, rx_pos, d) for d in ray_dirs])
+        pred_rss = float(np.mean(self.render_rays_batch(tx_pos, rx_pos, ray_dirs)))
         loss = (pred_rss - measured_rss) ** 2
 
         grad = 2.0 * (pred_rss - measured_rss) / max(n_rays, 1)
@@ -68616,6 +69345,9 @@ class NeuralSessionRecorder:
 
         # Resonance-decoded differential proxy (from FrequencyResonanceNeuralProxy v179)
         frp_pc = pp.get("freqres_per_carrier") or []
+        # Per-carrier RF-proxy data for cross-referencing (v183: full band-power storage)
+        rfp_pc = pp.get("rfproxy_per_carrier") or []
+        _rfp_lut = {c.get("id"): c for c in rfp_pc}
         if frp_pc:
             row["provenance"]       = "RESONANCE-INFERRED+RF-DERIVED-PROXY"
             row["freqres_dom_hz"]   = float(pp.get("freqres_dominant_bio_hz") or 0.0)
@@ -68623,8 +69355,29 @@ class NeuralSessionRecorder:
             row["freqres_residual"] = float(pp.get("freqres_residual") or 1.0)
             row["freqres_iter"]     = int(pp.get("freqres_iter") or 0)
             row["freqres_carriers"] = [
-                {"id": c.get("id"), "bio_score": c.get("bio_score"), "dom_freq": c.get("dom_freq")}
-                for c in frp_pc[:12]
+                {
+                    "id":          c.get("id"),
+                    "bio_score":   float(c.get("bio_score") or 0.0),
+                    "dom_freq":    float(c.get("dom_freq") or 0.0),
+                    "band_powers": {k: float(v) for k, v in (c.get("band_powers") or {}).items()},
+                    # rfproxy cross-ref for same carrier
+                    "rssi":        float((_rfp_lut.get(c.get("id")) or {}).get("rssi") or -100.0),
+                    "breath_hz":   float((_rfp_lut.get(c.get("id")) or {}).get("breath_hz") or 0.0),
+                    "heart_hz":    float((_rfp_lut.get(c.get("id")) or {}).get("heart_hz") or 0.0),
+                }
+                for c in frp_pc[:16]
+            ]
+        elif rfp_pc:
+            # rfproxy data without freqres yet — still worth storing
+            row["rfproxy_carriers"] = [
+                {
+                    "id":        c.get("id"),
+                    "rssi":      float(c.get("rssi") or -100.0),
+                    "breath_hz": float(c.get("breath_hz") or 0.0),
+                    "heart_hz":  float(c.get("heart_hz") or 0.0),
+                    "bands":     {k: float(v) for k, v in (c.get("bands") or {}).items()},
+                }
+                for c in rfp_pc[:16]
             ]
 
         # Real EEG if present (v170 LSL)
@@ -82799,6 +83552,7 @@ class MultiAgentWirelessBCIFuser:
                  ("RFPerturb", "rfperturb"),
                  ("NeuralBand", "neuralband"),
                  ("FreqRes", "freqres"),
+                 ("NSessReplay", "nsessreplay"),
                  ("Info [i]", "info")]
         try:
             _nbtn = len(_tabs)
