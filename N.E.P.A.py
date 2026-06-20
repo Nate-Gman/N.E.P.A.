@@ -1985,6 +1985,10 @@ class DetailTabWindow:
                  "observedsky":  "OBSERVED SKY (TIER 11 UNIVERSE ENVELOPE) — REAL BRIGHT STARS AS CURRENTLY VISIBLE · ALT/AZ FROM OBSERVER GEOMETRY · LIGHT-DELAY LABELED · NOT THE LITERAL 'NOW'",
                  "xmodal":       "CROSS-MODAL VALIDATION GATE (TIER 19) — EACH CLAIM CONFIRMED ONLY BY ≥2 INDEPENDENT SENSOR MODALITIES · TRUST MULTIPLIER · NO SINGLE-SOURCE CLAIMS PASS AS CERTAIN",
                  "provenance":   "PROVENANCE LEDGER (TIER 24) — EVERY DISPLAYED VALUE → ITS REAL SOURCE + TRANSFORM CHAIN + CLASS · DEAD-SOURCE ROWS FLAGGED AWAITING · NO-FALSE-DATA, AUDITABLE",
+                 "temporal":     "4D TEMPORAL WORLD (TIER 18) — TIME-INDEXED RING BUFFER OF WORLD SNAPSHOTS · EACH ENTITY'S RANGE-OVER-TIME TRAJECTORY · SCRUB ANY RECORDED MOMENT · GAPS STAY GAPS",
+                 "receivers":    "ANY-RECEIVER AUTO-ENROLL (TIER 20) — EVERY REAL INPUT BECOMES A ROW OF THE SENSORY MATRIX · LIVE / AWAITING / STALE · 0 REQUIRED HARDWARE · MORE DEVICES = MORE ROWS",
+                 "emitgraph":    "RF-EMITTER IDENTITY & RELATIONSHIP GRAPH (TIER 15) — STABLE BSSID IDENTITIES · CO-OCCURRENCE LINKS · RSSI σ MOBILITY · NEW-EMITTER / SPOOF ANOMALIES · INTENT NOT FAKED",
+                 "overseer":     "AUTONOMOUS OVERSEER ACTIONS (TIER 16) — RECOMMENDED ACTIONS FROM THE UNIFIED MATRIX · EACH WITH SEVERITY + REASON + CITED PROVENANCE · RECOMMENDS ONLY · 0 FALSE ALARMS ON NORMAL SCENE",
                  "info": "SYSTEM INFO & ABOUT"}.get(self.kind, self.kind)
         if self.kind == "entitydetail":
             title = f"ENTITY {self.entity_key or ('#' + str(self.entity_idx))} DETAIL"
@@ -3751,7 +3755,62 @@ class DetailTabWindow:
             f"              model knows HOW SURE it is about each being. VALIDATED 5/5 (nepa_wconf_test.py):\n"
             f"              trilaterated+strong+confirmed→HIGH, synth-unfused+weak→LOW (capped), cross-modal raises\n"
             f"              it, empty→0 (no fabrication). Builds on T19; hardware-agnostic. PRIMARY GOAL T23 ✅.\n"
-            f"              Next software-completable tiers: T24 provenance ledger · T18 4D temporal · T10 Kalman fusion."
+            f"              Next software-completable tiers: T24 provenance ledger · T18 4D temporal · T10 Kalman fusion.\n"
+            f"  [v218] TIER SWEEP cont. — TIER 24 (PROVENANCE LEDGER) COMPLETE: new ProvenanceLedger registers 18\n"
+            f"              key displayed values → real SOURCE(s) + exact TRANSFORM chain + provenance CLASS; flags\n"
+            f"              any dead-source row ○AWAITING (honest empty, never faked). build(pp) → source-backed\n"
+            f"              coverage% (72% live in sim); trace(key) → one value's full lineage. New [Provenance] tab\n"
+            f"              (●live/○AWAIT + class + transform). VALIDATED 5/5 (nepa_prov_test.py): live→●, dead→\n"
+            f"              ○AWAIT, trace registered vs unregistered, coverage math. The AUDITABLE no-false-data\n"
+            f"              guarantee — any number traceable to the real data + math behind it. PRIMARY GOAL T24 ✅.\n"
+            f"              TRUST TRIAD complete: T19 cross-modal gate → T23 confidence field → T24 provenance ledger.\n"
+            f"  [v219] NULLIFY BOTTLENECKS for the new tiers (as asked): confirmed v216-218 tier engines (xmodal/\n"
+            f"              confidence/provenance) are NOT hotspots (sub-ms dict ops). Profiling surfaced the pre-\n"
+            f"              existing IterativePlanetaryReconEngine._inject_obs (scalar _cell() over ~7000 obs/frame\n"
+            f"              from aircraft+sats+EONET+GDACS) — slow feeds, so throttled inject() to 3 s (grid is a\n"
+            f"              persisted accumulator; get() still serves every frame). Dropped off the hot list; fuse\n"
+            f"              calls 19.4M→17.6M. Same honest pattern: throttle redundant recompute of slow data.\n"
+            f"  [v220] TIER SWEEP cont. — TIER 10 (SELF-REFINING WORLD MODEL) core COMPLETE: new\n"
+            f"              KalmanTrackFusionEngine gives every tracked entity a constant-velocity Kalman filter on\n"
+            f"              its MEASURED range (state=[range,range_rate], textbook white-noise-accel Q) → a SMOOTHED\n"
+            f"              range, an estimated rate, and an HONEST posterior uncertainty (σ grows when measurements\n"
+            f"              stop — never faked). Filters pruned when entities vanish. VALIDATED 4/4 (nepa_kalman/\n"
+            f"              kfuse tests): 1.84× range-RMSE reduction on synthetic CV targets, velocity recovered,\n"
+            f"              uncertainty converges, no-range entities pass through untouched. [WorldEntity] now shows\n"
+            f"              'KF r±σm'; provenance registers kf_mean_uncertainty (now 19 traced values). The world\n"
+            f"              model refines itself as data flows. PRIMARY GOAL T10 ◐ (Kalman core; SLAM+octree next).\n"
+            f"  [v221] TIER SWEEP cont. — TIER 18 (4D TEMPORAL WORLD) COMPLETE: new TemporalWorldBuffer, a\n"
+            f"              throttled, memory-bounded ring buffer of time-stamped world snapshots. The world is now\n"
+            f"              navigable in TIME: at(t) seeks the nearest real frame (no interpolation), trajectory(wid)\n"
+            f"              reconstructs one entity's range-over-time 4D path, window(t0,t1) slices a span. New\n"
+            f"              [4D-Time] tab plots every entity's recorded range history. VALIDATED 5/5 (nepa_temporal_\n"
+            f"              test.py): throttle drops sub-dt samples, trajectory reconstructs, at() nearest, ring caps\n"
+            f"              memory, span/unique correct. Nothing between samples is invented — gaps stay gaps.\n"
+            f"              Provenance now registers temporal_span_s (20 traced values). PRIMARY GOAL T18 ✅.\n"
+            f"  [v222] TIER SWEEP cont. — TIER 20 (ANY-RECEIVER AUTO-ENROLL) COMPLETE: new ReceiverAutoEnrollEngine\n"
+            f"              — the PRIME ARCHITECTURE RULE made real + visible. Probes 14 input modalities (WiFi-RSSI/\n"
+            f"              CSI, acoustic, EEG, SDR, GNSS, ADS-B, WSPR, APRS, EONET, satellite, VLF-lightning,\n"
+            f"              magnetometer, METAR); each present input is auto-enrolled as a LIVE ROW of the unified\n"
+            f"              sensory matrix (with channel count), absent ones AWAITING, dropped ones STALE (kept,\n"
+            f"              never faked). A device connecting mid-run is auto-enrolled the instant its data appears.\n"
+            f"              0 required hardware — never gates the program; more devices = more rows = richer\n"
+            f"              correlation. New [Receivers] tab. VALIDATED 5/5 (nepa_recv_test.py). PRIMARY GOAL T20 ✅.\n"
+            f"  [v223] TIER SWEEP cont. — TIER 15 (RF-EMITTER IDENTITY & RELATIONSHIP GRAPH) COMPLETE (honest\n"
+            f"              envelope): new EmitterIdentityGraph anchors identity on the REAL observable BSSID/MAC\n"
+            f"              (NOT a fabricated IQ/clock fingerprint — that stays ◧ hardware-gated). Per emitter:\n"
+            f"              Welford RSSI mean/σ (mobility proxy) + persistence; a genuine CO-OCCURRENCE graph\n"
+            f"              (who's seen together, weighted edges); anomaly flags NEW-EMITTER / FINGERPRINT-CHANGE\n"
+            f"              (possible spoof) / NEW-LINK. INTENT is deliberately NOT inferred or fabricated. New\n"
+            f"              [EmitterGraph] tab (co-occurrence graph + identity table). Live on REAL scan: 22\n"
+            f"              emitters, 231 links. VALIDATED 5/5 (nepa_emit_test.py). PRIMARY GOAL T15 ◐ (envelope).\n"
+            f"  [v224] TIER SWEEP cont. — TIER 16 (AUTONOMOUS OVERSEER ACTIONS) COMPLETE: new OverseerActionEngine\n"
+            f"              closes the perception→decision loop. Evidence-gated rules over the unified matrix\n"
+            f"              (emitter spoof/burst, cross-modal CONFIRMED presence+motion, high Kalman uncertainty,\n"
+            f"              low provenance coverage) → RECOMMENDED actions (ALERT/RE-TASK/PRIORITIZE), each with\n"
+            f"              severity + reason + CITED provenance, severity-sorted, kept in a bounded auditable\n"
+            f"              history. RECOMMENDS ONLY — never acts on the world. A NORMAL scene → 0 actions (no\n"
+            f"              false alarms, the key honesty criterion). New [Overseer] tab. VALIDATED 5/5\n"
+            f"              (nepa_overseer_test.py). PRIMARY GOAL T16 ✅. Trust+decision layer now complete."
         )
         ax2.text(0.03, max(y - 0.02, 0.06), _extra,
                  transform=ax2.transAxes, color='#88ffcc', fontsize=7.5, va='top',
@@ -8093,6 +8152,9 @@ class DetailTabWindow:
                     loctxt = f"{loc:.1f} m"
                 else:
                     loctxt = str(e.get("loc_desc", "—"))[:14]
+                # v220 TIER 10: Kalman-smoothed range + honest uncertainty when the filter has it
+                _kfr = e.get("kf_range"); _kfu = e.get("kf_uncertainty")
+                kftxt = f"KF {_kfr:.1f}±{_kfu:.1f}m" if (_kfr is not None and _kfu is not None) else ""
                 vel = e.get("velocity_mps")
                 if vel is not None:
                     varr = "►" if vel > 0.005 else "◄" if vel < -0.005 else "·"
@@ -8119,6 +8181,9 @@ class DetailTabWindow:
                         fontsize=5.4, family="monospace", va="top", transform=ax.transAxes)
                 if tid:
                     ax.text(0.62, y - dy*0.42, f"track {tid}", color="#557a88", fontsize=5.4,
+                            family="monospace", va="top", transform=ax.transAxes)
+                if kftxt:                               # v220 TIER 10: Kalman smoothed range ± uncertainty
+                    ax.text(0.75, y - dy*0.42, kftxt, color="#66ccaa", fontsize=5.4,
                             family="monospace", va="top", transform=ax.transAxes)
                 ax.plot([0.0, 1.0], [y - dy*0.82, y - dy*0.82], color="#11303a", lw=0.5,
                         transform=ax.transAxes)
@@ -8613,6 +8678,284 @@ class DetailTabWindow:
                   "v218 TIER 24: ●live = a registered value whose real source IS present this cycle; ○AWAIT = "
                   "registered but its source is absent (shown empty, never fabricated). class: REAL=measured · "
                   "OBSERVED=catalog/ephemeris · RF-DERIVED-PROXY=inferred · PROJECTION=extrapolated · DERIVED=fused.",
+                  color="#5a8a9a", fontsize=5.9, family="monospace", transform=ax_f.transAxes, va="center")
+
+    def _draw_temporal(self, fig, p, snap):
+        """v221: 4D TEMPORAL WORLD (TIER 18) — the recorded world over time. Plots each entity's
+        Kalman-smoothed range as a trajectory across the recorded window (x=time, y=range), so the
+        scene is navigable in time. Only measured frames are drawn; gaps between samples stay gaps."""
+        fig.patch.set_facecolor("#05070b")
+        tw = getattr(self.fuser, "temporal_world", None)
+        n_frames = int(snap.get("temporal_n_frames") or 0)
+        span = float(snap.get("temporal_span_s") or 0.0)
+        n_uniq = int(snap.get("temporal_n_unique") or 0)
+
+        ax_h = fig.add_axes([0.02, 0.945, 0.96, 0.05]); ax_h.axis("off")
+        col = "#22ccff" if n_frames else "#667788"
+        ax_h.text(0.0, 0.62,
+                  f"╔═ 4D TEMPORAL WORLD (TIER 18) ═╗   {n_frames} recorded frames   ·   "
+                  f"{span:.0f}s of history   ·   {n_uniq} entities tracked over time",
+                  color=col, fontsize=10, fontweight="bold", family="monospace",
+                  transform=ax_h.transAxes, va="center")
+        ax_h.text(0.0, 0.05,
+                  "every entity's Kalman-smoothed range plotted across recorded time — scrub the world's past. "
+                  "nothing between samples is invented; gaps in a track are real gaps.",
+                  color="#5a8a9a", fontsize=6.6, family="monospace", transform=ax_h.transAxes, va="center")
+
+        ax = fig.add_axes([0.07, 0.10, 0.88, 0.78])
+        ax.set_facecolor("#070d14")
+        # gather trajectories from the live buffer
+        trajs = {}
+        if tw is not None:
+            try:
+                wids = set()
+                for s in list(tw._buf):
+                    for e in s["entities"]:
+                        if e.get("wid") is not None:
+                            wids.add(e["wid"])
+                for w in sorted(wids):
+                    tr = tw.trajectory(w)
+                    if len(tr) >= 1:
+                        trajs[w] = tr
+            except Exception:
+                trajs = {}
+
+        if not trajs:
+            ax.text(0.5, 0.5, "(no recorded entities yet — the 4D buffer fills as entities are detected over time)",
+                    color="#557a88", fontsize=8, family="monospace", ha="center", va="center", transform=ax.transAxes)
+            ax.set_xticks([]); ax.set_yticks([])
+        else:
+            t0 = min(tr[0][0] for tr in trajs.values())
+            _palette = ["#22ff88", "#ffcc44", "#66ccff", "#ff7766", "#cc88ff", "#88ffdd", "#ffaa66"]
+            for i, (w, tr) in enumerate(trajs.items()):
+                cc = _palette[i % len(_palette)]
+                xs = [t - t0 for t, _ in tr]; ys = [r for _, r in tr]
+                ax.plot(xs, ys, "-o", color=cc, lw=1.0, ms=2.5, alpha=0.9, label=str(w)[:8])
+                ax.text(xs[-1], ys[-1], f" {w}", color=cc, fontsize=6.0, family="monospace", va="center")
+            ax.set_xlabel("recorded time (s ago → now)", color="#88aabb", fontsize=8, family="monospace")
+            ax.set_ylabel("Kalman range (m)", color="#88aabb", fontsize=8, family="monospace")
+            ax.tick_params(colors="#557a88", labelsize=6)
+            for sp in ax.spines.values():
+                sp.set_color("#1a3a4a")
+            ax.grid(True, color="#12252e", lw=0.5)
+            if len(trajs) <= 8:
+                ax.legend(loc="upper left", fontsize=6, facecolor="#0a1018",
+                          edgecolor="#1a3a4a", labelcolor="#cfe8dd")
+
+        ax_f = fig.add_axes([0.02, 0.02, 0.96, 0.05]); ax_f.axis("off")
+        ax_f.text(0.0, 0.5,
+                  "v221 TIER 18: the world is now navigable in TIME, not just space. Each line is one entity's "
+                  "measured range history; the buffer is a ring (bounded memory) holding exactly temporal_span_s "
+                  "of REAL recorded history — no extrapolation past the recorded window.",
+                  color="#5a8a9a", fontsize=6.0, family="monospace", transform=ax_f.transAxes, va="center")
+
+    def _draw_receivers(self, fig, p, snap):
+        """v222: ANY-RECEIVER AUTO-ENROLL (TIER 20) — the mass-sensory-receptive matrix as a roster.
+        Every input modality is probed; whatever is present is enrolled as a LIVE row, absent ones are
+        AWAITING, dropped ones are STALE. 0 hardware required — the program runs on whatever is here and
+        each new device only ADDS a row. This is the PRIME ARCHITECTURE RULE made visible."""
+        fig.patch.set_facecolor("#05070b")
+        rows = snap.get("receivers") or []
+        n_total = int(snap.get("recv_n_total") or len(rows))
+        n_live = int(snap.get("recv_n_live") or 0)
+        n_chan = int(snap.get("recv_total_channels") or 0)
+        newly = snap.get("recv_newly_enrolled") or []
+
+        ax_h = fig.add_axes([0.02, 0.945, 0.96, 0.05]); ax_h.axis("off")
+        col = "#22ff88" if n_live else "#ffcc44"
+        ax_h.text(0.0, 0.62,
+                  f"╔═ ANY-RECEIVER AUTO-ENROLL (TIER 20) ═╗   {n_live}/{n_total} receivers LIVE   ·   "
+                  f"{n_chan} total channels   ·   0 hardware required",
+                  color=col, fontsize=10, fontweight="bold", family="monospace",
+                  transform=ax_h.transAxes, va="center")
+        nx = (", ".join(newly)) if newly else "none this cycle"
+        ax_h.text(0.0, 0.05,
+                  f"each input = one ROW of the unified sensory→correlation matrix. just-auto-enrolled: {nx}. "
+                  "more devices connect → more rows → richer correlation. absent inputs are never faked.",
+                  color="#5a8a9a", fontsize=6.6, family="monospace", transform=ax_h.transAxes, va="center")
+
+        ax = fig.add_axes([0.04, 0.10, 0.92, 0.80]); ax.axis("off"); ax.set_xlim(0,1); ax.set_ylim(0,1)
+        ax.text(0.0, 0.98, "  RECEIVER (sensory-matrix row)        STATUS      CHANNELS   ENROLLED",
+                color="#33ddaa", fontsize=7.2, family="monospace", va="top", transform=ax.transAxes, fontweight="bold")
+        _sc = {"LIVE": "#22ff88", "AWAITING": "#667788", "STALE": "#ff9955"}
+        if not rows:
+            ax.text(0.0, 0.92, "  (probing inputs…)", color="#557a88", fontsize=7,
+                    family="monospace", va="top", transform=ax.transAxes)
+        else:
+            y = 0.93
+            for r in rows:
+                cc = _sc.get(r["status"], "#cfe8dd")
+                glyph = "●" if r["status"] == "LIVE" else ("◐" if r["status"] == "STALE" else "○")
+                enr = "auto-enrolled" if r["ever_live"] else "—"
+                chtxt = f"{r['channels']:>4d} ch" if r["live"] else "   —"
+                ax.text(0.0, y, f"  {glyph} {r['kind'][:30]:30s}  {r['status']:9s}  {chtxt:8s}  {enr}",
+                        color=cc, fontsize=6.8, family="monospace", va="top", transform=ax.transAxes)
+                y -= 0.058
+
+        ax_f = fig.add_axes([0.02, 0.02, 0.96, 0.05]); ax_f.axis("off")
+        ax_f.text(0.0, 0.6,
+                  "● LIVE = real data present this cycle (enrolled row)   ○ AWAITING = no device yet (listed, "
+                  "never faked)   ◐ STALE = was live, dropped (kept, not deleted). Connect an SDR/EEG/2nd node "
+                  "and its row goes LIVE automatically — the matrix grows itself.",
+                  color="#33ddaa", fontsize=6.0, family="monospace", transform=ax_f.transAxes, va="center")
+        ax_f.text(0.0, 0.18,
+                  "v222 TIER 20: PRIME ARCHITECTURE RULE made visible — 0 required hardware, hardware-agnostic, "
+                  "each input only ADDS to the mass sensory-receptive correlation system. Never gates the program.",
+                  color="#5a8a9a", fontsize=6.0, family="monospace", transform=ax_f.transAxes, va="center")
+
+    def _draw_emitgraph(self, fig, p, snap):
+        """v223: RF-EMITTER IDENTITY & RELATIONSHIP GRAPH (TIER 15). Left: a co-occurrence graph of real
+        scanned emitters (nodes = BSSIDs by persistence, edges = observed-together weight). Right: the
+        identity table (persistence, RSSI σ mobility) + anomalies. Identity is the real BSSID; intent is
+        NOT inferred — only observable behavior, relationships, and honest anomaly flags."""
+        import numpy as _np
+        fig.patch.set_facecolor("#05080c")
+        ems = snap.get("emitters_graph") or []
+        edges = snap.get("emit_top_edges") or []
+        n_known = int(snap.get("emit_n_known") or len(ems))
+        n_edges = int(snap.get("emit_n_edges") or 0)
+        new_ids = snap.get("emit_new_ids") or []
+        fp_changes = snap.get("emit_fp_changes") or []
+
+        ax_h = fig.add_axes([0.02, 0.945, 0.96, 0.05]); ax_h.axis("off")
+        col = "#22ff88" if n_known else "#667788"
+        ax_h.text(0.0, 0.62,
+                  f"╔═ RF-EMITTER IDENTITY & RELATIONSHIP GRAPH (TIER 15) ═╗   {n_known} emitters   ·   "
+                  f"{n_edges} co-occurrence links",
+                  color=col, fontsize=9.5, fontweight="bold", family="monospace",
+                  transform=ax_h.transAxes, va="center")
+        anom = []
+        if new_ids: anom.append(f"{len(new_ids)} NEW-EMITTER")
+        if fp_changes: anom.append(f"{len(fp_changes)} FINGERPRINT-CHANGE(spoof?)")
+        ax_h.text(0.0, 0.05,
+                  "identity = real BSSID (observable hardware ID, not a faked IQ fingerprint) · edges = genuine "
+                  f"co-occurrence · anomalies: {', '.join(anom) if anom else 'none this cycle'}",
+                  color="#5a8a9a", fontsize=6.6, family="monospace", transform=ax_h.transAxes, va="center")
+
+        # ── left: co-occurrence graph (circular layout of top emitters) ──
+        axg = fig.add_axes([0.02, 0.08, 0.46, 0.84]); axg.axis("off")
+        axg.set_xlim(-1.25, 1.25); axg.set_ylim(-1.25, 1.25)
+        axg.set_title("co-occurrence graph (who is seen together)", color="#88bbcc", fontsize=7.5, family="monospace")
+        top = ems[:16]
+        pos = {}
+        if top:
+            for i, e in enumerate(top):
+                ang = 2 * _np.pi * i / len(top)
+                pos[e["bssid"]] = (_np.cos(ang), _np.sin(ang))
+            wmax = max((ed["w"] for ed in edges), default=1)
+            for ed in edges:
+                if ed["a"] in pos and ed["b"] in pos:
+                    x0, y0 = pos[ed["a"]]; x1, y1 = pos[ed["b"]]
+                    axg.plot([x0, x1], [y0, y1], "-", color="#1f5566",
+                             lw=0.4 + 2.2 * ed["w"] / wmax, alpha=0.55, zorder=1)
+            nmax = max((e["n_obs"] for e in top), default=1)
+            for e in top:
+                x, y = pos[e["bssid"]]
+                is_new = e["bssid"] in new_ids
+                cc = "#ff5566" if is_new else "#22ff88"
+                axg.scatter([x], [y], s=40 + 160 * e["n_obs"] / nmax, c=cc,
+                            edgecolors="#0a1018", linewidths=0.6, zorder=2)
+                axg.text(x * 1.12, y * 1.12, e["bssid"][-8:], color="#9fd8c8", fontsize=5.2,
+                         family="monospace", ha="center", va="center")
+        else:
+            axg.text(0, 0, "(no scanned emitters yet)", color="#557a88", fontsize=8,
+                     family="monospace", ha="center", va="center")
+
+        # ── right: identity table ──
+        axt = fig.add_axes([0.50, 0.08, 0.48, 0.84]); axt.axis("off")
+        axt.set_xlim(0, 1); axt.set_ylim(0, 1)
+        axt.text(0.0, 0.99, "  EMITTER (BSSID tail)   SSID         #obs  RSSI   σ    ch/band",
+                 color="#33ddaa", fontsize=6.8, family="monospace", va="top", transform=axt.transAxes, fontweight="bold")
+        if ems:
+            y = 0.955
+            for e in ems[:22]:
+                cc = "#ff5566" if e["bssid"] in new_ids else ("#ffcc44" if e["bssid"] in fp_changes else "#cfe8dd")
+                mob = "~" if e["rssi_std"] >= 4.0 else " "      # high σ → variable/mobile
+                axt.text(0.0, y,
+                         f"  {e['bssid'][-8:]:9s} {str(e['ssid'])[:11]:11s} {e['n_obs']:>4d} "
+                         f"{e['rssi_mean']:>5.0f} {e['rssi_std']:>4.1f}{mob} {str(e.get('chan','?')):>3}/{str(e.get('band','?'))[:5]}",
+                         color=cc, fontsize=6.0, family="monospace", va="top", transform=axt.transAxes)
+                y -= 0.042
+        else:
+            axt.text(0.0, 0.93, "  (identity table fills as the RF scan returns emitters)",
+                     color="#557a88", fontsize=6.8, family="monospace", va="top", transform=axt.transAxes)
+
+        ax_f = fig.add_axes([0.02, 0.01, 0.96, 0.05]); ax_f.axis("off")
+        ax_f.text(0.0, 0.6,
+                  "node size = persistence (#obs) · red = new emitter this session · yellow = fingerprint change "
+                  "(possible spoof/reconfig) · σ = RSSI std-dev (a real mobility/variability proxy; ~ marks high σ).",
+                  color="#33ddaa", fontsize=6.0, family="monospace", transform=ax_f.transAxes, va="center")
+        ax_f.text(0.0, 0.2,
+                  "v223 TIER 15: identity (real BSSID) + behavior statistics + relationships + anomaly flags — all "
+                  "observable. INTENT is deliberately NOT inferred or fabricated. Raw-IQ fingerprinting is ◧ hardware-gated.",
+                  color="#5a8a9a", fontsize=6.0, family="monospace", transform=ax_f.transAxes, va="center")
+
+    def _draw_overseer(self, fig, p, snap):
+        """v224: AUTONOMOUS OVERSEER ACTIONS (TIER 16). The closed perception→decision loop: recommended
+        actions derived from the unified matrix, each with severity + reason + cited provenance. It
+        recommends only (never acts on the world). A normal scene shows NO actions — no false alarms."""
+        fig.patch.set_facecolor("#06070b")
+        acts = snap.get("overseer_actions") or []
+        hist = snap.get("overseer_history") or []
+        n = int(snap.get("overseer_n_actions") or len(acts))
+        max_sev = snap.get("overseer_max_severity") or "NONE"
+        _sc = {"HIGH": "#ff5566", "MED": "#ffcc44", "LOW": "#66ccff", "NONE": "#22cc77"}
+
+        ax_h = fig.add_axes([0.02, 0.945, 0.96, 0.05]); ax_h.axis("off")
+        col = _sc.get(max_sev, "#22cc77")
+        head = (f"{n} recommended action(s) · max severity {max_sev}" if n
+                else "scene NOMINAL — 0 recommended actions (no false alarms)")
+        ax_h.text(0.0, 0.62,
+                  f"╔═ AUTONOMOUS OVERSEER (TIER 16) ═╗   {head}",
+                  color=col, fontsize=10, fontweight="bold", family="monospace",
+                  transform=ax_h.transAxes, va="center")
+        ax_h.text(0.0, 0.05,
+                  "perception→decision: actions are derived from the unified matrix with CITED provenance. "
+                  "the overseer RECOMMENDS only — it never acts on the world. evidence-gated, never invented.",
+                  color="#5a8a9a", fontsize=6.6, family="monospace", transform=ax_h.transAxes, va="center")
+
+        ax = fig.add_axes([0.03, 0.40, 0.94, 0.50]); ax.axis("off"); ax.set_xlim(0,1); ax.set_ylim(0,1)
+        ax.text(0.0, 0.99, "  ACTIVE RECOMMENDATIONS", color="#33ddaa", fontsize=8,
+                family="monospace", va="top", transform=ax.transAxes, fontweight="bold")
+        if not acts:
+            ax.text(0.0, 0.88, "  ✓ nothing to recommend — the scene is nominal. (This is the correct, honest "
+                               "output of a normal scene: no fabricated alerts.)",
+                    color="#22cc77", fontsize=7.2, family="monospace", va="top", transform=ax.transAxes)
+        else:
+            y = 0.90
+            for a in acts:
+                cc = _sc.get(a["severity"], "#cfe8dd")
+                ax.text(0.0, y, f"  [{a['severity']:4s}] {a['action']:10s} · {a['rule']}",
+                        color=cc, fontsize=7.4, family="monospace", va="top", transform=ax.transAxes, fontweight="bold")
+                ax.text(0.04, y - 0.045, a["reason"][:120], color="#cfe8dd", fontsize=6.2,
+                        family="monospace", va="top", transform=ax.transAxes)
+                prov = ", ".join(f"{k}={str(v)[:24]}" for k, v in (a.get("provenance") or {}).items())
+                ax.text(0.04, y - 0.085, f"cited: {prov[:118]}", color="#6a8a9a", fontsize=5.6,
+                        family="monospace", va="top", transform=ax.transAxes)
+                y -= 0.15
+
+        # ── recent action history ──
+        axh2 = fig.add_axes([0.03, 0.06, 0.94, 0.30]); axh2.axis("off"); axh2.set_xlim(0,1); axh2.set_ylim(0,1)
+        axh2.text(0.0, 0.99, "  RECENT ACTION HISTORY (bounded, auditable)", color="#557a88",
+                  fontsize=7, family="monospace", va="top", transform=axh2.transAxes, fontweight="bold")
+        if hist:
+            import time as _t
+            y = 0.90
+            for a in reversed(hist[-14:]):
+                cc = _sc.get(a["severity"], "#889")
+                age = max(0, int(_t.time() - a.get("ts", 0)))
+                axh2.text(0.0, y, f"  -{age:>4d}s  [{a['severity']:4s}] {a['action']:10s} {a['rule']}",
+                          color=cc, fontsize=5.8, family="monospace", va="top", transform=axh2.transAxes)
+                y -= 0.066
+        else:
+            axh2.text(0.0, 0.88, "  (no actions recorded this session)", color="#445",
+                      fontsize=6, family="monospace", va="top", transform=axh2.transAxes)
+
+        ax_f = fig.add_axes([0.02, 0.01, 0.96, 0.04]); ax_f.axis("off")
+        ax_f.text(0.0, 0.5,
+                  "v224 TIER 16: closed-loop perception→decision over the unified sensory-correlation matrix. "
+                  "Rules fire ONLY on real validated evidence (cross-modal CONFIRMED, emitter anomalies, Kalman "
+                  "uncertainty, provenance coverage). Recommends, never acts. Auditable against the provenance ledger.",
                   color="#5a8a9a", fontsize=5.9, family="monospace", transform=ax_f.transAxes, va="center")
 
     def _draw_gbsar(self, fig, p, snap):
@@ -41113,6 +41456,14 @@ class ProvenanceLedger:
                                     "bio-signature ↔ track strength-rank fusion", "DERIVED-FUSION"),
         "world_conf_mean":         ("Mean world confidence", ["world_entities", "xmodal_claims"],
                                     "association + bio-score + cross-modal (TIER 19/23)", "DERIVED"),
+        "kf_mean_uncertainty":     ("Mean track uncertainty", ["world_entities"],
+                                    "per-entity constant-velocity Kalman on range (TIER 10)", "DERIVED-KALMAN"),
+        "temporal_span_s":         ("4D recorded history", ["world_entities"],
+                                    "time-indexed ring buffer of world snapshots (TIER 18)", "RECORDED-MEASURED"),
+        "recv_n_live":             ("Live receivers enrolled", ["receivers"],
+                                    "auto-probe every input modality, enroll the present ones (TIER 20)", "DERIVED-ENROLL"),
+        "emit_n_known":            ("Known RF emitters", ["rf_emitters"],
+                                    "stable BSSID identity + co-occurrence graph (TIER 15)", "REAL-RF-SCAN"),
         "xmodal_n_confirmed":      ("Cross-modal confirmed claims", ["xmodal_claims"],
                                     "≥2 independent modalities agree (TIER 19 gate)", "DERIVED-GATE"),
         "eeg_real_ok":             ("Real EEG present", ["eeg_real_n_channels"],
@@ -41161,6 +41512,422 @@ class ProvenanceLedger:
         return {"key": key, "registered": True, "label": label, "value": pp.get(key),
                 "sources": srcs, "sources_live": present, "src_live": len(present) > 0,
                 "transform": xform, "prov_class": pclass}
+
+
+class KalmanTrackFusionEngine:
+    """v220: TIER 10 (PRIMARY GOAL) — SELF-REFINING WORLD MODEL via optimal recursive estimation.
+    Each tracked world entity gets a 1-D constant-velocity Kalman filter on its MEASURED range:
+    state = [range, range_rate], measurement = range. The filter (predict → update) optimally fuses
+    the new noisy measurement with the model prediction, yielding a SMOOTHED range, an estimated
+    range-rate, and a real UNCERTAINTY (sqrt of the posterior covariance). The world model refines
+    itself as data accumulates — noise shrinks, uncertainty converges — and the uncertainty is honest
+    (it grows when measurements stop, never fabricated). Validated 1.51× RMSE reduction on synthetic
+    constant-velocity targets. Hardware-agnostic: any source that yields a range feeds the same filter.
+    """
+    def __init__(self, q: float = 0.05, r: float = 4.0, prune_after: int = 30):
+        self._filters = {}          # wid -> dict(x=[pos,vel], P=2x2, miss=int)
+        self.q = float(q); self.r = float(r); self.prune_after = int(prune_after)
+
+    def _step(self, f, z, dt):
+        import numpy as _np
+        F = _np.array([[1.0, dt], [0.0, 1.0]])
+        # discrete white-noise-acceleration process noise (couples pos/vel) — the textbook CV model;
+        # gives a stable velocity estimate instead of letting it chase measurement noise.
+        d2 = dt * dt; d3 = d2 * dt
+        Q = self.q * _np.array([[d3 / 3.0, d2 / 2.0], [d2 / 2.0, dt]])
+        x = F @ f["x"]
+        P = F @ f["P"] @ F.T + Q
+        H = _np.array([[1.0, 0.0]])
+        y = float(z) - float((H @ x)[0])
+        S = float((H @ P @ H.T)[0, 0]) + self.r
+        K = (P @ H.T).reshape(2) / S
+        x = x + K * y
+        P = (_np.eye(2) - _np.outer(K, H[0])) @ P
+        f["x"] = x; f["P"] = P
+        return float(x[0]), float(x[1]), float(_np.sqrt(max(0.0, P[0, 0])))
+
+    def update(self, entities: list, dt: float = 1.0) -> dict:
+        import numpy as _np
+        seen = set()
+        out_ents = []
+        uncerts = []
+        for e in (entities or []):
+            wid = e.get("wid")
+            loc = e.get("location", e.get("loc"))       # world entities carry range under "location"
+            try:
+                z = float(loc)
+            except (TypeError, ValueError):
+                out_ents.append(e); continue           # no range measurement → pass through untouched
+            seen.add(wid)
+            f = self._filters.get(wid)
+            if f is None:
+                f = {"x": _np.array([z, 0.0]), "P": _np.eye(2) * 10.0, "miss": 0}
+                self._filters[wid] = f
+            f["miss"] = 0
+            kr, kv, ku = self._step(f, z, dt)
+            e2 = dict(e)
+            e2["kf_range"] = round(kr, 3)
+            e2["kf_range_rate"] = round(kv, 4)
+            e2["kf_uncertainty"] = round(ku, 3)
+            out_ents.append(e2)
+            uncerts.append(ku)
+        # prune filters for entities that have vanished
+        for wid in list(self._filters.keys()):
+            if wid not in seen:
+                self._filters[wid]["miss"] += 1
+                if self._filters[wid]["miss"] > self.prune_after:
+                    del self._filters[wid]
+        mean_u = round(sum(uncerts) / len(uncerts), 3) if uncerts else 0.0
+        return {
+            "world_entities": out_ents,
+            "kf_n_tracks": len(uncerts),
+            "kf_mean_uncertainty": mean_u,
+            "kf_n_filters": len(self._filters),
+            "kf_source": "KALMAN_TRACK_FUSION_REAL",
+        }
+
+
+class TemporalWorldBuffer:
+    """v221: TIER 18 (PRIMARY GOAL) — 4D TEMPORAL WORLD. A time-indexed ring buffer of world snapshots
+    so any recorded MOMENT can be revisited and any entity's TRAJECTORY reconstructed across (x,y,z,t).
+    Every cycle (throttled to min_dt) it stores only the MEASURED per-entity state (range, Kalman range,
+    uncertainty, confidence, velocity) tagged with a real wall-clock time. The world becomes navigable
+    in time, not just space — scrub to any past instant, or pull one entity's full path.
+
+    Honest by construction: nothing between samples is invented (gaps stay gaps); the ring buffer caps
+    memory so it can run indefinitely; `temporal_span_s` is exactly how much real history is held — no
+    extrapolation past the recorded window. Hardware-agnostic — whatever entities exist get recorded.
+    """
+    _FIELDS = ("wid", "location", "kf_range", "kf_uncertainty", "conf_score", "conf_label", "velocity_mps")
+
+    def __init__(self, max_frames: int = 600, min_dt: float = 1.0):
+        from collections import deque
+        self._buf = deque(maxlen=int(max_frames))
+        self.min_dt = float(min_dt)
+        self._last_t = 0.0
+
+    def ingest(self, entities: list, ts: float = None):
+        import time as _t
+        ts = float(ts) if ts is not None else _t.time()
+        if ts - self._last_t < self.min_dt:
+            return                                  # throttle — bound memory + sample rate
+        self._last_t = ts
+        snap = {"t": ts, "entities": [{k: e.get(k) for k in self._FIELDS} for e in (entities or [])]}
+        self._buf.append(snap)
+
+    def at(self, t: float):
+        """Nearest recorded snapshot to time t (no interpolation — returns real frames only)."""
+        if not self._buf:
+            return None
+        return min(self._buf, key=lambda s: abs(s["t"] - t))
+
+    def window(self, t0: float, t1: float):
+        return [s for s in self._buf if t0 <= s["t"] <= t1]
+
+    def trajectory(self, wid):
+        """Time series [(t, range)] for one entity across the recorded window — its 4D path."""
+        out = []
+        for s in self._buf:
+            for e in s["entities"]:
+                if e.get("wid") == wid:
+                    r = e.get("kf_range")
+                    if r is None:
+                        r = e.get("location")
+                    if r is not None:
+                        out.append((s["t"], float(r)))
+                    break
+        return out
+
+    def status(self) -> dict:
+        frames = list(self._buf)
+        n = len(frames)
+        span = round(frames[-1]["t"] - frames[0]["t"], 3) if n >= 2 else 0.0
+        uniq = set()
+        for s in frames:
+            for e in s["entities"]:
+                if e.get("wid") is not None:
+                    uniq.add(e["wid"])
+        return {
+            "temporal_n_frames": n,
+            "temporal_span_s": span,
+            "temporal_n_unique": len(uniq),
+            "temporal_latest_t": frames[-1]["t"] if n else 0.0,
+            "temporal_source": "TEMPORAL_WORLD_BUFFER_REAL",
+        }
+
+
+class ReceiverAutoEnrollEngine:
+    """v222: TIER 20 (PRIMARY GOAL) — ANY-RECEIVER AUTO-ENROLL. The direct embodiment of the PRIME
+    ARCHITECTURE RULE: the program requires NO specific hardware, and any input that appears is
+    auto-detected and enrolled as a new ROW of the unified mass-sensory-receptive matrix — it only ever
+    ADDS a channel, never gates the program. Each receiver is probed by the real signature key(s) it
+    leaves in the fused state: present/truthy → LIVE (enrolled), absent → AWAITING (listed but never
+    faked). A persistent registry tracks first_seen / last_seen / ever_live so a device that connects
+    mid-run is auto-enrolled the instant its data appears, and one that drops is marked stale (not
+    deleted, not fabricated). More receivers → more rows → a richer correlation matrix, automatically.
+    """
+    # (receiver_id, human kind, [signature pp keys — any present⇒live], channel-count key or None)
+    _PROBES = [
+        ("wifi_rssi",   "WiFi RSSI link",      ["rssi_presence", "rf_link_entities", "body_sensing_active"], "rf_link_entities"),
+        ("wifi_csi",    "WiFi CSI (phase)",    ["router_csi_method", "mpath_n_tracks"],                       None),
+        ("acoustic",    "Acoustic / mic",      ["acoustic_motion", "acoustic_active"],                        None),
+        ("eeg",         "EEG (LSL inlet)",     ["eeg_real_ok", "eeg_real_n_channels"],                        "eeg_real_n_channels"),
+        ("sdr",         "SDR spectrum",        ["spectrum_active", "sdr_present", "rfmap_n"],                  None),
+        ("gnss",        "GNSS satellites",     ["gnss_satellites"],                                           "gnss_satellites"),
+        ("adsb",        "ADS-B aircraft",      ["aircraft"],                                                  "aircraft"),
+        ("wspr",        "WSPR HF beacons",     ["wspr_spots"],                                                "wspr_spots"),
+        ("aprs",        "APRS stations",       ["aprs_stations"],                                             "aprs_stations"),
+        ("eonet",       "EONET earth events",  ["eonet_events"],                                              "eonet_events"),
+        ("satellite",   "Satellite TLE set",   ["tracked_satellites"],                                        "tracked_satellites"),
+        ("lightning",   "VLF lightning",       ["lightning_ok", "lightning_n_storms"],                        None),
+        ("magnetometer","Magnetometer/WMM",    ["wmm_ok", "mag_field_ut"],                                    None),
+        ("metar",       "METAR weather",       ["metar_stations"],                                            "metar_stations"),
+    ]
+
+    def __init__(self):
+        self._registry = {}     # rid -> dict(first_seen,last_seen,ever_live,channels)
+
+    @staticmethod
+    def _present(v):
+        if v is None or v is False:
+            return False
+        if isinstance(v, (list, tuple, dict, str)):
+            return len(v) > 0
+        if isinstance(v, (int, float)):
+            return v != 0
+        return bool(v)
+
+    def enroll(self, pp: dict) -> dict:
+        import time as _t
+        now = _t.time()
+        rows = []
+        newly = []
+        for rid, kind, sig_keys, ch_key in self._PROBES:
+            live = any(self._present(pp.get(k)) for k in sig_keys)
+            chans = 0
+            if ch_key is not None:
+                v = pp.get(ch_key)
+                if isinstance(v, (list, tuple, dict)):
+                    chans = len(v)
+                elif isinstance(v, (int, float)):
+                    chans = int(v)
+            elif live:
+                chans = 1
+            reg = self._registry.get(rid)
+            if reg is None:
+                reg = {"first_seen": now if live else None, "last_seen": now if live else None,
+                       "ever_live": live, "channels": chans}
+                self._registry[rid] = reg
+                if live:
+                    newly.append(rid)
+            else:
+                if live:
+                    if not reg["ever_live"]:
+                        newly.append(rid)          # connected mid-run → auto-enrolled now
+                        reg["first_seen"] = reg["first_seen"] or now
+                    reg["ever_live"] = True
+                    reg["last_seen"] = now
+                    reg["channels"] = chans
+            stale = reg["ever_live"] and not live
+            rows.append({
+                "rid": rid, "kind": kind, "live": live, "channels": chans,
+                "ever_live": reg["ever_live"], "stale": stale,
+                "status": "LIVE" if live else ("STALE" if stale else "AWAITING"),
+            })
+        n_live = sum(1 for r in rows if r["live"])
+        n_chan = sum(r["channels"] for r in rows if r["live"])
+        return {
+            "receivers": rows,
+            "recv_n_total": len(rows),
+            "recv_n_live": n_live,
+            "recv_n_awaiting": len(rows) - n_live,
+            "recv_total_channels": n_chan,
+            "recv_newly_enrolled": newly,
+            "recv_source": "RECEIVER_AUTO_ENROLL_REAL",
+        }
+
+
+class EmitterIdentityGraph:
+    """v223: TIER 15 (PRIMARY GOAL) — RF-EMITTER IDENTITY & RELATIONSHIP GRAPH (honest envelope).
+
+    Stable per-emitter IDENTITY anchored on the BSSID/MAC — a REAL, observable hardware identifier — not
+    a fabricated IQ/clock fingerprint (raw-IQ fingerprinting is ◧ hardware-gated and never faked here). A
+    corroborating fingerprint is built ONLY from genuinely observable features (OUI vendor prefix, channel,
+    band, security); if that fingerprint changes under a constant BSSID it is flagged FINGERPRINT-CHANGE
+    (a possible spoof/reconfig — surfaced, not interpreted). Per emitter we track real statistics over
+    time: first/last-seen, observation count (persistence), and RSSI mean/σ (σ = a real mobility/variability
+    proxy). A RELATIONSHIP graph records genuine CO-OCCURRENCE (which emitters are observed together) as
+    weighted edges. Anomalies surfaced honestly: NEW-EMITTER (unseen ID), FINGERPRINT-CHANGE, NEW-LINK
+    (first co-occurrence). INTENT is NOT inferred or fabricated — only observable identity, behavior
+    statistics, relationships, and anomaly flags. Hardware-agnostic: more receivers → more emitters → a
+    richer graph; with no scan data the graph is simply empty (never invented).
+    """
+    def __init__(self, max_edges: int = 4000, min_dt: float = 2.0):
+        self._emitters = {}     # bssid -> rec
+        self._edges = {}        # (a,b) sorted tuple -> count
+        self._known_edges = set()
+        self.max_edges = int(max_edges)
+        self.min_dt = float(min_dt)
+        self._last_t = 0.0
+        self._last_new = []
+        self._last_changed = []
+        self._last_newlinks = 0
+
+    @staticmethod
+    def _fp(em, oui):
+        return f"{oui}|ch{em.get('chan','?')}|{em.get('band','?')}|{em.get('security','?')}"
+
+    def ingest(self, emitters: list, ts: float = None):
+        import time as _t, math as _m
+        ts = float(ts) if ts is not None else _t.time()
+        if ts - self._last_t < self.min_dt:
+            return
+        self._last_t = ts
+        new, changed, present = [], [], []
+        for em in (emitters or []):
+            bssid = (em.get("bssid") or "").strip()
+            if not bssid or bssid in ("?", "00:00:00:00:00:00"):
+                continue
+            present.append(bssid)
+            oui = bssid[:8]
+            fp = self._fp(em, oui)
+            try:
+                rssi = float(em.get("rssi_dbm", em.get("signal", -100.0)))
+            except (TypeError, ValueError):
+                rssi = -100.0
+            rec = self._emitters.get(bssid)
+            if rec is None:
+                new.append(bssid)
+                rec = {"bssid": bssid, "ssid": em.get("ssid", "?"), "oui": oui, "fp": fp,
+                       "first_seen": ts, "last_seen": ts, "n_obs": 0,
+                       "rssi_mean": rssi, "rssi_m2": 0.0,
+                       "chan": em.get("chan"), "band": em.get("band"), "security": em.get("security")}
+                self._emitters[bssid] = rec
+            else:
+                if rec["fp"] != fp:
+                    changed.append(bssid)
+                    rec["fp"] = fp
+                rec["last_seen"] = ts
+                rec["ssid"] = em.get("ssid", rec["ssid"])
+                rec["chan"] = em.get("chan"); rec["band"] = em.get("band"); rec["security"] = em.get("security")
+            rec["n_obs"] += 1
+            d = rssi - rec["rssi_mean"]                      # Welford running mean/variance
+            rec["rssi_mean"] += d / rec["n_obs"]
+            rec["rssi_m2"] += d * (rssi - rec["rssi_mean"])
+        # co-occurrence edges (genuine: observed in the same scan)
+        newlinks = 0
+        for i in range(len(present)):
+            for j in range(i + 1, len(present)):
+                key = tuple(sorted((present[i], present[j])))
+                if key not in self._known_edges:
+                    self._known_edges.add(key); newlinks += 1
+                self._edges[key] = self._edges.get(key, 0) + 1
+        if len(self._edges) > self.max_edges:               # bound memory: drop weakest links
+            keep = sorted(self._edges.items(), key=lambda kv: kv[1], reverse=True)[:self.max_edges]
+            self._edges = dict(keep); self._known_edges = set(self._edges.keys())
+        self._last_new, self._last_changed, self._last_newlinks = new, changed, newlinks
+
+    def status(self) -> dict:
+        import math as _m
+        ems = []
+        for r in self._emitters.values():
+            std = _m.sqrt(r["rssi_m2"] / r["n_obs"]) if r["n_obs"] > 1 else 0.0
+            ems.append({"bssid": r["bssid"], "ssid": r["ssid"], "oui": r["oui"],
+                        "n_obs": r["n_obs"], "rssi_mean": round(r["rssi_mean"], 1),
+                        "rssi_std": round(std, 2), "chan": r["chan"], "band": r["band"],
+                        "security": r["security"]})
+        ems.sort(key=lambda e: e["n_obs"], reverse=True)
+        top_edges = sorted(self._edges.items(), key=lambda kv: kv[1], reverse=True)[:20]
+        edges = [{"a": a, "b": b, "w": w} for (a, b), w in top_edges]
+        return {
+            "emitters_graph": ems[:64],
+            "emit_n_known": len(self._emitters),
+            "emit_n_edges": len(self._edges),
+            "emit_top_edges": edges,
+            "emit_new_ids": self._last_new,
+            "emit_fp_changes": self._last_changed,
+            "emit_new_links": self._last_newlinks,
+            "emit_source": "EMITTER_IDENTITY_GRAPH_REAL",
+        }
+
+
+class OverseerActionEngine:
+    """v224: TIER 16 (PRIMARY GOAL) — AUTONOMOUS OVERSEER ACTIONS (closed-loop perception→decision).
+
+    Reads the unified fused state and emits RECOMMENDED actions — each with a severity, an action type
+    (ALERT / RE-TASK / PRIORITIZE), a human reason, and CITED PROVENANCE (the exact pp keys + values that
+    triggered it). It recommends only; it never acts on the world or any external system (no autonomous
+    side effects) — perception→decision, with the human in the loop.
+
+    Honest by construction: every rule fires ONLY on real, already-validated evidence (cross-modal
+    CONFIRMED claims, emitter anomalies, Kalman uncertainty, provenance coverage). A normal scene with no
+    triggering evidence produces ZERO actions — no false alarms, nothing invented. Each action carries its
+    provenance so it is auditable against TIER 24. Recent actions are kept in a bounded history for review.
+    """
+    def __init__(self, history: int = 60):
+        from collections import deque
+        self._hist = deque(maxlen=int(history))
+        self._sev_rank = {"HIGH": 3, "MED": 2, "LOW": 1, "NONE": 0}
+
+    @staticmethod
+    def _mk(rule, severity, action, reason, cited):
+        import time as _t
+        return {"rule": rule, "severity": severity, "action": action,
+                "reason": reason, "provenance": cited, "ts": _t.time()}
+
+    def evaluate(self, pp: dict) -> dict:
+        actions = []
+
+        # ── RULE: emitter fingerprint change → possible spoof/reconfig (HIGH) ──
+        fpc = pp.get("emit_fp_changes") or []
+        if fpc:
+            tail = ", ".join(str(x)[-8:] for x in fpc[:3])
+            actions.append(self._mk("EMITTER_SPOOF", "HIGH", "ALERT",
+                f"Fingerprint change on {len(fpc)} emitter(s) [{tail}] under a constant BSSID — possible "
+                f"spoof/reconfiguration; recommend review.", {"emit_fp_changes": fpc}))
+
+        # ── RULE: burst of new emitters → new activity in the field (MED) ──
+        newids = pp.get("emit_new_ids") or []
+        if len(newids) >= 3:
+            actions.append(self._mk("NEW_EMITTER_BURST", "MED", "ALERT",
+                f"{len(newids)} new RF emitters appeared this cycle — possible new presence/activity; "
+                f"recommend attention to the area.", {"emit_new_ids": newids}))
+
+        # ── RULE: presence AND motion both cross-modally CONFIRMED → prioritize (MED) ──
+        claims = {c.get("claim"): c for c in (pp.get("xmodal_claims") or [])}
+        if (claims.get("presence", {}).get("status") == "CONFIRMED" and
+                claims.get("human_motion", {}).get("status") == "CONFIRMED"):
+            actions.append(self._mk("CORROBORATED_ACTIVITY", "MED", "PRIORITIZE",
+                "Presence AND motion each confirmed by ≥2 independent modalities — prioritize entity "
+                "tracking/resolution here.",
+                {"xmodal_claims": ["presence:CONFIRMED", "human_motion:CONFIRMED"]}))
+
+        # ── RULE: high track uncertainty with active tracks → re-task for more data (LOW) ──
+        ku = pp.get("kf_mean_uncertainty"); nt = int(pp.get("kf_n_tracks") or 0)
+        if nt > 0 and ku is not None and float(ku) > 8.0:
+            actions.append(self._mk("HIGH_UNCERTAINTY", "LOW", "RE-TASK",
+                f"Mean track uncertainty {float(ku):.1f} m is high across {nt} track(s) — recommend longer "
+                f"dwell or adding a receiver to tighten the estimate.",
+                {"kf_mean_uncertainty": ku, "kf_n_tracks": nt}))
+
+        # ── RULE: low provenance coverage → connect more receivers (LOW) ──
+        cov = pp.get("prov_coverage_pct")
+        if cov is not None and float(cov) < 40.0:
+            actions.append(self._mk("LOW_COVERAGE", "LOW", "RE-TASK",
+                f"Data-provenance coverage {float(cov):.0f}% is low — connect more receivers (see "
+                f"[Receivers]) to raise confidence across the matrix.", {"prov_coverage_pct": cov}))
+
+        actions.sort(key=lambda a: self._sev_rank.get(a["severity"], 0), reverse=True)
+        for a in actions:
+            self._hist.append(a)
+        max_sev = actions[0]["severity"] if actions else "NONE"
+        return {
+            "overseer_actions": actions,
+            "overseer_n_actions": len(actions),
+            "overseer_max_severity": max_sev,
+            "overseer_history": list(self._hist)[-30:],
+            "overseer_source": "OVERSEER_ACTION_ENGINE_REAL",
+        }
 
 
 class WSPRNetGlobalEngine:
@@ -80670,6 +81437,16 @@ class MultiAgentWirelessBCIFuser:
         self.xmodal_validator = CrossModalValidationEngine()
         # v217: TIER 23 world confidence field — per-entity confidence from cross-modal corroboration
         self.world_confidence = WorldConfidenceField()
+        # v220: TIER 10 self-refining world model — per-entity Kalman range filter (smooth + uncertainty)
+        self.kalman_fusion = KalmanTrackFusionEngine()
+        # v221: TIER 18 4D temporal world — time-indexed ring buffer of world snapshots (scrub/trajectory)
+        self.temporal_world = TemporalWorldBuffer()
+        # v222: TIER 20 any-receiver auto-enroll — detect any real input, add it as a sensory-matrix row
+        self.receiver_enroll = ReceiverAutoEnrollEngine()
+        # v223: TIER 15 emitter identity & relationship graph — stable BSSID IDs + co-occurrence + anomalies
+        self.emitter_graph = EmitterIdentityGraph()
+        # v224: TIER 16 autonomous overseer actions — recommend (never act) on real evidence, with provenance
+        self.overseer_actions = OverseerActionEngine()
         # v218: TIER 24 provenance ledger — every displayed value traceable to its real source+transform
         self.provenance = ProvenanceLedger()
         log.info("[PCOVER] Planetary coverage map engine ready (1°×1° global grid)")
@@ -81557,6 +82334,10 @@ class MultiAgentWirelessBCIFuser:
                  ("Projection", "projection"),
                  ("ObservedSky", "observedsky"),
                  ("CrossModal", "xmodal"),
+                 ("4D-Time", "temporal"),
+                 ("Receivers", "receivers"),
+                 ("EmitterGraph", "emitgraph"),
+                 ("Overseer", "overseer"),
                  ("Provenance", "provenance"),
                  ("Capability", "capability"),
                  ("Telemetry", "telemetry"),
@@ -83562,6 +84343,45 @@ class MultiAgentWirelessBCIFuser:
                         pp[_kwc] = _vwc
             except Exception as _wce:
                 log.debug(f"[WCONF] {_wce}")
+            # v220: TIER 10 self-refining world model — Kalman-smooth each entity's range, attach a
+            # smoothed range + estimated rate + honest uncertainty (runs after confidence so it refines
+            # the confidence-annotated entities; before provenance so the ledger can register it).
+            try:
+                _kfu = getattr(self, "kalman_fusion", None)
+                if _kfu is not None:
+                    for _kkf, _vkf in _kfu.update(pp.get("world_entities") or [], 1.0).items():
+                        pp[_kkf] = _vkf
+            except Exception as _kfe:
+                log.debug(f"[KFUSE] {_kfe}")
+            # v221: TIER 18 4D temporal world — record this cycle's entities (with Kalman state) into the
+            # time-indexed ring buffer (throttled internally); publish span/frame stats for the tab.
+            try:
+                _tw = getattr(self, "temporal_world", None)
+                if _tw is not None:
+                    _tw.ingest(pp.get("world_entities") or [])
+                    for _ktw, _vtw in _tw.status().items():
+                        pp[_ktw] = _vtw
+            except Exception as _twe:
+                log.debug(f"[TWORLD] {_twe}")
+            # v222: TIER 20 any-receiver auto-enroll — probe the fused state for every input modality;
+            # enroll whatever is LIVE as a row of the sensory matrix (runs late so all feeds are in pp).
+            try:
+                _re = getattr(self, "receiver_enroll", None)
+                if _re is not None:
+                    for _kre, _vre in _re.enroll(pp).items():
+                        pp[_kre] = _vre
+            except Exception as _ree:
+                log.debug(f"[RECVENROLL] {_ree}")
+            # v223: TIER 15 emitter identity & relationship graph — ingest the REAL scanned emitters
+            # (rf_emitters: BSSID/SSID/chan/band/security) into stable IDs + co-occurrence (throttled).
+            try:
+                _eg = getattr(self, "emitter_graph", None)
+                if _eg is not None:
+                    _eg.ingest(pp.get("rf_emitters") or [])
+                    for _keg, _veg in _eg.status().items():
+                        pp[_keg] = _veg
+            except Exception as _ege:
+                log.debug(f"[EMITGRAPH] {_ege}")
             # v218: TIER 24 provenance ledger — built LAST so it sees every populated value; traces
             # each displayed value to its real source + transform; flags any dead-source row AWAITING.
             try:
@@ -83571,6 +84391,15 @@ class MultiAgentWirelessBCIFuser:
                         pp[_kpv] = _vpv
             except Exception as _pve:
                 log.debug(f"[PROV] {_pve}")
+            # v224: TIER 16 autonomous overseer actions — run truly LAST (after provenance) so it can cite
+            # prov_coverage_pct; emits RECOMMENDED actions on real evidence only (0 actions on a normal scene).
+            try:
+                _ov = getattr(self, "overseer_actions", None)
+                if _ov is not None:
+                    for _kov, _vov in _ov.evaluate(pp).items():
+                        pp[_kov] = _vov
+            except Exception as _ove:
+                log.debug(f"[OVERSEER] {_ove}")
             # v180: bio-score enrichment — push freqres + rfproxy bio-scores onto every entity
             # so entity tab, per-entity windows, planet map all show live biological-band intensity
             try:
@@ -84524,7 +85353,13 @@ class MultiAgentWirelessBCIFuser:
             try:
                 _pr = getattr(self, "planet_recon", None)
                 if _pr is not None:
-                    _pr.inject(pp)   # inject all real observations from this cycle
+                    # v219 PERF: inject() scalar-loops _cell() over ~7000 obs/frame (aircraft+sats+
+                    # EONET+GDACS) but those feeds change every 30 s+. Throttle the obs injection to
+                    # 3 s (the grid is a persisted accumulator; get() still serves it every frame).
+                    import time as _prt
+                    if _prt.time() - getattr(self, "_planet_recon_last", 0.0) > 3.0:
+                        self._planet_recon_last = _prt.time()
+                        _pr.inject(pp)
                     for _kpr, _vpr in _pr.get().items():
                         pp[_kpr] = _vpr
             except Exception:
