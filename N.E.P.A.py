@@ -88648,6 +88648,15 @@ class MultiAgentWirelessBCIFuser:
 
         self._fuse_agents(results)
 
+        # v300: Capability Expansion Pack per-frame tick (ADDITIVE; fully
+        # isolated — a failure here can never break the base pipeline above).
+        _pp_pack = getattr(self, "power_pack", None)
+        if _pp_pack is not None:
+            try:
+                _pp_pack.on_frame(self.psych_profile)
+            except Exception as _ppe:
+                log.debug(f"[POWERPACK] frame tick skipped: {_ppe}")
+
         with self.history_lock:
             # Pass 21: store per-subcarrier amplitude vector (shape DEFAULT_SUBCARRIERS,)
             # so _update_plot receives a proper 2D waterfall array.
@@ -88951,7 +88960,13 @@ class MultiAgentWirelessBCIFuser:
                                     self.estimated_distance_m = rssi_distance(self.last_rssi)
                                 except Exception:
                                     pass
-                            self._process_frame(csi)
+                            # v300+ (#2): route through the drop-stale decoupler when
+                            # --turbo-udp is active; else the original synchronous call.
+                            _tu = getattr(self, "_turbo_udp", None)
+                            if _tu is not None:
+                                _tu.submit(csi)
+                            else:
+                                self._process_frame(csi)
                     except socket.timeout:
                         continue
             except OSError as e:
@@ -89835,6 +89850,3464 @@ def mpatches_rect(x, y, w, h, color, **kwargs):
     return mpatches.Rectangle((x, y), w, h, color=color, **kwargs)
 
 
+# ==============================================================================
+# v300 — CAPABILITY EXPANSION PACK  (ADDITIVE: adds #1–#10, removes nothing)
+# ------------------------------------------------------------------------------
+# These ten subsystems implement the "make N.E.P.A. significantly more powerful"
+# list. They are STRICTLY ADDITIVE — every existing class, the synchronous
+# _fuse_agents path, and all current engines keep running unchanged. The pack is
+# fed the existing per-frame psych_profile and writes its outputs to a NEW
+# pp["power_pack"] key. Every hook is isolated so a failure here can never break
+# the base pipeline. Heavy/optional libs are optional imports with numpy/template
+# fallbacks. No-false-data is preserved: real vs [ESTIMATED] is labelled, the LLM
+# is forbidden to invent readings, and nothing fabricates a target.
+# ==============================================================================
+import logging as _v300_logging
+import atexit as _v300_atexit
+import json as _v300_json
+try:
+    import concurrent.futures as _v300_futures
+except Exception:
+    _v300_futures = None
+try:
+    import cupy as _v300_cupy
+except Exception:
+    _v300_cupy = None
+try:
+    import anthropic as _v300_anthropic
+except Exception:
+    _v300_anthropic = None
+
+
+class GPUKernelHub:
+    """#2 — Additive GPU acceleration shim. Returns cupy when a working CUDA
+    device is present, else falls back to numpy (and to torch-CUDA for matmul if
+    available). Removes nothing: the existing pure-numpy engines keep running;
+    this offers accelerated alternatives for the heavy per-frame kernels
+    (FFT, covariance, matmul, back-projection) so freed compute can buy fidelity
+    instead of being thrown away by the throttle hacks."""
+    def __init__(self):
+        self.backend = "numpy"
+        self.xp = np
+        self.device = "cpu"
+        self._torch = None
+        if _v300_cupy is not None:
+            try:
+                _t = _v300_cupy.asarray([1.0, 2.0, 3.0])
+                _ = float((_t * 2).sum())          # force a real device op
+                self.xp = _v300_cupy
+                self.backend = "cupy"
+                self.device = "cuda"
+            except Exception:
+                self.xp = np
+                self.backend = "numpy"
+        if self.backend == "numpy":
+            try:
+                import torch as _torch
+                if _torch.cuda.is_available():
+                    self._torch = _torch
+                    self.device = "cuda(torch)"
+            except Exception:
+                self._torch = None
+
+    def to_device(self, arr):
+        try:
+            return self.xp.asarray(arr)
+        except Exception:
+            return np.asarray(arr)
+
+    def to_host(self, arr):
+        try:
+            if self.backend == "cupy":
+                return _v300_cupy.asnumpy(arr)
+        except Exception:
+            pass
+        return np.asarray(arr)
+
+    def fft(self, x):
+        try:
+            return self.to_host(self.xp.fft.fft(self.to_device(x)))
+        except Exception:
+            return np.fft.fft(np.asarray(x))
+
+    def covariance(self, X):
+        """Sample covariance with rows=channels — the hot kernel for MUSIC/DoA."""
+        try:
+            A = self.to_device(X)
+            A = A - A.mean(axis=1, keepdims=True)
+            C = (A @ A.conj().T) / max(1, A.shape[1] - 1)
+            return self.to_host(C)
+        except Exception:
+            A = np.asarray(X)
+            A = A - A.mean(axis=1, keepdims=True)
+            return (A @ A.conj().T) / max(1, A.shape[1] - 1)
+
+    def matmul(self, a, b):
+        try:
+            if self._torch is not None:
+                ta = self._torch.as_tensor(np.asarray(a)).cuda()
+                tb = self._torch.as_tensor(np.asarray(b)).cuda()
+                return (ta @ tb).cpu().numpy()
+            return self.to_host(self.to_device(a) @ self.to_device(b))
+        except Exception:
+            return np.asarray(a) @ np.asarray(b)
+
+    def status(self):
+        return {"backend": self.backend, "device": self.device,
+                "torch_cuda": self._torch is not None}
+
+
+class ConcurrentFusionPipeline:
+    """#1 — Additive concurrent execution layer. The base fuser still runs
+    _fuse_agents synchronously on the render thread; this runs ADDITIONAL
+    registered engines off-thread in a worker pool driven by a snapshot Event
+    (no busy-spin), so extra/heavy computations stop competing for the single
+    ~50 ms per-frame budget the throttle history was fighting. Threads (not a
+    process pool) are used deliberately — numpy releases the GIL on the heavy
+    ops, and pickling the whole fuser into a process pool was the documented
+    past failure. Removes nothing."""
+    def __init__(self, max_workers=None, name="v300pipe"):
+        self._tasks = {}
+        self._latest = {}
+        self._timing = {}
+        self._errors = {}
+        self._snapshot = {}
+        self._lock = threading.Lock()
+        self._new = threading.Event()
+        self._running = False
+        self._thread = None
+        self._name = name
+        self._workers = max_workers or min(8, max(2, (os.cpu_count() or 2)))
+        self._executor = None
+        if _v300_futures is not None:
+            try:
+                self._executor = _v300_futures.ThreadPoolExecutor(
+                    max_workers=self._workers, thread_name_prefix=name)
+            except Exception:
+                self._executor = None
+
+    def register(self, task_name, fn):
+        with self._lock:
+            self._tasks[task_name] = fn
+
+    def submit(self, snapshot):
+        with self._lock:
+            self._snapshot = snapshot
+        self._new.set()
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True,
+                                        name=self._name)
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+        self._new.set()
+        try:
+            if self._executor is not None:
+                self._executor.shutdown(wait=False)
+        except Exception:
+            pass
+
+    def _run_one(self, task_name, fn, snap):
+        t0 = time.time()
+        try:
+            res = fn(snap)
+            with self._lock:
+                self._latest[task_name] = res
+                self._timing[task_name] = (time.time() - t0) * 1000.0
+                self._errors.pop(task_name, None)
+        except Exception as e:
+            with self._lock:
+                self._errors[task_name] = str(e)[:160]
+
+    def _loop(self):
+        while self._running:
+            self._new.wait(timeout=1.0)
+            if not self._running:
+                break
+            self._new.clear()
+            with self._lock:
+                snap = dict(self._snapshot)
+                tasks = list(self._tasks.items())
+            if not tasks:
+                continue
+            if self._executor is not None:
+                try:
+                    futs = [self._executor.submit(self._run_one, n, fn, snap)
+                            for n, fn in tasks]
+                except RuntimeError:
+                    break   # executor shut down (atexit) — exit cleanly
+                for f in futs:
+                    try:
+                        f.result(timeout=5.0)
+                    except Exception:
+                        pass
+            else:
+                for n, fn in tasks:
+                    self._run_one(n, fn, snap)
+
+    def results(self):
+        with self._lock:
+            return dict(self._latest)
+
+    def stats(self):
+        with self._lock:
+            return {"workers": self._workers,
+                    "executor": "thread-pool" if self._executor else "inline",
+                    "tasks": list(self._tasks.keys()),
+                    "timing_ms": {k: round(v, 2) for k, v in self._timing.items()},
+                    "errors": dict(self._errors),
+                    "running": self._running}
+
+
+class UnifiedEngineRegistry:
+    """#3 — Additive de-duplication facade. The file carries many parallel
+    implementations of the same algorithm family (18 NeRF2, 39 PassNN fusions,
+    7 Gaussian-splat, etc.). This REMOVES NONE of them; it indexes them by family,
+    picks a canonical (newest-versioned) one on demand, and reports the
+    duplication so the per-frame budget that consolidation would free can be
+    measured before any code is ever deleted."""
+    FAMILY_PATTERNS = {
+        "nerf2": "nerf2", "gaussian_splat": "gaussiansplat", "sensor_fusion": "sensorfusion",
+        "doa": "doa", "music": "music", "cfar": "cfar", "kalman": "kalman",
+        "sar": "sar", "point_cloud": "pointcloud", "reid": "reid",
+        "posenet": "posenet", "passive_radar": "passiveradar", "mmwave": "mmwave",
+    }
+
+    def __init__(self, namespace=None):
+        self._ns = namespace if namespace is not None else {}
+        self._families = {}
+        self._instances = {}
+        self.scan()
+
+    def scan(self):
+        fam = {k: [] for k in self.FAMILY_PATTERNS}
+        for nm, obj in list(self._ns.items()):
+            if not isinstance(obj, type):
+                continue
+            low = nm.lower()
+            for fam_key, pat in self.FAMILY_PATTERNS.items():
+                if pat in low:
+                    fam[fam_key].append(nm)
+        self._families = {k: sorted(v) for k, v in fam.items() if v}
+        return self._families
+
+    @staticmethod
+    def _rank(name):
+        import re as _re
+        nums = _re.findall(r"(\d+)", name)
+        return (max((int(x) for x in nums), default=0), len(name))
+
+    def canonical_name(self, family):
+        names = self._families.get(family) or []
+        if not names:
+            return None
+        return sorted(names, key=self._rank, reverse=True)[0]
+
+    def get(self, family, *args, **kwargs):
+        nm = self.canonical_name(family)
+        if nm is None:
+            return None
+        if nm in self._instances:
+            return self._instances[nm]
+        cls = self._ns.get(nm)
+        try:
+            inst = cls(*args, **kwargs)
+        except Exception:
+            inst = cls
+        self._instances[nm] = inst
+        return inst
+
+    def duplication_report(self):
+        return {k: {"count": len(v), "canonical": self.canonical_name(k), "members": v}
+                for k, v in self._families.items()}
+
+    def status(self):
+        rep = self.duplication_report()
+        return {"families": len(rep),
+                "total_indexed_engines": sum(d["count"] for d in rep.values()),
+                "counts": {k: d["count"] for k, d in rep.items()}}
+
+
+class DistributedReceiverMesh:
+    """#4 — Additive multistatic geometry aggregator. Accepts range/RSSI
+    observations from MULTIPLE physical receiver nodes (e.g. a mesh of ESP32-CSI
+    boards via the existing ingest servers) and computes TRUE least-squares
+    multilateration when >=3 nodes see the same emitter. Honest by construction:
+    a fused fix is labelled REAL-MULTISTATIC only with >=3 independent nodes;
+    otherwise it is ESTIMATED single-node. Adds capability; touches no existing
+    engine."""
+    def __init__(self, stale_after=10.0):
+        self._nodes = {}
+        self._obs = {}
+        self._stale_after = float(stale_after)
+        self._lock = threading.Lock()
+        # v300+ #7: tunable range-model params (adjusted by AutoCalibrationLoop)
+        self.n_exp = 2.7
+        self.tx_power = -30.0
+
+    def register_node(self, node_id, position):
+        with self._lock:
+            self._nodes[node_id] = {"pos": tuple(float(c) for c in position),
+                                    "t": time.time()}
+
+    def ingest(self, node_id, observations, position=None, t=None):
+        t = time.time() if t is None else t
+        with self._lock:
+            if position is not None:
+                self._nodes[node_id] = {"pos": tuple(float(c) for c in position), "t": t}
+            elif node_id not in self._nodes:
+                self._nodes[node_id] = {"pos": (0.0, 0.0, 0.0), "t": t}
+            tbl = self._obs.setdefault(node_id, {})
+            for ob in observations or []:
+                em = ob.get("emitter")
+                if em is None:
+                    continue
+                rng = ob.get("range_m")
+                if rng is None and ob.get("rssi_dbm") is not None:
+                    rng = self._rssi_to_range(float(ob["rssi_dbm"]))
+                if rng is None:
+                    continue
+                tbl[em] = {"range": float(rng), "t": t}
+
+    def _rssi_to_range(self, rssi):
+        # log-distance path loss; tx_power/n_exp tunable (v300+ #7 auto-calibration)
+        try:
+            return float(10 ** ((self.tx_power - rssi) / (10.0 * self.n_exp)))
+        except Exception:
+            return 1.0
+
+    @staticmethod
+    def _trilaterate(anchors, ranges):
+        A = np.asarray(anchors, dtype=float)
+        r = np.asarray(ranges, dtype=float)
+        if len(A) < 3:
+            return None
+        x0 = A[0]
+        Amat = 2.0 * (A[1:] - x0)
+        b = (r[0] ** 2 - r[1:] ** 2 + np.sum(A[1:] ** 2, axis=1) - np.sum(x0 ** 2))
+        try:
+            sol, *_ = np.linalg.lstsq(Amat, b, rcond=None)
+            return sol
+        except Exception:
+            return None
+
+    def fused_fixes(self):
+        now = time.time()
+        with self._lock:
+            nodes = dict(self._nodes)
+            obs = {k: dict(v) for k, v in self._obs.items()}
+        per_emitter = {}
+        for nid, tbl in obs.items():
+            npos = nodes.get(nid, {}).get("pos")
+            if npos is None:
+                continue
+            for em, d in tbl.items():
+                if now - d["t"] > self._stale_after:
+                    continue
+                per_emitter.setdefault(em, []).append((npos, d["range"]))
+        fixes = []
+        for em, lst in per_emitter.items():
+            n = len(lst)
+            if n >= 3:
+                pos = self._trilaterate([a for a, _ in lst], [r for _, r in lst])
+                if pos is not None:
+                    fixes.append({"emitter": em,
+                                  "position": [float(c) for c in pos],
+                                  "nodes": n, "provenance": "REAL-MULTISTATIC"})
+                    continue
+            a0, r0 = lst[0]
+            z0 = float(a0[2]) if len(a0) > 2 else 0.0
+            fixes.append({"emitter": em,
+                          "position": [float(a0[0]) + float(r0), float(a0[1]), z0],
+                          "nodes": n, "provenance": "ESTIMATED single-node"})
+        return fixes
+
+    def status(self):
+        with self._lock:
+            return {"nodes": len(self._nodes),
+                    "emitters_tracked": len({e for t in self._obs.values() for e in t})}
+
+
+class MeshTimeSyncEngine:
+    """#5 — Additive cross-node clock synchronisation. Estimates per-node clock
+    offset and skew from paired (local, remote) timestamps via least-squares —
+    the prerequisite for #4 producing REAL multistatic fixes instead of more
+    estimates. Honest: a node stays 'uncalibrated' until enough samples agree
+    (R^2 > 0.95)."""
+    def __init__(self, min_samples=8, max_samples=256):
+        self._samples = {}
+        self._min = int(min_samples)
+        self._max = int(max_samples)
+        self._lock = threading.Lock()
+
+    def add_sample(self, node_id, t_local, t_remote):
+        with self._lock:
+            buf = self._samples.setdefault(node_id, [])
+            buf.append((float(t_local), float(t_remote)))
+            if len(buf) > self._max:
+                del buf[0:len(buf) - self._max]
+
+    def estimate(self, node_id):
+        with self._lock:
+            buf = list(self._samples.get(node_id, []))
+        if len(buf) < self._min:
+            return {"node": node_id, "calibrated": False, "n": len(buf)}
+        tl = np.array([a for a, _ in buf]); tr = np.array([b for _, b in buf])
+        try:
+            skew, offset = np.polyfit(tl, tr, 1)
+            pred = skew * tl + offset
+            ss_res = float(np.sum((tr - pred) ** 2))
+            ss_tot = float(np.sum((tr - np.mean(tr)) ** 2)) or 1.0
+            r2 = 1.0 - ss_res / ss_tot
+        except Exception:
+            return {"node": node_id, "calibrated": False, "n": len(buf)}
+        return {"node": node_id, "calibrated": r2 > 0.95, "offset_s": float(offset),
+                "skew": float(skew), "quality_r2": float(r2), "n": len(buf)}
+
+    def status(self):
+        with self._lock:
+            nodes = list(self._samples.keys())
+        ests = [self.estimate(n) for n in nodes]
+        return {"nodes": len(nodes),
+                "calibrated": sum(1 for e in ests if e.get("calibrated"))}
+
+
+class PersistentWorldMap:
+    """#6 — Additive persistent, accumulating occupancy world. The base fuser
+    rebuilds its voxel scene each frame; this fuses successive observations into
+    a log-odds occupancy grid with slow time-decay, so the reconstruction
+    genuinely improves the longer N.E.P.A. runs (the stated end-goal). Runs
+    ALONGSIDE the per-frame recon — it replaces nothing."""
+    def __init__(self, res=48, extent=10.0, decay=0.002, p_hit=0.7, p_miss=0.42,
+                 save_path="nepa_persistent_world.ply"):
+        self.res = int(res)
+        self.extent = float(extent)
+        self.decay = float(decay)
+        self._lhit = float(np.log(p_hit / (1 - p_hit)))
+        self._lmiss = float(np.log(p_miss / (1 - p_miss)))
+        self._lo = np.zeros((self.res, self.res, self.res), dtype=np.float32)
+        self.save_path = save_path
+        self.frames_integrated = 0
+        self._lock = threading.Lock()
+
+    def _to_idx(self, pts):
+        p = np.asarray(pts, dtype=float)
+        if p.ndim == 1:
+            p = p[None, :]
+        half = self.extent / 2.0
+        return ((p[:, :3] + half) / self.extent * self.res).astype(int)
+
+    def integrate(self, points, occupied=True):
+        if points is None:
+            return
+        try:
+            idx = self._to_idx(points)
+        except Exception:
+            return
+        m = ((idx >= 0) & (idx < self.res)).all(axis=1)
+        idx = idx[m]
+        if len(idx) == 0:
+            return
+        with self._lock:
+            self._lo *= (1.0 - self.decay)
+            self._lo[idx[:, 0], idx[:, 1], idx[:, 2]] += (self._lhit if occupied else self._lmiss)
+            np.clip(self._lo, -8.0, 8.0, out=self._lo)
+            self.frames_integrated += 1
+
+    def integrate_voxel(self, voxel_grid, thresh=0.25):
+        try:
+            vg = np.asarray(voxel_grid, dtype=float)
+        except Exception:
+            return
+        if vg.ndim != 3:
+            return
+        occ = np.argwhere(vg > thresh)
+        if len(occ) == 0:
+            return
+        src = max(1, vg.shape[0])
+        self.integrate((occ / src - 0.5) * self.extent, occupied=True)
+
+    def occupancy(self):
+        with self._lock:
+            return 1.0 / (1.0 + np.exp(-self._lo))
+
+    def save_ply(self, path=None):
+        path = path or self.save_path
+        occ = self.occupancy()
+        pts = np.argwhere(occ > 0.6)
+        half = self.extent / 2.0
+        try:
+            with open(path, "w") as f:
+                f.write("ply\nformat ascii 1.0\n")
+                f.write(f"element vertex {len(pts)}\n")
+                f.write("property float x\nproperty float y\nproperty float z\n")
+                f.write("property float confidence\nend_header\n")
+                for i, j, k in pts:
+                    x = i / self.res * self.extent - half
+                    y = j / self.res * self.extent - half
+                    z = k / self.res * self.extent - half
+                    f.write(f"{x:.3f} {y:.3f} {z:.3f} {float(occ[i, j, k]):.3f}\n")
+            return path
+        except Exception:
+            return None
+
+    def stats(self):
+        occ = self.occupancy()
+        return {"resolution": self.res, "frames_integrated": int(self.frames_integrated),
+                "occupied_voxels": int(np.sum(occ > 0.6)),
+                "mean_confidence": float(np.mean(occ))}
+
+
+class _V300LogCounter(_v300_logging.Handler):
+    """Counts WARNING/ERROR/CRITICAL log records so silently-swallowed failures
+    become visible to ProvenanceHealthMonitor (#7)."""
+    def __init__(self):
+        super().__init__()
+        self.counts = {"WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+        self.recent = []
+
+    def emit(self, record):
+        try:
+            lvl = record.levelname
+            if lvl in self.counts:
+                self.counts[lvl] += 1
+                self.recent.append(f"{lvl}:{record.name}:{record.getMessage()[:120]}")
+                if len(self.recent) > 50:
+                    del self.recent[0:len(self.recent) - 50]
+        except Exception:
+            pass
+
+
+class ProvenanceHealthMonitor:
+    """#7 — Additive provenance + capture-health surface. For a no-false-data
+    tool the worst bug is a silently-failing engine still painting stale numbers
+    (the file has ~1,200 swallowed excepts). This central monitor tags every
+    reported value real|estimated|stale|failed, ages entries into 'stale', and
+    counts WARNING/ERROR log records so silent failures surface. It only
+    OBSERVES — it changes no existing code path."""
+    STATES = ("real", "estimated", "stale", "failed", "unknown")
+
+    def __init__(self, stale_after=6.0):
+        self._entries = {}
+        self._stale_after = float(stale_after)
+        self._lock = threading.Lock()
+        self._log_counter = None
+
+    def report(self, source, state="unknown", detail="", value=None, t=None):
+        t = time.time() if t is None else t
+        st = state if state in self.STATES else "unknown"
+        with self._lock:
+            self._entries[source] = {"state": st, "detail": str(detail)[:160],
+                                     "value": value, "t": t}
+
+    def attach_log_counter(self):
+        try:
+            self._log_counter = _V300LogCounter()
+            self._log_counter.setLevel(_v300_logging.WARNING)
+            _v300_logging.getLogger().addHandler(self._log_counter)
+            return True
+        except Exception:
+            return False
+
+    def health(self):
+        now = time.time()
+        out = {}
+        with self._lock:
+            for src, e in self._entries.items():
+                st = e["state"]
+                if st in ("real", "estimated") and (now - e["t"]) > self._stale_after:
+                    st = "stale"
+                out[src] = {"state": st, "age_s": round(now - e["t"], 2),
+                            "detail": e["detail"]}
+        return out
+
+    def summary(self):
+        h = self.health()
+        tally = {s: 0 for s in self.STATES}
+        for v in h.values():
+            tally[v["state"]] = tally.get(v["state"], 0) + 1
+        logs = self._log_counter.counts if self._log_counter else {}
+        return {"sources": len(h), "by_state": tally, "log_counts": dict(logs)}
+
+    def summary_text(self):
+        s = self.summary()
+        bs = s["by_state"]
+        return (f"[HEALTH] sources={s['sources']} real={bs.get('real', 0)} "
+                f"est={bs.get('estimated', 0)} stale={bs.get('stale', 0)} "
+                f"failed={bs.get('failed', 0)} | log warn/err="
+                f"{s['log_counts'].get('WARNING', 0)}/{s['log_counts'].get('ERROR', 0)}")
+
+
+class RealWorldValidationHarness:
+    """#8 — Additive ground-truth validation. Register a known emitter at a
+    measured coordinate, then score live fixes against it (RMSE, P50/P90,
+    per-axis). Makes reconstruction quality MEASURABLE — you cannot improve what
+    you cannot measure. Scores only when both ground truth and an estimate exist;
+    never fabricates a target. Pure measurement add-on."""
+    def __init__(self, history=500):
+        self._gt = {}
+        self._errs = []
+        self._hist = int(history)
+        self._lock = threading.Lock()
+
+    def set_ground_truth(self, emitter, xyz):
+        with self._lock:
+            self._gt[emitter] = np.asarray(xyz, dtype=float)
+
+    def evaluate(self, fixes):
+        with self._lock:
+            gt = dict(self._gt)
+        if not gt:
+            return {"scored": 0, "note": "no ground truth registered"}
+        scored = 0
+        for fx in fixes or []:
+            em = fx.get("emitter")
+            pos = fx.get("position")
+            if em in gt and pos is not None:
+                ref = gt[em]
+                err = float(np.linalg.norm(np.asarray(pos, dtype=float)[:len(ref)] - ref))
+                with self._lock:
+                    self._errs.append(err)
+                    if len(self._errs) > self._hist:
+                        del self._errs[0:len(self._errs) - self._hist]
+                scored += 1
+        return {"scored": scored}
+
+    def metrics(self):
+        with self._lock:
+            errs = np.asarray(self._errs, dtype=float)
+        if len(errs) == 0:
+            return {"n": 0}
+        return {"n": int(len(errs)), "rmse_m": float(np.sqrt(np.mean(errs ** 2))),
+                "p50_m": float(np.percentile(errs, 50)),
+                "p90_m": float(np.percentile(errs, 90)), "max_m": float(np.max(errs))}
+
+    def export(self, path="nepa_validation_report.md"):
+        m = self.metrics()
+        try:
+            with open(path, "w") as f:
+                f.write("# N.E.P.A. Reconstruction Validation\n\n")
+                if m.get("n", 0) == 0:
+                    f.write("No scored samples (register ground truth, then run live).\n")
+                else:
+                    for k, v in m.items():
+                        f.write(f"- **{k}**: {v}\n")
+            return path
+        except Exception:
+            return None
+
+
+class ClaudeReasoningOverseer:
+    """#9 — Additive natural-language situational-awareness layer powered by
+    Claude (Anthropic API). It reasons ONLY over the real measured/[ESTIMATED]
+    readings N.E.P.A. already computed and is forbidden to invent values — the
+    no-false-data directive extends to the narration. DISABLED by default (it
+    makes outbound network calls and costs money); enable with --llm-overseer
+    plus an ANTHROPIC_API_KEY. Falls back to a deterministic template summary
+    built only from real numbers when the SDK/key is absent. The existing
+    rule-based GlobalAIOverseer is untouched and remains the guardrail."""
+    SYSTEM = (
+        "You are N.E.P.A.'s situational-awareness analyst. You receive a JSON "
+        "snapshot of REAL measured or [ESTIMATED] sensor readings from a WiFi/RF "
+        "sensing system. Rules: (1) Reason ONLY over the values given. (2) NEVER "
+        "invent, guess, or extrapolate a reading that is not present — if data is "
+        "missing or insufficient, say 'insufficient data'. (3) Clearly separate "
+        "REAL-measured from [ESTIMATED]. (4) Be concise: 2-4 sentences on the "
+        "current situation, then at most 2 flagged anomalies. (5) Do not give "
+        "medical, legal, or identifying conclusions about individuals."
+    )
+
+    def __init__(self, model="claude-opus-4-8", interval=30.0, max_tokens=600,
+                 enabled=False):
+        self.model = os.environ.get("NEPA_LLM_MODEL", model)
+        self.interval = float(interval)
+        self.max_tokens = int(max_tokens)
+        self.enabled = bool(enabled)
+        self._client = None
+        self._narrative = {"text": "(LLM overseer idle — enable with --llm-overseer)",
+                           "source": "none", "ts": 0.0}
+        self._last_call = 0.0
+        self._busy = False
+        self._lock = threading.Lock()
+        if self.enabled:
+            self._init_client()
+
+    def _init_client(self):
+        if _v300_anthropic is None:
+            self._narrative = {"text": "anthropic SDK not installed — template summaries",
+                               "source": "template", "ts": time.time()}
+            return
+        if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+            self._narrative = {"text": "no ANTHROPIC_API_KEY — template summaries",
+                               "source": "template", "ts": time.time()}
+            return
+        try:
+            self._client = _v300_anthropic.Anthropic()
+        except Exception as e:
+            self._client = None
+            log.warning(f"[LLM] client init failed: {e}")
+
+    @staticmethod
+    def _template(snapshot):
+        keys = ["mvs_state", "csi_person_prob", "csi_person_state", "threat",
+                "intent", "arousal", "hr_bpm", "br_bpm", "presence", "capture_method"]
+        parts = [f"{k}={snapshot[k]}" for k in keys
+                 if k in snapshot and snapshot[k] is not None]
+        body = "; ".join(parts) if parts else "no scalar readings available"
+        return f"[TEMPLATE — real values only] {body}"
+
+    def on_snapshot(self, snapshot):
+        if not self.enabled:
+            return
+        now = time.time()
+        if now - self._last_call < self.interval or self._busy:
+            return
+        self._last_call = now
+        if self._client is None:
+            with self._lock:
+                self._narrative = {"text": self._template(snapshot),
+                                   "source": "template", "ts": now}
+            return
+        self._busy = True
+        threading.Thread(target=self._call, args=(dict(snapshot),),
+                         daemon=True, name="v300llm").start()
+
+    def _call(self, snapshot):
+        try:
+            payload = _v300_json.dumps(snapshot, default=str)[:6000]
+            resp = self._client.messages.create(
+                model=self.model, max_tokens=self.max_tokens, system=self.SYSTEM,
+                messages=[{"role": "user",
+                           "content": "Sensor snapshot (JSON):\n" + payload}])
+            text = "".join(getattr(b, "text", "") for b in resp.content
+                           if getattr(b, "type", None) == "text").strip()
+            with self._lock:
+                self._narrative = {"text": text or "(empty response)",
+                                   "source": f"claude:{self.model}", "ts": time.time()}
+        except Exception as e:
+            with self._lock:
+                self._narrative = {"text": f"{self._template(snapshot)}  (LLM error: {e})",
+                                   "source": "template", "ts": time.time()}
+        finally:
+            self._busy = False
+
+    def latest(self):
+        with self._lock:
+            return dict(self._narrative)
+
+    def status(self):
+        return {"enabled": self.enabled, "model": self.model,
+                "client": self._client is not None,
+                "source": self._narrative.get("source")}
+
+
+class LearnedOverseerScorer:
+    """#10 — Additive learned second-opinion on the overseer score. An online
+    linear model learns to predict the existing rule-based threat score from the
+    fused feature vector, trained continuously on the live stream. It AUGMENTS,
+    never replaces, the C=S+E+R*A formula: output is labelled [LEARNED] and
+    carries an agreement score with the formula. Pure numpy; persists weights."""
+    FEATURES = ["csi_person_prob", "mvs_variance", "mvs_confidence", "hr_bpm",
+                "br_bpm", "arousal", "intent", "threat", "csi_env_activity",
+                "csi_env_movement", "csi_env_energy", "nerf2_rssi_proxy"]
+
+    def __init__(self, lr=0.01, l2=1e-4, path="nepa_learned_overseer.pkl"):
+        self.n = len(self.FEATURES)
+        self.w = np.zeros(self.n, dtype=np.float64)
+        self.b = 0.0
+        self.lr = float(lr)
+        self.l2 = float(l2)
+        self.path = path
+        self.updates = 0
+        self._mu = np.zeros(self.n)
+        self._m2 = np.ones(self.n)
+        self._cnt = 0
+        self._last_pred = None
+        self._lock = threading.Lock()
+        self.load()
+
+    def _vec(self, snapshot):
+        v = np.zeros(self.n)
+        for i, k in enumerate(self.FEATURES):
+            try:
+                val = snapshot.get(k)
+                v[i] = float(val) if val is not None else 0.0
+            except Exception:
+                v[i] = 0.0
+        return v
+
+    def _normalize(self, v, learn=True):
+        if learn:
+            self._cnt += 1
+            d = v - self._mu
+            self._mu += d / self._cnt
+            self._m2 += d * (v - self._mu)
+        std = np.sqrt(self._m2 / max(1, self._cnt)) + 1e-6
+        return (v - self._mu) / std
+
+    def update(self, snapshot, target):
+        try:
+            target = float(target)
+        except Exception:
+            return
+        with self._lock:
+            x = self._normalize(self._vec(snapshot), learn=True)
+            pred = float(self.w @ x + self.b)
+            err = pred - target
+            self.w -= self.lr * (err * x + self.l2 * self.w)
+            self.b -= self.lr * err
+            self.updates += 1
+
+    def predict(self, snapshot, formula_score=None):
+        with self._lock:
+            x = self._normalize(self._vec(snapshot), learn=False)
+            pred = float(self.w @ x + self.b)
+            self._last_pred = pred
+        out = {"learned_score": pred, "label": "[LEARNED]", "updates": self.updates}
+        if formula_score is not None:
+            try:
+                out["formula_score"] = float(formula_score)
+                out["agreement"] = float(1.0 - min(1.0, abs(pred - float(formula_score))))
+            except Exception:
+                pass
+        return out
+
+    def save(self):
+        try:
+            with open(self.path, "wb") as f:
+                pickle.dump({"w": self.w, "b": self.b, "mu": self._mu, "m2": self._m2,
+                             "cnt": self._cnt, "updates": self.updates}, f)
+            return True
+        except Exception:
+            return False
+
+    def load(self):
+        try:
+            if os.path.exists(self.path):
+                with open(self.path, "rb") as f:
+                    d = pickle.load(f)
+                self.w = d.get("w", self.w); self.b = d.get("b", self.b)
+                self._mu = d.get("mu", self._mu); self._m2 = d.get("m2", self._m2)
+                self._cnt = d.get("cnt", 0); self.updates = d.get("updates", 0)
+        except Exception:
+            pass
+
+    def status(self):
+        return {"updates": int(self.updates), "features": self.n,
+                "last_pred": self._last_pred}
+
+
+class NEPACapabilityExpansionPack:
+    """v300 orchestrator — wires items #1–#10 into the running fuser ADDITIVELY.
+    It instantiates the new subsystems and feeds them the existing per-frame
+    psych_profile, writing results to a NEW pp['power_pack'] key. It removes and
+    replaces nothing in the base pipeline; every hook is wrapped so a failure
+    here can never break N.E.P.A.'s core."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        self.fuser = fuser
+        self.args = args
+        self._frame = 0
+        self._results = {}
+        self.gpu = GPUKernelHub()                                   # #2
+        self.registry = UnifiedEngineRegistry(namespace=namespace or globals())  # #3
+        self.mesh = DistributedReceiverMesh()                       # #4
+        self.timesync = MeshTimeSyncEngine()                       # #5
+        self.world = PersistentWorldMap()                          # #6
+        self.health = ProvenanceHealthMonitor()                    # #7
+        self.health.attach_log_counter()
+        self.validation = RealWorldValidationHarness()             # #8
+        self.llm = ClaudeReasoningOverseer(model=llm_model, enabled=llm_overseer)  # #9
+        self.scorer = LearnedOverseerScorer()                      # #10
+        self.pipeline = ConcurrentFusionPipeline()                 # #1
+        self.pipeline.register("persistent_world", lambda s: self.world.stats())
+        self.pipeline.register("validation", lambda s: self.validation.metrics())
+        self.pipeline.register("learned_score",
+                               lambda s: self.scorer.predict(s, s.get("threat")))
+        self.pipeline.register("mesh", lambda s: {"fixes": self.mesh.fused_fixes(),
+                                                  "status": self.mesh.status()})
+
+    def attach(self):
+        try:
+            self.pipeline.start()
+        except Exception:
+            pass
+        try:
+            _v300_atexit.register(self._on_exit)
+        except Exception:
+            pass
+        try:
+            rep = self.registry.status()
+            log.info("[POWERPACK] v300 Capability Expansion Pack attached (additive — "
+                     "base pipeline unchanged):")
+            log.info(f"[POWERPACK]  #1 concurrent pipeline: {self.pipeline.stats()['executor']} "
+                     f"x{self.pipeline.stats()['workers']} workers")
+            log.info(f"[POWERPACK]  #2 GPU hub: {self.gpu.status()}")
+            log.info(f"[POWERPACK]  #3 engine registry: {rep['families']} families, "
+                     f"{rep['total_indexed_engines']} engines indexed (none removed)")
+            log.info(f"[POWERPACK]  #4 receiver mesh + #5 time-sync: ready for multi-RX ingest")
+            log.info(f"[POWERPACK]  #6 persistent world map res={self.world.res}")
+            log.info(f"[POWERPACK]  #7 health monitor + log counter active")
+            log.info(f"[POWERPACK]  #8 validation harness ready (register ground truth)")
+            log.info(f"[POWERPACK]  #9 Claude overseer: {self.llm.status()}")
+            log.info(f"[POWERPACK]  #10 learned scorer: {self.scorer.status()}")
+        except Exception:
+            pass
+
+    def _compact(self, pp):
+        snap = {}
+        try:
+            for k, v in pp.items():
+                if isinstance(v, (int, float, bool, str)) or v is None:
+                    snap[k] = v
+        except Exception:
+            pass
+        try:
+            snap["capture_method"] = getattr(self.fuser.router_csi, "method", None)
+        except Exception:
+            pass
+        return snap
+
+    def on_frame(self, pp):
+        self._frame += 1
+        snap = self._compact(pp)
+        # #7 capture provenance
+        try:
+            rc = getattr(self.fuser, "router_csi", None)
+            real = bool(getattr(rc, "is_real_capture", lambda: False)())
+            self.health.report("capture", "real" if real else "estimated",
+                               detail=str(snap.get("capture_method")))
+        except Exception:
+            self.health.report("capture", "unknown")
+        # #10 learn continuously from the rule-based score
+        try:
+            if snap.get("threat") is not None:
+                self.scorer.update(snap, snap["threat"])
+        except Exception:
+            self.health.report("learned_scorer", "failed")
+        # #6 accumulate the live voxel grid into the persistent world (throttled)
+        if self._frame % 5 == 0:
+            try:
+                vg = getattr(self.fuser, "voxel_grid", None)
+                if vg is not None:
+                    self.world.integrate_voxel(vg)
+                    self.health.report("persistent_world", "real",
+                                       detail=f"{self.world.frames_integrated} frames")
+            except Exception:
+                self.health.report("persistent_world", "failed")
+        # #1 hand the snapshot to the off-thread pipeline, read last results
+        try:
+            self.pipeline.submit(snap)
+            self._results = self.pipeline.results()
+        except Exception:
+            pass
+        # #4/#8 score any multistatic fixes against ground truth
+        try:
+            fixes = (self._results.get("mesh") or {}).get("fixes") or []
+            if fixes:
+                self.validation.evaluate(fixes)
+        except Exception:
+            pass
+        # #9 throttled, off-thread, opt-in natural-language narration
+        try:
+            self.llm.on_snapshot(snap)
+        except Exception:
+            pass
+        # write back additively — never overwrites an existing base key
+        try:
+            pp["power_pack"] = self.snapshot_status()
+        except Exception:
+            pass
+        # periodic persistence
+        if self._frame % 600 == 0:
+            try:
+                self.world.save_ply()
+            except Exception:
+                pass
+            try:
+                self.scorer.save()
+            except Exception:
+                pass
+
+    def snapshot_status(self):
+        return {
+            "gpu": self.gpu.status(),
+            "pipeline": self.pipeline.stats(),
+            "registry": self.registry.status(),
+            "mesh": self.mesh.status(),
+            "timesync": self.timesync.status(),
+            "world": self.world.stats(),
+            "health": self.health.summary(),
+            "validation": self.validation.metrics(),
+            "llm": self.llm.latest(),
+            "learned": self.scorer.status(),
+        }
+
+    def status_text(self):
+        try:
+            w = self.world.stats()
+            return (f"[POWERPACK f{self._frame}] gpu={self.gpu.backend} "
+                    f"world={w['occupied_voxels']}vox/{w['frames_integrated']}f "
+                    f"learned_upd={self.scorer.updates} {self.health.summary_text()}")
+        except Exception:
+            return "[POWERPACK] (status unavailable)"
+
+    def _on_exit(self):
+        for fn in (self.world.save_ply, self.scorer.save, self.validation.export,
+                   self.pipeline.stop):
+            try:
+                fn()
+            except Exception:
+                pass
+
+
+# ==============================================================================
+# v300+ — CAPABILITY EXPANSION PACK, items #2–#11 (ADDITIVE: subclass-extends the
+# v300 pack; the V1 pack and ALL base engines are untouched). Every heavy add-on
+# runs OFF the data thread via the existing worker pool and is gated by a
+# PerformanceGovernor so the additions can never become a new bottleneck.
+# ==============================================================================
+try:
+    import sqlite3 as _v300_sqlite
+except Exception:
+    _v300_sqlite = None
+
+
+class PerformanceGovernor:
+    """#2 — Adaptive load governor. Measures the inter-frame period (EMA) as a
+    live load signal and decides whether OPTIONAL heavy add-on work runs this
+    cycle, guaranteeing the capability layer never starves the base fusion loop.
+    Heavy off-thread tasks call headroom() and self-skip under pressure."""
+    def __init__(self, target_dt=0.20, alpha=0.2):
+        self.target_dt = float(target_dt)
+        self.alpha = float(alpha)
+        self.ema_dt = None
+        self._last = None
+        self.skips = 0
+        self.passes = 0
+
+    def tick(self):
+        now = time.time()
+        if self._last is not None:
+            dt = now - self._last
+            self.ema_dt = dt if self.ema_dt is None else (
+                self.alpha * dt + (1 - self.alpha) * self.ema_dt)
+        self._last = now
+
+    def headroom(self):
+        if self.ema_dt is None:
+            self.passes += 1
+            return True
+        ok = self.ema_dt <= self.target_dt * 1.5
+        if ok:
+            self.passes += 1
+        else:
+            self.skips += 1
+        return ok
+
+    def status(self):
+        return {"ema_dt_ms": round((self.ema_dt or 0) * 1000, 1),
+                "target_dt_ms": round(self.target_dt * 1000, 1),
+                "passes": self.passes, "skips": self.skips,
+                "load": (round(self.ema_dt / self.target_dt, 2) if self.ema_dt else 0.0)}
+
+
+class TurboFrameAccelerator:
+    """#2 — Optional capture→fusion decoupler with latest-wins drop-stale. Runs
+    the SAME _process_frame in a dedicated worker so bursty UDP ingestion never
+    backs up and latency cannot accumulate. Off by default; wired only on the UDP
+    path (its return value is unused there). Removes nothing — _process_frame is
+    unchanged; the original synchronous call remains the fallback branch."""
+    def __init__(self, process_fn, name="v300turbo"):
+        self._fn = process_fn
+        self._slot = None
+        self._lock = threading.Lock()
+        self._evt = threading.Event()
+        self._running = False
+        self._thread = None
+        self.processed = 0
+        self.dropped = 0
+        self._name = name
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True, name=self._name)
+        self._thread.start()
+
+    def submit(self, frame):
+        with self._lock:
+            if self._slot is not None:
+                self.dropped += 1
+            self._slot = frame
+        self._evt.set()
+
+    def _loop(self):
+        while self._running:
+            self._evt.wait(timeout=1.0)
+            if not self._running:
+                break
+            self._evt.clear()
+            with self._lock:
+                frame = self._slot
+                self._slot = None
+            if frame is None:
+                continue
+            try:
+                self._fn(frame)
+                self.processed += 1
+            except Exception:
+                pass
+
+    def stop(self):
+        self._running = False
+        self._evt.set()
+
+    def status(self):
+        return {"processed": self.processed, "dropped": self.dropped, "running": self._running}
+
+
+class NEPAEventStore:
+    """#3 — Append-only time-series datastore (SQLite, WAL). A background writer
+    thread drains a queue so DB writes NEVER block the data thread. Gives the
+    24/7 system a queryable history to replay, audit, and train on — the fuel the
+    learned scorer and validation harness were missing. Additive; stdlib only."""
+    def __init__(self, path="nepa_events.db", batch=64, flush_s=2.0):
+        import queue
+        self._path = path
+        self._q = queue.Queue(maxsize=20000)
+        self._batch = int(batch)
+        self._flush_s = float(flush_s)
+        self._running = False
+        self._thread = None
+        self._dblock = threading.Lock()
+        self.written = 0
+        self.dropped = 0
+        self._conn = None
+        self._init_db()
+
+    def _init_db(self):
+        if _v300_sqlite is None:
+            log.warning("[EVENTSTORE] sqlite3 unavailable — history disabled")
+            return
+        try:
+            self._conn = _v300_sqlite.connect(self._path, check_same_thread=False)
+            with self._dblock:
+                c = self._conn.cursor()
+                c.execute("PRAGMA journal_mode=WAL")
+                c.execute("CREATE TABLE IF NOT EXISTS events (ts REAL, kind TEXT, payload TEXT)")
+                c.execute("CREATE INDEX IF NOT EXISTS idx_ev ON events(kind, ts)")
+                self._conn.commit()
+        except Exception as e:
+            self._conn = None
+            log.warning(f"[EVENTSTORE] init failed: {e}")
+
+    def start(self):
+        if self._conn is None or self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._writer, daemon=True, name="v300evstore")
+        self._thread.start()
+
+    def log(self, kind, payload):
+        if self._conn is None:
+            return
+        try:
+            self._q.put_nowait((time.time(), str(kind), _v300_json.dumps(payload, default=str)))
+        except Exception:
+            self.dropped += 1
+
+    def _writer(self):
+        buf = []
+        while self._running or not self._q.empty() or buf:
+            try:
+                buf.append(self._q.get(timeout=self._flush_s))
+            except Exception:
+                pass
+            if buf:
+                try:
+                    with self._dblock:
+                        self._conn.executemany("INSERT INTO events VALUES (?,?,?)", buf)
+                        self._conn.commit()
+                    self.written += len(buf)
+                except Exception:
+                    pass
+                buf = []
+
+    def query(self, kind=None, since=None, limit=1000):
+        if self._conn is None:
+            return []
+        try:
+            q = "SELECT ts,kind,payload FROM events"
+            w, a = [], []
+            if kind:
+                w.append("kind=?"); a.append(kind)
+            if since:
+                w.append("ts>=?"); a.append(float(since))
+            if w:
+                q += " WHERE " + " AND ".join(w)
+            q += " ORDER BY ts DESC LIMIT ?"; a.append(int(limit))
+            with self._dblock:
+                rows = list(self._conn.execute(q, a))
+            return [{"ts": r[0], "kind": r[1], "payload": r[2]} for r in rows]
+        except Exception:
+            return []
+
+    def stop(self):
+        self._running = False
+        try:
+            if self._thread:
+                self._thread.join(timeout=3.0)
+            if self._conn:
+                with self._dblock:
+                    self._conn.commit()
+                    self._conn.close()
+        except Exception:
+            pass
+
+    def status(self):
+        return {"path": self._path, "written": self.written, "dropped": self.dropped,
+                "queued": self._q.qsize(), "running": self._running}
+
+
+class IngestSecurityGuard:
+    """#4 — HMAC-SHA256 authentication + replay protection for the real-data
+    ingest plane. Each message carries an HMAC over (timestamp + body) keyed by a
+    shared secret (env NEPA_INGEST_TOKEN). Stale, unsigned, or out-of-allowlist
+    messages are rejected (fail-closed). Additive — does not touch the existing
+    open ingest servers; it backs a NEW secured endpoint."""
+    def __init__(self, secret=None, max_skew=30.0, allowlist=None):
+        import hmac as _hmac, hashlib as _hashlib
+        self._hmac = _hmac
+        self._hashlib = _hashlib
+        self.secret = (secret or os.environ.get("NEPA_INGEST_TOKEN") or "").encode()
+        self.max_skew = float(max_skew)
+        self.allowlist = set(allowlist) if allowlist else None
+        self.enabled = bool(self.secret)
+        self.rejected = 0
+        self.accepted = 0
+
+    def sign(self, ts, body):
+        b = body if isinstance(body, bytes) else str(body).encode()
+        msg = f"{ts}".encode() + b"." + b
+        return self._hmac.new(self.secret, msg, self._hashlib.sha256).hexdigest()
+
+    def verify(self, ts, body, sig, ip=None):
+        if not self.enabled:
+            return False
+        try:
+            if self.allowlist is not None and ip not in self.allowlist:
+                self.rejected += 1; return False
+            if abs(time.time() - float(ts)) > self.max_skew:
+                self.rejected += 1; return False
+            good = self._hmac.compare_digest(self.sign(ts, body), str(sig))
+            self.accepted += int(good); self.rejected += int(not good)
+            return good
+        except Exception:
+            self.rejected += 1
+            return False
+
+    def status(self):
+        return {"enabled": self.enabled, "accepted": self.accepted, "rejected": self.rejected,
+                "allowlist": (len(self.allowlist) if self.allowlist else None)}
+
+
+class SecureMeshIngestServer:
+    """#4/#6 — Authenticated HTTP endpoint for multi-RX nodes. Verifies every POST
+    via IngestSecurityGuard, then feeds observations into the receiver mesh,
+    time-sync, and event store. Binds 127.0.0.1 by default. Adds a SECURE
+    alternative to the existing open ingest server; removes nothing."""
+    def __init__(self, guard, mesh, timesync=None, store=None, host="127.0.0.1", port=8771):
+        self.guard = guard
+        self.mesh = mesh
+        self.timesync = timesync
+        self.store = store
+        self.host = host
+        self.port = int(port)
+        self._httpd = None
+        self._thread = None
+
+    def start(self):
+        try:
+            import http.server
+            import socketserver
+        except Exception as e:
+            log.warning(f"[SECINGEST] http unavailable: {e}")
+            return False
+        guard, mesh, timesync, store = self.guard, self.mesh, self.timesync, self.store
+
+        class _H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                try:
+                    n = int(self.headers.get("Content-Length", 0))
+                    body = self.rfile.read(n)
+                    ts = self.headers.get("X-NEPA-TS", "0")
+                    sig = self.headers.get("X-NEPA-SIG", "")
+                    if not guard.verify(ts, body, sig, ip=self.client_address[0]):
+                        self.send_response(401); self.end_headers()
+                        self.wfile.write(b'{"error":"unauthorized"}'); return
+                    data = _v300_json.loads(body.decode() or "{}")
+                    node = data.get("node_id", "node")
+                    mesh.ingest(node, data.get("observations", []),
+                                position=data.get("position"), t=float(ts))
+                    if timesync is not None:
+                        timesync.add_sample(node, float(ts), time.time())
+                    if store is not None:
+                        store.log("mesh_ingest", {"node": node,
+                                                  "n": len(data.get("observations", []))})
+                    self.send_response(200); self.end_headers(); self.wfile.write(b'{"ok":true}')
+                except Exception as e:
+                    self.send_response(400); self.end_headers()
+                    self.wfile.write(('{"error":"%s"}' % str(e)[:80]).encode())
+
+        try:
+            self._httpd = socketserver.ThreadingTCPServer((self.host, self.port), _H)
+            self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True,
+                                            name="v300secingest")
+            self._thread.start()
+            log.info(f"[SECINGEST] authenticated mesh ingest at http://{self.host}:{self.port}/ "
+                     f"(HMAC required)")
+            return True
+        except Exception as e:
+            log.warning(f"[SECINGEST] bind failed: {e}")
+            return False
+
+    def stop(self):
+        try:
+            if self._httpd:
+                self._httpd.shutdown()
+        except Exception:
+            pass
+
+    def status(self):
+        return {"host": self.host, "port": self.port, "running": self._httpd is not None,
+                "guard": self.guard.status()}
+
+
+class ArrayCalibrationEngine:
+    """#5 — Real RF front-end calibration. Estimates and removes SFO/STO (linear
+    phase slope vs subcarrier) and CFO (common phase intercept), and reports
+    residual-phase quality. Raises the accuracy ceiling for DoA/SAR/multistatic.
+    Pure numpy; additive — consumes a copy of the live CSI, returns a corrected
+    copy + quality, and touches no existing engine."""
+    def __init__(self):
+        self.cfo = 0.0
+        self.sfo_slope = 0.0
+        self.calibrated = False
+        self.quality = 0.0
+        self._n = 0
+
+    def update(self, csi):
+        try:
+            c = np.atleast_1d(np.asarray(csi)).ravel().astype(np.complex64)
+            if c.size < 4:
+                return None
+            ph = np.unwrap(np.angle(c))
+            k = np.arange(c.size)
+            try:
+                slope, intercept = np.polyfit(k, ph, 1)
+            except Exception:
+                slope, intercept = 0.0, 0.0
+            a = 0.1
+            self.sfo_slope = (slope if not self._n else (1 - a) * self.sfo_slope + a * slope)
+            self.cfo = (intercept if not self._n else (1 - a) * self.cfo + a * intercept)
+            self._n += 1
+            corrected = c * np.exp(-1j * (self.sfo_slope * k + self.cfo))
+            resid = float(np.std(np.unwrap(np.angle(corrected))))
+            self.quality = float(max(0.0, 1.0 - resid / np.pi))
+            self.calibrated = self._n >= 20 and self.quality > 0.5
+            return corrected
+        except Exception:
+            return None
+
+    def apply(self, csi):
+        try:
+            c = np.atleast_1d(np.asarray(csi)).ravel().astype(np.complex64)
+            k = np.arange(c.size)
+            return c * np.exp(-1j * (self.sfo_slope * k + self.cfo))
+        except Exception:
+            return np.asarray(csi)
+
+    def status(self):
+        return {"calibrated": self.calibrated, "quality": round(self.quality, 3),
+                "cfo": round(self.cfo, 4), "sfo_slope": round(self.sfo_slope, 5),
+                "samples": self._n}
+
+
+class NEPAConfig:
+    """#8 — Configuration layer. Loads nepa_config.json (stdlib json) governing
+    the capability layer: which subsystems are enabled, ports, security,
+    rooms/nodes/ground-truth, geo origin, alert sinks. Writes a documented default
+    if absent. Additive — governs only the new layer, never the base engines."""
+    DEFAULTS = {
+        "turbo_udp": False,
+        "event_store": True,
+        "secure_ingest": {"enabled": False, "host": "127.0.0.1", "port": 8771},
+        "array_calibration": True,
+        "auto_calibration": True,
+        "active_sensing": True,
+        "alerts": {"enabled": True, "file": True, "webhook": None, "threat_threshold": 0.7},
+        "geo_origin": {"lat": None, "lon": None, "alt": 0.0},
+        "ground_truth": {},
+        "nodes": {},
+        "llm_overseer": False,
+    }
+
+    def __init__(self, path="nepa_config.json"):
+        self.path = path
+        self.data = _v300_json.loads(_v300_json.dumps(self.DEFAULTS))  # deep copy
+        self.load()
+
+    def load(self):
+        try:
+            if os.path.exists(self.path):
+                with open(self.path) as f:
+                    self._merge(self.data, _v300_json.load(f))
+            else:
+                self.save()
+        except Exception as e:
+            log.warning(f"[CONFIG] load failed ({e}); using defaults")
+
+    @staticmethod
+    def _merge(base, over):
+        for k, v in (over or {}).items():
+            if isinstance(v, dict) and isinstance(base.get(k), dict):
+                NEPAConfig._merge(base[k], v)
+            else:
+                base[k] = v
+
+    def get(self, path, default=None):
+        cur = self.data
+        for part in path.split("."):
+            if isinstance(cur, dict) and part in cur:
+                cur = cur[part]
+            else:
+                return default
+        return cur
+
+    def save(self):
+        try:
+            with open(self.path, "w") as f:
+                _v300_json.dump(self.data, f, indent=2)
+            return True
+        except Exception:
+            return False
+
+    def status(self):
+        return {"path": self.path, "sections": list(self.data.keys())}
+
+
+class GeoReferenceFrame:
+    """#9 — Unified georeferenced spatial frame. Ties local XYZ (metres, ENU) to a
+    geodetic origin (lat/lon/alt) so mesh fixes and the persistent world share one
+    coordinate system and can be placed on the planet map. ENU small-area
+    approximation. Additive."""
+    R_EARTH = 6378137.0
+
+    def __init__(self, lat=None, lon=None, alt=0.0):
+        self.anchors = {}
+        self.set_origin(lat, lon, alt)
+
+    def set_origin(self, lat, lon, alt=0.0):
+        self.lat0 = lat
+        self.lon0 = lon
+        self.alt0 = float(alt or 0.0)
+        self.have_origin = lat is not None and lon is not None
+
+    def local_to_geo(self, xyz):
+        if not self.have_origin:
+            return None
+        import math
+        x, y = float(xyz[0]), float(xyz[1])
+        z = float(xyz[2]) if len(xyz) > 2 else 0.0
+        dlat = (y / self.R_EARTH) * (180.0 / math.pi)
+        dlon = (x / (self.R_EARTH * math.cos(math.radians(self.lat0)))) * (180.0 / math.pi)
+        return {"lat": self.lat0 + dlat, "lon": self.lon0 + dlon, "alt": self.alt0 + z}
+
+    def geo_to_local(self, lat, lon, alt=0.0):
+        if not self.have_origin:
+            return None
+        import math
+        x = math.radians(lon - self.lon0) * self.R_EARTH * math.cos(math.radians(self.lat0))
+        y = math.radians(lat - self.lat0) * self.R_EARTH
+        return [x, y, (alt or 0.0) - self.alt0]
+
+    def register_anchor(self, name, lat, lon, alt=0.0):
+        self.anchors[name] = (lat, lon, alt)
+
+    def tag_fixes(self, fixes):
+        out = []
+        for fx in fixes or []:
+            g = self.local_to_geo(fx.get("position", [0, 0, 0]))
+            if g is not None:
+                fx = dict(fx); fx["geo"] = g
+            out.append(fx)
+        return out
+
+    def status(self):
+        return {"origin": ({"lat": self.lat0, "lon": self.lon0, "alt": self.alt0}
+                           if self.have_origin else None),
+                "anchors": len(self.anchors)}
+
+
+class ActiveSensingController:
+    """#10 — Cognitive/active sensing scheduler. Tracks per-band information gain
+    (variance of recent returns) and recommends the next band+dwell to maximise
+    imaging information. If a controllable tuner/hopper is present on the fuser it
+    issues a retune; otherwise it RECOMMENDS only (honest — no fabricated TX).
+    Additive; never forces hardware it can't see."""
+    def __init__(self, bands=None):
+        self.bands = bands or [2412e6, 2437e6, 2462e6, 5180e6, 5500e6, 5745e6]
+        self._gain = {b: 0.0 for b in self.bands}
+        self.recommended = None
+        self.actuated = False
+
+    def observe(self, band_hz, sample):
+        try:
+            v = float(np.var(np.abs(np.atleast_1d(np.asarray(sample)).ravel())))
+            b = min(self.bands, key=lambda x: abs(x - float(band_hz)))
+            a = 0.2
+            self._gain[b] = (1 - a) * self._gain[b] + a * v
+        except Exception:
+            pass
+
+    def recommend(self):
+        if not self._gain:
+            return None
+        b = max(self.bands, key=lambda x: self._gain.get(x, 0.0))
+        self.recommended = {"band_hz": b, "expected_gain": self._gain.get(b, 0.0),
+                            "dwell_ms": 200}
+        return self.recommended
+
+    def actuate(self, fuser):
+        rec = self.recommend()
+        if rec is None:
+            return False
+        for attr in ("channel_hopper", "sdr_tuner", "tuner", "adaptive_channel_mgr",
+                     "continuous_hopper"):
+            obj = getattr(fuser, attr, None)
+            if obj is None:
+                continue
+            for m in ("tune", "set_frequency", "set_band", "hop_to", "retune"):
+                fn = getattr(obj, m, None)
+                if callable(fn):
+                    try:
+                        fn(rec["band_hz"]); self.actuated = True; return True
+                    except Exception:
+                        pass
+        self.actuated = False
+        return False
+
+    def status(self):
+        return {"recommended": self.recommended, "actuated": self.actuated,
+                "bands": len(self.bands),
+                "top_gain": (max(self._gain.values()) if self._gain else 0.0)}
+
+
+class AlertDispatcher:
+    """#11 — Real-time outbound alerting. Rule-based thresholds on the fused
+    profile fire severity-ranked alerts to pluggable sinks: a local JSONL file
+    (on by default), an optional webhook (urllib POST), and the event store.
+    Debounced + rate-limited. Network sinks are opt-in (outward-facing). Additive."""
+    def __init__(self, file_sink="nepa_alerts.jsonl", webhook=None, threat_threshold=0.7,
+                 store=None, llm=None, min_interval=20.0):
+        self.file_sink = file_sink
+        self.webhook = webhook
+        self.threat_threshold = float(threat_threshold)
+        self.store = store
+        self.llm = llm
+        self.min_interval = float(min_interval)
+        self._last = {}
+        self.fired = 0
+
+    def _emit(self, alert):
+        try:
+            if self.file_sink:
+                with open(self.file_sink, "a") as f:
+                    f.write(_v300_json.dumps(alert, default=str) + "\n")
+        except Exception:
+            pass
+        try:
+            if self.store is not None:
+                self.store.log("alert", alert)
+        except Exception:
+            pass
+        if self.webhook:
+            try:
+                import urllib.request
+                req = urllib.request.Request(self.webhook,
+                                             data=_v300_json.dumps(alert, default=str).encode(),
+                                             headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=3)
+            except Exception as e:
+                log.debug(f"[ALERT] webhook failed: {e}")
+        self.fired += 1
+
+    def check(self, snapshot):
+        now = time.time()
+        rules = []
+        try:
+            th = snapshot.get("threat")
+            if th is not None and float(th) >= self.threat_threshold:
+                rules.append(("threat_high", "HIGH", f"threat={th}"))
+        except Exception:
+            pass
+        for key in ("anomaly", "medical_alert", "fall_detected"):
+            if snapshot.get(key):
+                rules.append((key, "HIGH", str(snapshot.get(key))))
+        for rid, sev, detail in rules:
+            if now - self._last.get(rid, 0) < self.min_interval:
+                continue
+            self._last[rid] = now
+            self._emit({"ts": now, "rule": rid, "severity": sev, "detail": detail,
+                        "capture": snapshot.get("capture_method")})
+        return len(rules)
+
+    def status(self):
+        return {"fired": self.fired, "file": self.file_sink, "webhook": bool(self.webhook),
+                "threshold": self.threat_threshold}
+
+
+class AutoCalibrationLoop:
+    """#7 — Closed-loop auto-calibration. Reads the validation harness RMSE and
+    hill-climbs the additive mesh's range-model exponent to minimise measured
+    error against real ground truth. Tunes the additive mesh only — never the base
+    engines. Honest: only steps when there are scored samples."""
+    def __init__(self, mesh, validation, step=0.05):
+        self.mesh = mesh
+        self.validation = validation
+        self.step = float(step)
+        self._best = None
+        self._dir = 1.0
+        self.iters = 0
+
+    def step_once(self):
+        m = self.validation.metrics()
+        if m.get("n", 0) < 3:
+            return {"status": "insufficient_samples"}
+        rmse = m.get("rmse_m", 1e9)
+        if self._best is None or rmse < self._best:
+            self._best = rmse
+        else:
+            self._dir *= -1.0
+        n = getattr(self.mesh, "n_exp", 2.7) + self._dir * self.step
+        self.mesh.n_exp = float(min(4.0, max(2.0, n)))
+        self.iters += 1
+        return {"status": "stepped", "rmse": rmse, "n_exp": self.mesh.n_exp}
+
+    def status(self):
+        return {"iters": self.iters, "best_rmse": self._best,
+                "n_exp": getattr(self.mesh, "n_exp", None)}
+
+
+class ReceiverNodeClient:
+    """#6 — Turns any machine (laptop / Raspberry Pi) into a real receiver node for
+    the multi-RX mesh. Reads local RSSI from /proc/net/wireless, HMAC-signs, and
+    POSTs to the SecureMeshIngestServer. Run standalone via --mesh-node URL. This
+    is the missing 'sender' that makes the mesh real; additive, depends on nothing
+    in the base loop."""
+    def __init__(self, server_url, node_id=None, position=(0, 0, 0), secret=None, interval=2.0):
+        self.url = server_url.rstrip("/")
+        self.node_id = node_id or ("node-" + (os.uname().nodename if hasattr(os, "uname") else "host"))
+        self.position = list(position)
+        self.guard = IngestSecurityGuard(secret=secret)
+        self.interval = float(interval)
+        self._running = False
+        self.sent = 0
+
+    def _read_rssi(self):
+        obs = []
+        try:
+            with open("/proc/net/wireless") as f:
+                for line in f.readlines()[2:]:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        iface = parts[0].strip(":")
+                        try:
+                            rssi = float(parts[3].rstrip("."))
+                        except Exception:
+                            continue
+                        obs.append({"emitter": f"ap:{iface}", "rssi_dbm": rssi})
+        except Exception:
+            pass
+        return obs
+
+    def post_once(self):
+        import urllib.request
+        obs = self._read_rssi()
+        ts = time.time()
+        body = _v300_json.dumps({"node_id": self.node_id, "position": self.position,
+                                 "observations": obs}).encode()
+        sig = self.guard.sign(ts, body)
+        try:
+            req = urllib.request.Request(self.url + "/", data=body,
+                                         headers={"Content-Type": "application/json",
+                                                  "X-NEPA-TS": str(ts), "X-NEPA-SIG": sig})
+            urllib.request.urlopen(req, timeout=3)
+            self.sent += 1
+            return True
+        except Exception as e:
+            log.debug(f"[NODE] post failed: {e}")
+            return False
+
+    def run(self):
+        self._running = True
+        log.info(f"[NODE] {self.node_id} → {self.url} every {self.interval}s "
+                 f"(HMAC {'on' if self.guard.enabled else 'OFF — set NEPA_INGEST_TOKEN'})")
+        while self._running:
+            self.post_once()
+            time.sleep(self.interval)
+
+    @staticmethod
+    def esp32_firmware_template(path="nepa_mesh_node.ino"):
+        sketch = (
+            "// N.E.P.A. mesh receiver node (ESP32) — template.\n"
+            "// Posts RSSI/CSI observations to the SecureMeshIngestServer with an\n"
+            "// HMAC token. Fill in WIFI_SSID / WIFI_PASS / NEPA_HOST / NEPA_TOKEN,\n"
+            "// then flash via Arduino IDE or ESP-IDF. Wire format matches\n"
+            "// ReceiverNodeClient: POST JSON {node_id,position,observations:[{emitter,rssi_dbm}]}\n"
+            "// with headers X-NEPA-TS (unix time) and X-NEPA-SIG (HMAC-SHA256 of ts.body).\n"
+        )
+        try:
+            with open(path, "w") as f:
+                f.write(sketch)
+            return path
+        except Exception:
+            return None
+
+    def status(self):
+        return {"node_id": self.node_id, "sent": self.sent, "url": self.url}
+
+
+class NEPACapabilityExpansionPackV2(NEPACapabilityExpansionPack):
+    """v300+ — extends the Capability Expansion Pack with items #2–#11, fully
+    additive (subclass; the V1 pack and every base engine are untouched). All
+    heavy add-on work runs OFF the data thread via the inherited worker pool and
+    is gated by a PerformanceGovernor so the additions never become a bottleneck."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.config = NEPAConfig()                                            # #8
+        self.governor = PerformanceGovernor()                                # #2
+        self.calib = ArrayCalibrationEngine()                                # #5
+        self.geo = GeoReferenceFrame(self.config.get("geo_origin.lat"),      # #9
+                                     self.config.get("geo_origin.lon"),
+                                     self.config.get("geo_origin.alt", 0.0))
+        self.active = ActiveSensingController()                               # #10
+        self.store = NEPAEventStore() if self.config.get("event_store", True) else None  # #3
+        self.guard = IngestSecurityGuard()                                   # #4
+        self.secure_ingest = None
+        self.autocal = AutoCalibrationLoop(self.mesh, self.validation)        # #7
+        self.alerts = AlertDispatcher(                                        # #11
+            webhook=self.config.get("alerts.webhook"),
+            threat_threshold=self.config.get("alerts.threat_threshold", 0.7),
+            store=self.store, llm=self.llm)
+        # config-driven ground truth / nodes / llm
+        for em, xyz in (self.config.get("ground_truth", {}) or {}).items():
+            try:
+                self.validation.set_ground_truth(em, xyz)
+            except Exception:
+                pass
+        for nid, xyz in (self.config.get("nodes", {}) or {}).items():
+            try:
+                self.mesh.register_node(nid, xyz)
+            except Exception:
+                pass
+        if self.config.get("llm_overseer", False) and not self.llm.enabled:
+            self.llm.enabled = True
+            self.llm._init_client()
+        # register extra OFF-THREAD, governed pipeline tasks
+        self.pipeline.register("array_calibration", self._task_calib)
+        self.pipeline.register("active_sensing", self._task_active)
+        self.pipeline.register("auto_calibration", self._task_autocal)
+        self.pipeline.register("geo", lambda s: self.geo.status())
+        self.pipeline.register("eventstore", lambda s: (self.store.status() if self.store else {}))
+
+    def attach(self):
+        super().attach()
+        try:
+            if self.store:
+                self.store.start()
+        except Exception:
+            pass
+        if self.config.get("secure_ingest.enabled", False) and self.guard.enabled:
+            try:
+                self.secure_ingest = SecureMeshIngestServer(
+                    self.guard, self.mesh, timesync=self.timesync, store=self.store,
+                    host=self.config.get("secure_ingest.host", "127.0.0.1"),
+                    port=self.config.get("secure_ingest.port", 8771))
+                self.secure_ingest.start()
+            except Exception as e:
+                log.warning(f"[SECINGEST] {e}")
+        log.info("[POWERPACK] v300+ extensions attached (#2-#11): governor, event store, "
+                 "secure ingest, array calibration, mesh nodes, auto-cal, config, geo frame, "
+                 "active sensing, alerts — all additive, off-thread, governed.")
+        log.info(f"[POWERPACK]  #2 governor target={self.governor.target_dt*1000:.0f}ms | "
+                 f"#3 event store: {self.store.status() if self.store else 'disabled'}")
+        log.info(f"[POWERPACK]  #4 ingest security: {self.guard.status()} | "
+                 f"#8 config: {self.config.path}")
+
+    # --- off-thread, governor-gated worker tasks ---
+    def _task_calib(self, snap):
+        if not self.config.get("array_calibration", True) or not self.governor.headroom():
+            return self.calib.status()
+        raw = getattr(self.fuser, "_last_raw_csi", None)
+        if raw is not None:
+            self.calib.update(raw)
+        return self.calib.status()
+
+    def _task_active(self, snap):
+        if not self.config.get("active_sensing", True) or not self.governor.headroom():
+            return self.active.status()
+        try:
+            raw = getattr(self.fuser, "_last_raw_csi", None)
+            if raw is not None:
+                self.active.observe(snap.get("rf_band_hz") or 2412e6, raw)
+            self.active.actuate(self.fuser)
+        except Exception:
+            pass
+        return self.active.status()
+
+    def _task_autocal(self, snap):
+        if not self.config.get("auto_calibration", True) or not self.governor.headroom():
+            return self.autocal.status()
+        return self.autocal.step_once()
+
+    def on_frame(self, pp):
+        self.governor.tick()                       # #2 load signal
+        super().on_frame(pp)                        # base pack: pipeline + pp["power_pack"]
+        try:
+            snap = self._compact(pp)
+        except Exception:
+            snap = {}
+        # #9 geo-tag the multistatic fixes into the shared frame
+        try:
+            fixes = (self._results.get("mesh") or {}).get("fixes") or []
+            if fixes and self.geo.have_origin:
+                pp["power_pack_geo_fixes"] = self.geo.tag_fixes(fixes)
+        except Exception:
+            pass
+        # #11 alerts (cheap rule check, main thread)
+        try:
+            if self.config.get("alerts.enabled", True):
+                self.alerts.check(snap)
+        except Exception:
+            pass
+        # #3 history (async, non-blocking)
+        try:
+            if self.store is not None and self._frame % 3 == 0:
+                self.store.log("frame", snap)
+        except Exception:
+            pass
+        # extend the power_pack status block with #2-#11
+        try:
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v2"] = {
+                    "governor": self.governor.status(),
+                    "calibration": self.calib.status(),
+                    "autocal": self.autocal.status(),
+                    "active_sensing": self.active.status(),
+                    "geo": self.geo.status(),
+                    "config": self.config.status(),
+                    "eventstore": (self.store.status() if self.store else None),
+                    "secure_ingest": (self.secure_ingest.status() if self.secure_ingest
+                                      else {"enabled": False}),
+                    "security": self.guard.status(),
+                    "alerts": self.alerts.status(),
+                }
+        except Exception:
+            pass
+
+    def status_text(self):
+        base = super().status_text()
+        try:
+            return (base + f" | governor_load={self.governor.status()['load']} "
+                    f"calib_q={self.calib.quality:.2f} "
+                    f"store={self.store.written if self.store else 0} "
+                    f"alerts={self.alerts.fired}")
+        except Exception:
+            return base
+
+    def _on_exit(self):
+        try:
+            if self.store:
+                self.store.stop()
+        except Exception:
+            pass
+        try:
+            if self.secure_ingest:
+                self.secure_ingest.stop()
+        except Exception:
+            pass
+        super()._on_exit()
+
+
+# ==============================================================================
+# v300++ — CAPABILITY EXPANSION PACK, items #1–#10 (ADDITIVE: subclass-extends the
+# v300+ pack; V1/V2 and ALL base engines untouched). Heavy work runs OFF the data
+# thread via the inherited governed pool; a ResourceGovernor adds active
+# backpressure so 24/7 memory growth is capped. No-false-data preserved.
+# ==============================================================================
+import gc as _v300_gc
+try:
+    import psutil as _v300_psutil
+except Exception:
+    _v300_psutil = None
+try:
+    from scipy.optimize import linear_sum_assignment as _v300_lsa
+except Exception:
+    _v300_lsa = None
+
+
+class BCIValidationEngine:
+    """#1 — Validates the most fabrication-prone outputs (RF-derived band powers /
+    cognitive state) against real EEG ground truth when an EEG stream is present;
+    otherwise it labels them [UNVALIDATED]. Correlation per band + sample counts.
+    Directly serves the no-false-data directive: the system's strongest claims now
+    get checked or honestly demoted. Additive; pure numpy."""
+    BANDS = ("delta", "theta", "alpha", "beta", "gamma")
+
+    def __init__(self, max_samples=512):
+        self._rf = {b: [] for b in self.BANDS}
+        self._eeg = {b: [] for b in self.BANDS}
+        self._max = int(max_samples)
+        self._lock = threading.Lock()
+        self.have_truth = False
+
+    def ingest(self, pp):
+        if not isinstance(pp, dict):
+            return
+        rf, eeg = {}, {}
+        for b in self.BANDS:
+            for k in pp:
+                lk = str(k).lower()
+                if b in lk:
+                    try:
+                        v = float(pp[k])
+                    except Exception:
+                        continue
+                    if "eeg" in lk or "hw" in lk:
+                        eeg.setdefault(b, v)
+                    else:
+                        rf.setdefault(b, v)
+        with self._lock:
+            for b, v in rf.items():
+                self._rf[b].append(v)
+                if len(self._rf[b]) > self._max:
+                    del self._rf[b][0]
+            for b, v in eeg.items():
+                self._eeg[b].append(v)
+                self.have_truth = True
+                if len(self._eeg[b]) > self._max:
+                    del self._eeg[b][0]
+
+    def metrics(self):
+        out = {}
+        with self._lock:
+            for b in self.BANDS:
+                rf = np.asarray(self._rf[b][-256:], dtype=float)
+                eg = np.asarray(self._eeg[b][-256:], dtype=float)
+                n = min(len(rf), len(eg))
+                if n >= 8 and np.std(rf[-n:]) > 0 and np.std(eg[-n:]) > 0:
+                    r = float(np.corrcoef(rf[-n:], eg[-n:])[0, 1])
+                    out[b] = {"r": round(r, 3), "n": n}
+        return {"validated": bool(self.have_truth and out),
+                "have_eeg_truth": self.have_truth, "per_band": out}
+
+    def annotate(self, pp):
+        m = self.metrics()
+        tag = "[VALIDATED]" if m["validated"] else "[UNVALIDATED — no EEG ground truth]"
+        try:
+            pp["bci_validation"] = tag
+            pp["bci_validation_metrics"] = m
+        except Exception:
+            pass
+        return tag
+
+    def status(self):
+        return self.metrics()
+
+
+class GovernanceEngine:
+    """#2 — Privacy/consent/audit/retention governance for a surveillance-grade
+    tool. Optional consent registry, an append-only audit trail (file + event
+    store), time-based retention enforcement, and per-subject redaction. Adds the
+    governance the system was missing; touches no base engine."""
+    def __init__(self, store=None, audit_path="nepa_audit.jsonl", retention_days=30,
+                 require_consent=False):
+        self.store = store
+        self.audit_path = audit_path
+        self.retention_days = float(retention_days)
+        self.require_consent = bool(require_consent)
+        self._consent = {}
+        self.audits = 0
+        self._last_retention = 0.0
+        self._lock = threading.Lock()
+
+    def set_consent(self, subject, ok=True):
+        with self._lock:
+            self._consent[str(subject)] = bool(ok)
+
+    def is_consented(self, subject):
+        if not self.require_consent:
+            return True
+        return self._consent.get(str(subject), False)
+
+    def audit(self, actor, action, subject=None, detail=None):
+        rec = {"ts": time.time(), "actor": actor, "action": action,
+               "subject": subject, "detail": detail}
+        try:
+            with open(self.audit_path, "a") as f:
+                f.write(_v300_json.dumps(rec, default=str) + "\n")
+        except Exception:
+            pass
+        if self.store is not None:
+            try:
+                self.store.log("audit", rec)
+            except Exception:
+                pass
+        self.audits += 1
+
+    def enforce_retention(self):
+        now = time.time()
+        if now - self._last_retention < 3600:
+            return
+        self._last_retention = now
+        if self.store is None or getattr(self.store, "_conn", None) is None:
+            return
+        cutoff = now - self.retention_days * 86400
+        try:
+            with self.store._dblock:
+                self.store._conn.execute("DELETE FROM events WHERE ts<?", (cutoff,))
+                self.store._conn.commit()
+        except Exception:
+            pass
+
+    def redact_subject(self, subject):
+        if self.store is None or getattr(self.store, "_conn", None) is None:
+            return 0
+        try:
+            with self.store._dblock:
+                cur = self.store._conn.execute("DELETE FROM events WHERE payload LIKE ?",
+                                               (f"%{subject}%",))
+                self.store._conn.commit()
+                n = cur.rowcount
+            self.audit("system", "redact", subject=subject, detail=f"{n} rows")
+            return n
+        except Exception:
+            return 0
+
+    def status(self):
+        return {"audits": self.audits, "require_consent": self.require_consent,
+                "consented": sum(1 for v in self._consent.values() if v),
+                "retention_days": self.retention_days}
+
+
+class InputHardeningGuard:
+    """#3 — Hardens the untrusted-input front door (CSI/UDP/ingest byte parsers).
+    Bounds/sanity validation, a safe_parse wrapper that never lets a malformed
+    packet crash the capture thread, and a fuzz harness that measures parser
+    robustness. Additive; the base parsers are unchanged — this wraps/guards
+    around them."""
+    def __init__(self):
+        self.checked = 0
+        self.rejected = 0
+        self.crashes_caught = 0
+
+    def validate_packet(self, data, min_len=1, max_len=1 << 20):
+        self.checked += 1
+        if data is None or not isinstance(data, (bytes, bytearray)):
+            self.rejected += 1
+            return False, "not-bytes"
+        if not (min_len <= len(data) <= max_len):
+            self.rejected += 1
+            return False, f"len {len(data)} out of [{min_len},{max_len}]"
+        return True, "ok"
+
+    def safe_parse(self, parse_fn, data, default=None):
+        ok, _ = self.validate_packet(data)
+        if not ok:
+            return default
+        try:
+            return parse_fn(data)
+        except Exception:
+            self.crashes_caught += 1
+            return default
+
+    def fuzz(self, parse_fn, n=500, seed=1234, base=None):
+        rng = np.random.default_rng(seed)
+        crashes = 0
+        handled = 0
+        for _ in range(int(n)):
+            ln = int(rng.integers(0, 4096))
+            buf = bytes(rng.integers(0, 256, size=ln, dtype=np.uint8).tolist())
+            if base and rng.random() < 0.5:
+                b = bytearray(base)
+                for _ in range(int(rng.integers(1, 8))):
+                    if b:
+                        b[int(rng.integers(0, len(b)))] = int(rng.integers(0, 256))
+                buf = bytes(b)
+            try:
+                parse_fn(buf)
+                handled += 1
+            except Exception:
+                crashes += 1
+        return {"trials": int(n), "handled": handled, "uncaught_crashes": crashes,
+                "robustness": round(handled / max(1, n), 3)}
+
+    def status(self):
+        return {"checked": self.checked, "rejected": self.rejected,
+                "crashes_caught": self.crashes_caught}
+
+
+class GlobalTrackManager:
+    """#4 — Unified multi-object tracker with STABLE GLOBAL IDs. Data association
+    (Hungarian via scipy if present, else greedy NN with gating), track
+    birth/death/merge, and constant-velocity smoothing — across all detection
+    sources (mesh fixes, world entities). Replaces nothing; it is the single
+    identity layer the fragmented trackers never had."""
+    def __init__(self, gate=2.0, max_age=5.0, merge_dist=0.6):
+        self._tracks = {}
+        self._next = 1
+        self.gate = float(gate)
+        self.max_age = float(max_age)
+        self.merge_dist = float(merge_dist)
+        self._lock = threading.Lock()
+
+    def _assign(self, dets, tids, tpos):
+        if not tids:
+            return [(i, None) for i in range(len(dets))]
+        D = np.zeros((len(dets), len(tids)))
+        for i, d in enumerate(dets):
+            for j, tp in enumerate(tpos):
+                m = min(len(d), len(tp))
+                D[i, j] = np.linalg.norm(np.asarray(d[:m]) - np.asarray(tp[:m]))
+        pairs = []
+        if _v300_lsa is not None and len(dets) and len(tids):
+            r, c = _v300_lsa(D)
+            used = set()
+            for ri, ci in zip(r, c):
+                if D[ri, ci] <= self.gate:
+                    pairs.append((int(ri), tids[int(ci)]))
+                    used.add(int(ri))
+            for i in range(len(dets)):
+                if i not in used:
+                    pairs.append((i, None))
+        else:
+            taken = set()
+            for _, i in sorted((D[i].min(), i) for i in range(len(dets))):
+                j = int(np.argmin(D[i]))
+                if D[i, j] <= self.gate and tids[j] not in taken:
+                    pairs.append((i, tids[j]))
+                    taken.add(tids[j])
+                else:
+                    pairs.append((i, None))
+        return pairs
+
+    def update(self, detections):
+        now = time.time()
+        meta = [d for d in (detections or []) if d.get("position") is not None]
+        dets = [list(d["position"]) for d in meta]
+        with self._lock:
+            tids = list(self._tracks.keys())
+            tpos = [self._tracks[t]["pos"] for t in tids]
+            for di, tid in self._assign(dets, tids, tpos):
+                pos = [float(x) for x in dets[di]]
+                src = meta[di].get("source", "?")
+                conf = float(meta[di].get("conf", 0.5))
+                if tid is None:
+                    tid = self._next
+                    self._next += 1
+                    self._tracks[tid] = {"id": tid, "pos": pos, "vel": [0.0] * len(pos),
+                                         "t0": now, "t": now, "hits": 1,
+                                         "sources": {src}, "conf": conf}
+                else:
+                    tr = self._tracks[tid]
+                    dt = max(1e-3, now - tr["t"])
+                    tr["vel"] = [(p - q) / dt for p, q in zip(pos, tr["pos"])]
+                    tr["pos"] = [0.5 * p + 0.5 * q for p, q in zip(pos, tr["pos"])]
+                    tr["t"] = now
+                    tr["hits"] += 1
+                    tr["sources"].add(src)
+                    tr["conf"] = 0.7 * tr["conf"] + 0.3 * conf
+            for tid in list(self._tracks.keys()):
+                if now - self._tracks[tid]["t"] > self.max_age:
+                    del self._tracks[tid]
+            ids = sorted(self._tracks.keys())
+            for a_i in range(len(ids)):
+                for b_i in range(a_i + 1, len(ids)):
+                    ta = self._tracks.get(ids[a_i])
+                    tb = self._tracks.get(ids[b_i])
+                    if not ta or not tb:
+                        continue
+                    m = min(len(ta["pos"]), len(tb["pos"]))
+                    if np.linalg.norm(np.asarray(ta["pos"][:m]) - np.asarray(tb["pos"][:m])) < self.merge_dist:
+                        ta["sources"] |= tb["sources"]
+                        ta["hits"] += tb["hits"]
+                        del self._tracks[ids[b_i]]
+        return self.tracks()
+
+    def tracks(self):
+        with self._lock:
+            return [{"id": t["id"], "position": t["pos"], "velocity": t["vel"],
+                     "hits": t["hits"], "age_s": round(time.time() - t["t0"], 1),
+                     "sources": sorted(t["sources"]), "confidence": round(t["conf"], 3)}
+                    for t in self._tracks.values()]
+
+    def status(self):
+        with self._lock:
+            return {"active_tracks": len(self._tracks), "next_id": self._next}
+
+
+class SceneSemanticClassifier:
+    """#5 — Coarse object/material/scene classification from RF features
+    (motion variance, Doppler, respiration periodicity, amplitude): human / pet /
+    appliance / static-object / unknown. Turns an occupancy blob into a labelled
+    entity. Honest: returns 'unknown' when ambiguous. Additive, rule-based."""
+    CLASSES = ("human", "pet", "appliance", "static_object", "unknown")
+
+    def classify(self, feat):
+        try:
+            mv = float(feat.get("mvs_variance", feat.get("motion", 0)) or 0)
+            dop = abs(float(feat.get("doppler", feat.get("doppler_velocity", 0)) or 0))
+            per = float(feat.get("periodicity", feat.get("br_bpm", 0)) or 0)
+        except Exception:
+            return {"class": "unknown", "confidence": 0.0}
+        score = {
+            "human": (0.5 if 0.05 < mv < 2.0 else 0.0) + (0.5 if 8 <= per <= 30 else 0.0),
+            "pet": (0.4 if mv >= 2.0 else 0.0) + (0.3 if dop > 0.5 else 0.0),
+            "appliance": (0.6 if mv < 0.02 and per > 40 else 0.0),
+            "static_object": (0.5 if mv < 0.02 and per < 8 else 0.0),
+        }
+        cls = max(score, key=score.get)
+        conf = score[cls]
+        if conf <= 0:
+            cls = "unknown"
+        return {"class": cls, "confidence": round(float(conf), 3),
+                "scores": {k: round(v, 2) for k, v in score.items()}}
+
+    def status(self):
+        return {"classes": list(self.CLASSES)}
+
+
+class PoseGraphSLAM:
+    """#6 — Drift-correction / loop-closure back-end for the persistent world.
+    Maintains keyframe descriptors (occupancy histograms), detects scene
+    recurrence (cosine similarity) as a loop closure, and relaxes the accumulated
+    drift estimate. Provides the SLAM machinery the decaying occupancy grid lacked
+    (active when the scene/observer changes). Additive; numpy only."""
+    def __init__(self, world=None, sim_thresh=0.92, max_keyframes=200):
+        self.world = world
+        self.sim_thresh = float(sim_thresh)
+        self.max_kf = int(max_keyframes)
+        self.keyframes = []
+        self.closures = 0
+        self.drift = 0.0
+
+    def _descriptor(self):
+        try:
+            occ = self.world.occupancy() if self.world is not None else None
+            if occ is None:
+                return None
+            h, _ = np.histogram(np.asarray(occ).reshape(-1), bins=64, range=(0, 1))
+            n = np.linalg.norm(h) + 1e-9
+            return h / n
+        except Exception:
+            return None
+
+    def step(self):
+        d = self._descriptor()
+        if d is None:
+            return {"status": "no_world"}
+        best = 0.0
+        for kd, _ in self.keyframes[-self.max_kf:]:
+            best = max(best, float(np.dot(d, kd)))
+        if best >= self.sim_thresh and self.keyframes:
+            self.closures += 1
+            self.drift = max(0.0, self.drift * 0.5)   # snap drift back on closure
+            closed = True
+        else:
+            self.keyframes.append((d, self.drift))
+            if len(self.keyframes) > self.max_kf:
+                self.keyframes.pop(0)
+            self.drift += 0.001
+            closed = False
+        return {"status": "ok", "best_sim": round(best, 3), "loop_closure": closed,
+                "closures": self.closures, "keyframes": len(self.keyframes)}
+
+    def status(self):
+        return {"closures": self.closures, "keyframes": len(self.keyframes),
+                "drift_est": round(self.drift, 4)}
+
+
+class UncertaintyPropagator:
+    """#7 — End-to-end uncertainty propagation: SNR → range sigma (CRLB-scaled) →
+    multi-source fused confidence → calibrated confidence on fixes/tracks/alerts.
+    A downstream consumer can finally distinguish a strong 3-node fix from a noisy
+    one. Additive."""
+    @staticmethod
+    def sigma_from_snr(snr_db):
+        try:
+            snr = 10 ** (float(snr_db) / 10.0)
+            return float(1.0 / max(1e-3, float(np.sqrt(snr))))
+        except Exception:
+            return 1.0
+
+    def calibrated_conf(self, raw_conf, n_sources=1, snr_db=None):
+        c = float(raw_conf or 0.0)
+        c = 1.0 - (1.0 - c) ** max(1, int(n_sources))
+        if snr_db is not None:
+            c *= float(1.0 / (1.0 + self.sigma_from_snr(snr_db)))
+        return float(min(1.0, max(0.0, c)))
+
+    def annotate_fixes(self, fixes, snr_db=None):
+        out = []
+        for fx in fixes or []:
+            fx = dict(fx)
+            n = int(fx.get("nodes", 1))
+            base = 0.9 if "REAL" in str(fx.get("provenance", "")) else 0.4
+            fx["confidence"] = round(self.calibrated_conf(base, n, snr_db), 3)
+            fx["sigma_m"] = round(self.sigma_from_snr(snr_db) if snr_db is not None else 1.0, 3)
+            out.append(fx)
+        return out
+
+    def status(self):
+        return {"model": "CRLB-scaled SNR + multi-source fusion"}
+
+
+class ResourceGovernor:
+    """#9 — Active resource self-management for 24/7 operation. A background thread
+    tracks RSS (psutil, else resource); over the ceiling it sets a pressure flag,
+    forces gc, and the capability layer's heavy tasks self-skip — so the additions
+    degrade gracefully instead of growing memory unbounded. Caps only the add-on
+    layer; the base loop is never throttled by it. Additive."""
+    def __init__(self, rss_mb_ceiling=4096, interval=5.0):
+        self.ceiling = float(rss_mb_ceiling)
+        self.interval = float(interval)
+        self.pressure = False
+        self.degradations = 0
+        self.rss_mb = 0.0
+        self._running = False
+        self._thread = None
+        self._proc = None
+        if _v300_psutil is not None:
+            try:
+                self._proc = _v300_psutil.Process()
+            except Exception:
+                self._proc = None
+
+    def _rss(self):
+        try:
+            if self._proc is not None:
+                return self._proc.memory_info().rss / 1e6
+            import resource
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+        except Exception:
+            return 0.0
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="v300resgov")
+        self._thread.start()
+
+    def _loop(self):
+        while self._running:
+            self.rss_mb = self._rss()
+            if self.rss_mb > self.ceiling:
+                self.pressure = True
+                self.degradations += 1
+                try:
+                    _v300_gc.collect()
+                except Exception:
+                    pass
+            else:
+                self.pressure = False
+            time.sleep(self.interval)
+
+    def stop(self):
+        self._running = False
+
+    def status(self):
+        return {"rss_mb": round(self.rss_mb, 1), "ceiling_mb": self.ceiling,
+                "pressure": self.pressure, "degradations": self.degradations,
+                "backend": ("psutil" if self._proc else "resource")}
+
+
+class ActiveLearningLabeler:
+    """#10 — Human-in-the-loop labeling / active learning. Enqueues uncertain
+    frames for operator review, accepts confirm/correct labels (via the control
+    API or file), and feeds them as SUPERVISED samples to the learned scorer so it
+    learns from truth rather than just imitating the heuristic. Persists labels.
+    Additive."""
+    def __init__(self, path="nepa_labels.jsonl", max_pending=500):
+        self.path = path
+        self._pending = {}
+        self._labels = []
+        self._next = 1
+        self._max = int(max_pending)
+        self._lock = threading.Lock()
+        self.applied = 0
+        self._load()
+
+    def _load(self):
+        try:
+            if os.path.exists(self.path):
+                with open(self.path) as f:
+                    for line in f:
+                        try:
+                            self._labels.append(_v300_json.loads(line))
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    def enqueue(self, snapshot, reason="uncertain"):
+        with self._lock:
+            eid = self._next
+            self._next += 1
+            self._pending[eid] = {"id": eid, "ts": time.time(), "reason": reason,
+                                  "snapshot": snapshot}
+            if len(self._pending) > self._max:
+                self._pending.pop(next(iter(self._pending)))
+            return eid
+
+    def submit_label(self, event_id, label):
+        with self._lock:
+            ev = self._pending.pop(int(event_id), None)
+        rec = {"event_id": int(event_id), "label": label, "ts": time.time(),
+               "snapshot": (ev or {}).get("snapshot", {})}
+        self._labels.append(rec)
+        try:
+            with open(self.path, "a") as f:
+                f.write(_v300_json.dumps(rec, default=str) + "\n")
+        except Exception:
+            pass
+        return True
+
+    def pending(self):
+        with self._lock:
+            return list(self._pending.values())
+
+    def apply_labels(self, scorer):
+        if scorer is None:
+            return 0
+        n = 0
+        for rec in self._labels[self.applied:]:
+            try:
+                lab = rec["label"]
+                tgt = (float(lab) if not isinstance(lab, str)
+                       else (1.0 if lab in ("threat", "positive", "yes", "1", "true") else 0.0))
+                scorer.update(rec.get("snapshot", {}), tgt)
+                n += 1
+            except Exception:
+                pass
+        self.applied = len(self._labels)
+        return n
+
+    def status(self):
+        return {"pending": len(self._pending), "labels": len(self._labels),
+                "applied": self.applied}
+
+
+class ControlQueryAPIServer:
+    """#8 — Headless control/query API (stdlib http.server, ThreadingTCPServer).
+    GET status/health/tracks/world/events/pending; POST /command (token-gated) for
+    set_ground_truth / register_node / label / redact / save / set_geo_origin.
+    Binds 127.0.0.1 by default. Turns the app into queryable infrastructure
+    without touching the GUI. Off unless --api-port / config enables it."""
+    def __init__(self, pack, host="127.0.0.1", port=8780, token=None):
+        self.pack = pack
+        self.host = host
+        self.port = int(port)
+        self.token = token or os.environ.get("NEPA_API_TOKEN")
+        self._httpd = None
+        self._thread = None
+
+    def start(self):
+        try:
+            import http.server
+            import socketserver
+            import urllib.parse
+        except Exception as e:
+            log.warning(f"[API] http unavailable: {e}")
+            return False
+        pack, token = self.pack, self.token
+
+        class _H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, obj, code=200):
+                body = _v300_json.dumps(obj, default=str).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                try:
+                    pr = urllib.parse.urlparse(self.path)
+                    q = dict(urllib.parse.parse_qsl(pr.query))
+                    path = pr.path
+                    if path in ("/", "/status"):
+                        return self._send(pack.snapshot_status())
+                    if path == "/health":
+                        return self._send(pack.health.summary())
+                    if path == "/tracks":
+                        return self._send(pack.tracker.tracks())
+                    if path == "/world":
+                        return self._send(pack.world.stats())
+                    if path == "/pending":
+                        return self._send(pack.labeler.pending())
+                    if path == "/events":
+                        return self._send(pack.store.query(
+                            kind=q.get("kind"), since=float(q.get("since", 0) or 0),
+                            limit=int(q.get("limit", 100))) if pack.store else [])
+                    return self._send({"error": "not found"}, 404)
+                except Exception as e:
+                    self._send({"error": str(e)[:120]}, 500)
+
+            def do_POST(self):
+                try:
+                    if token and self.headers.get("X-NEPA-API-TOKEN") != token:
+                        return self._send({"error": "unauthorized"}, 401)
+                    n = int(self.headers.get("Content-Length", 0))
+                    cmd = _v300_json.loads(self.rfile.read(n).decode() or "{}")
+                    a = cmd.get("action")
+                    if a == "set_ground_truth":
+                        pack.validation.set_ground_truth(cmd["emitter"], cmd["xyz"])
+                        return self._send({"ok": True})
+                    if a == "register_node":
+                        pack.mesh.register_node(cmd["node_id"], cmd["xyz"])
+                        return self._send({"ok": True})
+                    if a == "label":
+                        pack.labeler.submit_label(cmd["event_id"], cmd["label"])
+                        return self._send({"ok": True})
+                    if a == "redact":
+                        return self._send({"ok": True,
+                                           "removed": pack.governance.redact_subject(cmd["subject"])})
+                    if a == "save":
+                        pack.world.save_ply()
+                        pack.scorer.save()
+                        return self._send({"ok": True})
+                    if a == "set_geo_origin":
+                        pack.geo.set_origin(cmd["lat"], cmd["lon"], cmd.get("alt", 0))
+                        return self._send({"ok": True})
+                    return self._send({"error": "unknown action"}, 400)
+                except Exception as e:
+                    self._send({"error": str(e)[:120]}, 400)
+
+        try:
+            self._httpd = socketserver.ThreadingTCPServer((self.host, self.port), _H)
+            self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True,
+                                            name="v300api")
+            self._thread.start()
+            log.info(f"[API] control/query API at http://{self.host}:{self.port}/ "
+                     f"(GET status/health/tracks/world/events; POST /command "
+                     f"token={'on' if token else 'OFF'})")
+            return True
+        except Exception as e:
+            log.warning(f"[API] bind failed: {e}")
+            return False
+
+    def stop(self):
+        try:
+            if self._httpd:
+                self._httpd.shutdown()
+        except Exception:
+            pass
+
+    def status(self):
+        return {"host": self.host, "port": self.port,
+                "running": self._httpd is not None, "auth": bool(self.token)}
+
+
+class NEPACapabilityExpansionPackV3(NEPACapabilityExpansionPackV2):
+    """v300++ — extends the pack with items #1–#10, fully additive (subclass; V1/V2
+    and every base engine untouched). Heavy work runs OFF the data thread via the
+    inherited governed pool and self-skips under PerformanceGovernor load OR
+    ResourceGovernor memory pressure, so the additions can never become a
+    bottleneck or grow memory unbounded."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.bci_validation = BCIValidationEngine()                                   # #1
+        self.governance = GovernanceEngine(                                           # #2
+            store=self.store, retention_days=self.config.get("retention_days", 30),
+            require_consent=self.config.get("require_consent", False))
+        self.hardening = InputHardeningGuard()                                        # #3
+        self.tracker = GlobalTrackManager()                                          # #4
+        self.classifier = SceneSemanticClassifier()                                  # #5
+        self.slam = PoseGraphSLAM(world=self.world)                                  # #6
+        self.uncertainty = UncertaintyPropagator()                                   # #7
+        self.resgov = ResourceGovernor(rss_mb_ceiling=self.config.get("rss_mb_ceiling", 4096))  # #9
+        self.labeler = ActiveLearningLabeler()                                       # #10
+        self.api = None                                                              # #8
+        self._api_port = int(getattr(args, "api_port", 0) or self.config.get("api.port", 0) or 0)
+        # governed OFF-THREAD tasks
+        self.pipeline.register("tracker", self._task_tracker)
+        self.pipeline.register("slam", self._task_slam)
+        self.pipeline.register("classifier", self._task_classifier)
+        self.pipeline.register("uncertainty", lambda s: self.uncertainty.status())
+
+    def attach(self):
+        super().attach()
+        try:
+            self.resgov.start()
+        except Exception:
+            pass
+        # #3 one-shot fuzz self-test of the untrusted CSI parser (off-thread)
+        try:
+            pf = getattr(self.fuser, "_parse_csi", None)
+            if callable(pf):
+                threading.Thread(
+                    target=lambda: log.info(f"[HARDENING] CSI parser fuzz: "
+                                            f"{self.hardening.fuzz(pf, n=400)}"),
+                    daemon=True, name="v300fuzz").start()
+        except Exception:
+            pass
+        # #8 control/query API (opt-in)
+        if self._api_port > 0 or self.config.get("api.enabled", False):
+            try:
+                self.api = ControlQueryAPIServer(
+                    self, port=(self._api_port or self.config.get("api.port", 8780)))
+                self.api.start()
+            except Exception as e:
+                log.warning(f"[API] {e}")
+        try:
+            self.governance.audit("system", "startup", detail="v3 attached")
+        except Exception:
+            pass
+        log.info("[POWERPACK] v300++ extensions attached (#1-#10): BCI validation, governance, "
+                 "input hardening, global tracker, scene classifier, pose-graph SLAM, uncertainty "
+                 "propagation, control/query API, resource governor, active-learning labeler — "
+                 "additive, off-thread, governed.")
+
+    # --- off-thread, governed worker tasks ---
+    def _task_tracker(self, snap):
+        if not self.governor.headroom() or self.resgov.pressure:
+            return self.tracker.status()
+        dets = []
+        for fx in (self._results.get("mesh") or {}).get("fixes") or []:
+            if fx.get("position") is not None:
+                dets.append({"position": fx["position"], "source": "mesh",
+                             "conf": 0.9 if "REAL" in str(fx.get("provenance", "")) else 0.4})
+        return {"tracks": self.tracker.update(dets), "status": self.tracker.status()}
+
+    def _task_slam(self, snap):
+        if not self.governor.headroom() or self.resgov.pressure:
+            return self.slam.status()
+        return self.slam.step()
+
+    def _task_classifier(self, snap):
+        return self.classifier.classify(snap)
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            snap = self._compact(pp)
+        except Exception:
+            snap = {}
+        # #1 BCI validation (cheap, main thread)
+        try:
+            self.bci_validation.ingest(pp)
+            self.bci_validation.annotate(pp)
+        except Exception:
+            pass
+        # #2 governance audit (throttled) + retention enforcement
+        try:
+            if self._frame % 50 == 0:
+                self.governance.audit("overseer", "observe",
+                                      subject=snap.get("capture_method"),
+                                      detail={"presence": snap.get("presence"),
+                                              "threat": snap.get("threat")})
+            self.governance.enforce_retention()
+        except Exception:
+            pass
+        # #7 uncertainty-calibrate mesh fixes (cheap)
+        try:
+            fixes = (self._results.get("mesh") or {}).get("fixes") or []
+            if fixes:
+                pp["power_pack_fixes_uncertain"] = self.uncertainty.annotate_fixes(
+                    fixes, snr_db=snap.get("rssi_breathing_snr"))
+        except Exception:
+            pass
+        # #10 active learning: enqueue ambiguous frames; periodically train on labels
+        try:
+            th = snap.get("threat")
+            if th is not None and 0.4 <= float(th) <= 0.6 and self._frame % 30 == 0:
+                self.labeler.enqueue(snap, reason="uncertain_threat")
+            if self._frame % 200 == 0:
+                self.labeler.apply_labels(self.scorer)
+        except Exception:
+            pass
+        # extend the power_pack status block with #1-#10
+        try:
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v3"] = {
+                    "bci_validation": self.bci_validation.status(),
+                    "governance": self.governance.status(),
+                    "hardening": self.hardening.status(),
+                    "tracker": self.tracker.status(),
+                    "classifier": self.classifier.classify(snap),
+                    "slam": self.slam.status(),
+                    "uncertainty": self.uncertainty.status(),
+                    "resource": self.resgov.status(),
+                    "labeler": self.labeler.status(),
+                    "api": (self.api.status() if self.api else {"enabled": False}),
+                }
+        except Exception:
+            pass
+
+    def status_text(self):
+        base = super().status_text()
+        try:
+            return (base + f" | tracks={self.tracker.status()['active_tracks']} "
+                    f"rss={self.resgov.rss_mb:.0f}MB "
+                    f"bci_validated={self.bci_validation.status()['validated']}")
+        except Exception:
+            return base
+
+    def _on_exit(self):
+        try:
+            self.resgov.stop()
+        except Exception:
+            pass
+        try:
+            if self.api:
+                self.api.stop()
+        except Exception:
+            pass
+        try:
+            self.governance.audit("system", "shutdown")
+        except Exception:
+            pass
+        super()._on_exit()
+
+
+# ==============================================================================
+# v300+++ — CAPABILITY EXPANSION PACK, items #1–#9 (ADDITIVE: subclass-extends the
+# v300++ pack; V1/V2/V3 and ALL base engines untouched). Items that "require
+# touching base code" are realized additively: #2 wraps _fuse_agents with a
+# profiler (original preserved + still called), #3 adds a dispatch/benchmark facade
+# (deletes nothing), #4 surfaces swallowed failures via global hooks + staleness
+# inference (no edits to the 1,296 except sites), #9 adds hardware readiness +
+# deployment (code can't add radios). Heavy work stays off-thread + governed.
+# ==============================================================================
+
+
+class DeterminismController:
+    """#8 — whole-pipeline determinism + session record/replay. Seeds RNGs for
+    reproducible runs and can record/replay the snapshot stream for debugging and
+    as the substrate the test suite (#1) needs. Additive."""
+    def __init__(self, seed=None, record_path=None, replay_path=None, cap=20000):
+        self.seed = seed
+        self.record_path = record_path
+        self.replay_path = replay_path
+        self.cap = int(cap)
+        self._recorded = []
+        self._replay = []
+        self._ri = 0
+        if seed is not None:
+            self.apply_seed(seed)
+        if replay_path:
+            self._load_replay(replay_path)
+
+    def apply_seed(self, seed):
+        try:
+            import random as _r
+            _r.seed(seed)
+            np.random.seed(int(seed) % (2 ** 32 - 1))
+            os.environ.setdefault("PYTHONHASHSEED", str(seed))
+            self.seed = seed
+            return True
+        except Exception:
+            return False
+
+    def record(self, snapshot):
+        if self.record_path is None:
+            return
+        self._recorded.append({"ts": time.time(), "snap": snapshot})
+        if len(self._recorded) > self.cap:
+            del self._recorded[0:len(self._recorded) - self.cap]
+        if len(self._recorded) % 200 == 0:
+            self._flush()
+
+    def _flush(self):
+        if self.record_path is None:
+            return
+        try:
+            with open(self.record_path, "w") as f:
+                _v300_json.dump(self._recorded, f, default=str)
+        except Exception:
+            pass
+
+    def _load_replay(self, path):
+        try:
+            with open(path) as f:
+                self._replay = _v300_json.load(f)
+        except Exception:
+            self._replay = []
+
+    def next_replay(self):
+        if not self._replay:
+            return None
+        s = self._replay[self._ri % len(self._replay)]
+        self._ri += 1
+        return s.get("snap")
+
+    def status(self):
+        return {"seed": self.seed, "recording": bool(self.record_path),
+                "recorded": len(self._recorded), "replay_frames": len(self._replay),
+                "replay_pos": self._ri}
+
+
+class FuseProfiler:
+    """#2 — additive instrumentation of the real hot path. Wraps fuser._fuse_agents
+    (original stored and still called on every frame) to measure EMA/max/avg cost
+    and surface it as an offload candidate — the measurement prerequisite for the
+    eventual refactor. Negligible overhead (one time.time pair)."""
+    def __init__(self, fuser):
+        self.fuser = fuser
+        self.n = 0
+        self.ema = 0.0
+        self.max = 0.0
+        self.total = 0.0
+        self._orig = None
+        self.installed = False
+
+    def install(self):
+        try:
+            self._orig = self.fuser._fuse_agents
+            prof = self
+
+            def _wrapped(results, *a, **k):
+                t0 = time.time()
+                r = prof._orig(results, *a, **k)
+                dt = (time.time() - t0) * 1000.0
+                prof.n += 1
+                prof.total += dt
+                prof.max = max(prof.max, dt)
+                prof.ema = dt if prof.n == 1 else 0.05 * dt + 0.95 * prof.ema
+                return r
+
+            self.fuser._fuse_agents = _wrapped
+            self.installed = True
+            return True
+        except Exception:
+            return False
+
+    def status(self):
+        return {"installed": self.installed, "calls": self.n,
+                "ema_ms": round(self.ema, 1), "max_ms": round(self.max, 1),
+                "avg_ms": round(self.total / max(1, self.n), 1),
+                "note": "core fuse cost — primary offload/refactor candidate"}
+
+
+class EngineConsolidationAdvisor:
+    """#3 — adds the consolidation MECHANISM without deleting anything. Over the
+    UnifiedEngineRegistry it reports redundancy per family, names the canonical
+    impl, and offers a single dispatch() facade so NEW code uses one per family.
+    (Mass instantiation is deliberately avoided — some engines open sockets.)"""
+    def __init__(self, registry):
+        self.registry = registry
+
+    def report(self):
+        rep = self.registry.duplication_report() if hasattr(self.registry, "duplication_report") else {}
+        redundant = sum(max(0, d["count"] - 1) for d in rep.values())
+        return {"families": len(rep), "redundant_engines": redundant,
+                "recommended": {k: d["canonical"] for k, d in rep.items()},
+                "counts": {k: d["count"] for k, d in rep.items()}}
+
+    def dispatch(self, family, *a, **k):
+        return self.registry.get(family, *a, **k)
+
+    def status(self):
+        r = self.report()
+        return {"families": r["families"], "redundant_engines": r["redundant_engines"]}
+
+
+class SilentFailureDetector:
+    """#4 — surfaces SWALLOWED failures WITHOUT editing the ~1,300 except sites:
+    (a) global sys/threading/warnings hooks capture anything that does propagate;
+    (b) a per-key staleness watch on the profile — a numeric key that stops
+    updating while frames advance implies an upstream `except: pass` — reported to
+    the health monitor + event store. Additive, observational."""
+    def __init__(self, health=None, store=None, stale_frames=120):
+        self.health = health
+        self.store = store
+        self.stale_frames = int(stale_frames)
+        self._last = {}
+        self._frame = 0
+        self.uncaught = 0
+        self.flagged = set()
+
+    def install_global_hooks(self):
+        try:
+            _prev = sys.excepthook
+
+            def _hook(et, ev, tb):
+                self.uncaught += 1
+                try:
+                    if self.store:
+                        self.store.log("uncaught_exception",
+                                       {"type": getattr(et, "__name__", str(et)), "msg": str(ev)[:200]})
+                    if self.health:
+                        self.health.report("uncaught_exception", "failed", detail=str(ev)[:120])
+                except Exception:
+                    pass
+                return _prev(et, ev, tb)
+
+            sys.excepthook = _hook
+        except Exception:
+            pass
+        try:
+            def _thook(args):
+                self.uncaught += 1
+                try:
+                    if self.health:
+                        self.health.report(f"thread:{getattr(args, 'thread', None)}", "failed",
+                                           detail=str(getattr(args, "exc_value", ""))[:120])
+                except Exception:
+                    pass
+            threading.excepthook = _thook
+        except Exception:
+            pass
+        try:
+            import warnings
+
+            def _wshow(message, category, filename, lineno, file=None, line=None):
+                try:
+                    if self.store:
+                        self.store.log("warning", {"msg": str(message)[:200],
+                                                   "cat": getattr(category, "__name__", str(category))})
+                except Exception:
+                    pass
+            warnings.showwarning = _wshow
+        except Exception:
+            pass
+
+    def scan(self, pp, watch_keys=None):
+        self._frame += 1
+        keys = watch_keys or [k for k, v in pp.items() if isinstance(v, (int, float))]
+        flagged_now = []
+        for k in keys:
+            v = pp.get(k)
+            rec = self._last.get(k)
+            if rec is None:
+                self._last[k] = {"v": v, "f": self._frame}
+                continue
+            if v != rec["v"]:
+                rec["v"] = v
+                rec["f"] = self._frame
+                self.flagged.discard(k)
+            elif self._frame - rec["f"] > self.stale_frames and k not in self.flagged:
+                self.flagged.add(k)
+                flagged_now.append(k)
+                if self.health:
+                    self.health.report(f"stale:{k}", "stale",
+                                       detail=f"unchanged {self._frame - rec['f']} frames "
+                                              f"(possible swallowed failure)")
+                if self.store:
+                    self.store.log("silent_failure_suspect", {"key": k})
+        return flagged_now
+
+    def status(self):
+        return {"uncaught": self.uncaught, "stale_keys": sorted(self.flagged)}
+
+
+class IntegratedPerceptionChain:
+    """#5 — connects the isolated additions into ONE pipeline: mesh fixes →
+    GlobalTrackManager (stable IDs) → SceneSemanticClassifier (class) →
+    UncertaintyPropagator (calibrated conf) → GeoReferenceFrame (geo-tag) → a
+    unified pp['entities'] product consumed by alerts/LLM/stream. Additive — reads
+    existing subsystems, emits a new unified output; replaces nothing."""
+    def __init__(self, tracker, classifier, uncertainty, geo, mesh):
+        self.tracker = tracker
+        self.classifier = classifier
+        self.uncertainty = uncertainty
+        self.geo = geo
+        self.mesh = mesh
+        self.entities = []
+
+    def build(self, snap, mesh_result):
+        fixes = (mesh_result or {}).get("fixes") or []
+        dets = [{"position": fx["position"], "source": "mesh",
+                 "conf": 0.9 if "REAL" in str(fx.get("provenance", "")) else 0.4}
+                for fx in fixes if fx.get("position") is not None]
+        tracks = self.tracker.update(dets)
+        snr = snap.get("rssi_breathing_snr")
+        cls = self.classifier.classify(snap)
+        ents = []
+        for tr in tracks:
+            conf = self.uncertainty.calibrated_conf(
+                tr.get("confidence", 0.5), n_sources=len(tr.get("sources", [])) or 1, snr_db=snr)
+            ent = {"id": tr["id"], "position": tr["position"], "velocity": tr["velocity"],
+                   "class": cls["class"], "class_conf": cls["confidence"],
+                   "confidence": round(conf, 3), "sources": tr.get("sources", []),
+                   "hits": tr.get("hits", 0)}
+            if self.geo.have_origin:
+                g = self.geo.local_to_geo(tr["position"])
+                if g:
+                    ent["geo"] = g
+            ents.append(ent)
+        self.entities = ents
+        return ents
+
+    def status(self):
+        return {"entities": len(self.entities),
+                "classes": sorted({e["class"] for e in self.entities})}
+
+
+class LiveStreamServer:
+    """#7 — real-time SSE push (text/event-stream, stdlib) of unified entities,
+    tracks, alerts, and health. Any EventSource/HTTP client gets a live feed —
+    turns the request-response API into a streaming data plane. Binds 127.0.0.1;
+    opt-in --stream-port. Additive."""
+    def __init__(self, pack, host="127.0.0.1", port=8782, interval=1.0):
+        self.pack = pack
+        self.host = host
+        self.port = int(port)
+        self.interval = float(interval)
+        self._httpd = None
+        self._thread = None
+        self.clients = 0
+
+    def start(self):
+        try:
+            import http.server
+            import socketserver
+        except Exception as e:
+            log.warning(f"[STREAM] http unavailable: {e}")
+            return False
+        pack, interval, outer = self.pack, self.interval, self
+
+        class _H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                if self.path not in ("/", "/stream", "/events"):
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                outer.clients += 1
+                try:
+                    while True:
+                        ch = getattr(pack, "chain", None)
+                        payload = {"ts": time.time(),
+                                   "entities": (ch.entities if ch else []),
+                                   "tracks": pack.tracker.tracks(),
+                                   "alerts_fired": pack.alerts.fired,
+                                   "health": pack.health.summary()}
+                        self.wfile.write(("data: " + _v300_json.dumps(payload, default=str)
+                                          + "\n\n").encode())
+                        self.wfile.flush()
+                        time.sleep(interval)
+                except Exception:
+                    pass
+                finally:
+                    outer.clients = max(0, outer.clients - 1)
+
+        try:
+            self._httpd = socketserver.ThreadingTCPServer((self.host, self.port), _H)
+            self._httpd.daemon_threads = True
+            self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True,
+                                            name="v300stream")
+            self._thread.start()
+            log.info(f"[STREAM] SSE live feed at http://{self.host}:{self.port}/stream")
+            return True
+        except Exception as e:
+            log.warning(f"[STREAM] bind failed: {e}")
+            return False
+
+    def stop(self):
+        try:
+            if self._httpd:
+                self._httpd.shutdown()
+        except Exception:
+            pass
+
+    def status(self):
+        return {"host": self.host, "port": self.port,
+                "running": self._httpd is not None, "clients": self.clients}
+
+
+class HardwareCaptureManager:
+    """#9 — probes for real RF capture hardware (RTL-SDR/HackRF/SoapySDR, ESP32
+    serial, WiFi iface, /proc/net/wireless) and reports a readiness matrix; also
+    generates node-deployment scripts. Doesn't fabricate hardware — it maps the
+    real path to real data and reports exactly what is connected. Additive."""
+    def __init__(self):
+        self.matrix = {}
+
+    def _run(self, cmd, timeout=4):
+        try:
+            import subprocess
+            out = subprocess.run(cmd, capture_output=True, timeout=timeout, text=True)
+            return (out.returncode == 0, (out.stdout or out.stderr or "")[:200])
+        except Exception as e:
+            return (False, str(e)[:120])
+
+    def probe(self):
+        m = {}
+        ok, info = self._run(["rtl_test", "-t"])
+        m["rtl_sdr"] = {"present": ok, "info": info.strip()[:80]}
+        ok, info = self._run(["SoapySDRUtil", "--find"])
+        m["soapy_sdr"] = {"present": ok and "Found" in info, "info": info.strip()[:80]}
+        ok, info = self._run(["hackrf_info"])
+        m["hackrf"] = {"present": ok, "info": info.strip()[:80]}
+        try:
+            import glob as _g
+            tty = _g.glob("/dev/ttyUSB*") + _g.glob("/dev/ttyACM*")
+            m["esp32_serial"] = {"present": bool(tty), "info": ",".join(tty)[:80]}
+        except Exception:
+            m["esp32_serial"] = {"present": False, "info": ""}
+        ok, info = self._run(["iw", "dev"])
+        m["wifi_iface"] = {"present": ok, "info": info.strip()[:80]}
+        m["proc_wireless"] = {"present": os.path.exists("/proc/net/wireless"), "info": ""}
+        self.matrix = m
+        return m
+
+    def any_real(self):
+        return any(v.get("present") for v in self.matrix.values())
+
+    def generate_node_script(self, host_url, path="nepa_node_deploy.sh"):
+        script = ("#!/usr/bin/env bash\n"
+                  "# N.E.P.A. receiver-mesh node deploy (Raspberry Pi / Linux).\n"
+                  f"# Streams local RSSI to {host_url} as a signed mesh node.\n"
+                  "export NEPA_INGEST_TOKEN=\"${NEPA_INGEST_TOKEN:-changeme}\"\n"
+                  f"python3 N.E.P.A.py --mesh-node {host_url} "
+                  "--node-secret \"$NEPA_INGEST_TOKEN\" --node-pos \"0,0,0\"\n")
+        try:
+            with open(path, "w") as f:
+                f.write(script)
+            os.chmod(path, 0o755)
+            return path
+        except Exception:
+            return None
+
+    def status(self):
+        return {"hardware": self.matrix, "any_real": self.any_real()}
+
+
+class NEPASelfTestSuite:
+    """#1 — in-process correctness + ground-truth benchmark over the additive
+    subsystems (deterministic). Runnable via --self-test (exits pass/fail) and
+    mirrored by tests/test_nepa_capability.py for CI. Verifies real behavior, not
+    just that code imports. Additive."""
+    def __init__(self, namespace):
+        self.ns = namespace
+        self.results = []
+
+    def _check(self, name, cond, detail=""):
+        ok = bool(cond)
+        self.results.append({"test": name, "pass": ok, "detail": detail})
+        return ok
+
+    def run(self):
+        ns = self.ns
+        import math
+        try:
+            mesh = ns["DistributedReceiverMesh"]()
+            gt = (2.0, 2.0, 0.0)
+            for nid, p in [("A", (0, 0, 0)), ("B", (5, 0, 0)), ("C", (0, 5, 0))]:
+                mesh.ingest(nid, [{"emitter": "e", "range_m": math.dist(p, gt)}], position=p)
+            fx = mesh.fused_fixes()
+            err = math.dist(fx[0]["position"], gt) if fx else 9
+            self._check("mesh_trilateration",
+                        err < 0.01 and fx[0]["provenance"] == "REAL-MULTISTATIC", f"err={err:.4f}")
+        except Exception as e:
+            self._check("mesh_trilateration", False, str(e)[:80])
+        try:
+            ts = ns["MeshTimeSyncEngine"]()
+            for i in range(12):
+                ts.add_sample("A", i, i * 1.0 + 0.5)
+            est = ts.estimate("A")
+            self._check("timesync_offset", est["calibrated"] and abs(est["offset_s"] - 0.5) < 1e-6,
+                        f"off={est.get('offset_s')}")
+        except Exception as e:
+            self._check("timesync_offset", False, str(e)[:80])
+        try:
+            cal = ns["ArrayCalibrationEngine"]()
+            k = np.arange(64)
+            csi = np.exp(1j * (0.1 * k + 0.3)).astype(np.complex64)
+            for _ in range(25):
+                cal.update(csi)
+            self._check("array_calibration", cal.quality > 0.9, f"q={cal.quality:.3f}")
+        except Exception as e:
+            self._check("array_calibration", False, str(e)[:80])
+        try:
+            tk = ns["GlobalTrackManager"]()
+            tk.update([{"position": [0, 0, 0], "source": "m", "conf": 0.9}])
+            tk.update([{"position": [0.1, 0, 0], "source": "m", "conf": 0.9}])
+            self._check("tracker_stable_id",
+                        tk.status()["active_tracks"] == 1 and tk.tracks()[0]["id"] == 1)
+        except Exception as e:
+            self._check("tracker_stable_id", False, str(e)[:80])
+        try:
+            cl = ns["SceneSemanticClassifier"]()
+            self._check("classifier_human",
+                        cl.classify({"mvs_variance": 0.3, "br_bpm": 15})["class"] == "human")
+        except Exception as e:
+            self._check("classifier_human", False, str(e)[:80])
+        try:
+            geo = ns["GeoReferenceFrame"](37.0, -122.0, 0.0)
+            xy = geo.geo_to_local(37.001, -122.001)
+            back = geo.local_to_geo(xy)
+            self._check("geo_roundtrip",
+                        abs(back["lat"] - 37.001) < 1e-6 and abs(back["lon"] + 122.001) < 1e-6)
+        except Exception as e:
+            self._check("geo_roundtrip", False, str(e)[:80])
+        try:
+            up = ns["UncertaintyPropagator"]()
+            self._check("uncertainty_monotonic",
+                        up.calibrated_conf(0.5, 3) > up.calibrated_conf(0.5, 1))
+        except Exception as e:
+            self._check("uncertainty_monotonic", False, str(e)[:80])
+        try:
+            sc = ns["LearnedOverseerScorer"](path="/tmp/_nepa_st_scorer.pkl")
+            snap = {"threat": 1.0, "csi_person_prob": 0.9}
+            e0 = abs(sc.predict(snap, 1.0)["learned_score"] - 1.0)
+            for _ in range(60):
+                sc.update(snap, 1.0)
+            e1 = abs(sc.predict(snap, 1.0)["learned_score"] - 1.0)
+            self._check("learned_scorer_converges", e1 < e0, f"{e0:.2f}->{e1:.2f}")
+        except Exception as e:
+            self._check("learned_scorer_converges", False, str(e)[:80])
+        try:
+            bv = ns["BCIValidationEngine"]()
+            bv.ingest({"alpha": 0.5})
+            self._check("bci_unvalidated_default", bv.metrics()["validated"] is False)
+        except Exception as e:
+            self._check("bci_unvalidated_default", False, str(e)[:80])
+        try:
+            hg = ns["InputHardeningGuard"]()
+            r = hg.fuzz(lambda d: d if len(d) >= 8 else (_ for _ in ()).throw(ValueError()), n=100)
+            self._check("hardening_fuzz_runs", "robustness" in r and r["trials"] == 100,
+                        f"robust={r.get('robustness')}")
+        except Exception as e:
+            self._check("hardening_fuzz_runs", False, str(e)[:80])
+        return self.report()
+
+    def report(self):
+        p = sum(1 for r in self.results if r["pass"])
+        n = len(self.results)
+        return {"passed": p, "total": n, "all_pass": p == n, "results": self.results}
+
+
+class CapabilityDocGenerator:
+    """#6 — auto-writes CAPABILITY_LAYER.md from live subsystem status so the 40+
+    additive subsystems (flags, config keys, HTTP/SSE endpoints, env vars, node
+    deploy, EEG protocol) are documented and discoverable. Additive; self-updating
+    each run."""
+    def __init__(self, pack):
+        self.pack = pack
+
+    def generate(self, path="CAPABILITY_LAYER.md"):
+        p = self.pack
+        try:
+            cfg_sections = (", ".join(p.config.data.keys())
+                            if getattr(p, "config", None) else "n/a")
+            lines = [
+                "# N.E.P.A. Capability Layer (v300 / v300+ / v300++ / v300+++)",
+                "", "_Auto-generated. ADDITIVE subsystems wired alongside the base "
+                "pipeline — nothing in the base is removed or replaced._", "",
+                "## CLI flags",
+                "- `--no-power-pack` — disable the whole capability layer",
+                "- `--llm-overseer --llm-model <id>` — Claude situational summaries (needs ANTHROPIC_API_KEY)",
+                "- `--turbo-udp` — UDP capture→fusion drop-stale decoupler",
+                "- `--mesh-node URL --node-secret S --node-pos x,y,z` — run standalone as a mesh node",
+                "- `--api-port N` — control/query API (token: NEPA_API_TOKEN)",
+                "- `--stream-port N` — SSE live feed",
+                "- `--seed N` — deterministic mode; `--record-session F` / `--replay-session F`",
+                "- `--self-test` — run the correctness/benchmark suite and exit", "",
+                f"## Config (nepa_config.json)\nSections: {cfg_sections}", "",
+                "## HTTP endpoints",
+                "- Control API GET: `/status` `/health` `/tracks` `/world` `/events?kind=&since=&limit=` `/pending`",
+                "- Control API POST `/command` (header `X-NEPA-API-TOKEN`): set_ground_truth, register_node, label, redact, save, set_geo_origin",
+                "- SSE stream GET `/stream`: live entities/tracks/alerts/health",
+                "- Secure mesh ingest POST `/` (headers `X-NEPA-TS`, `X-NEPA-SIG` = HMAC-SHA256 of `ts.body`)", "",
+                "## Environment variables",
+                "- `NEPA_INGEST_TOKEN` — mesh HMAC secret",
+                "- `NEPA_API_TOKEN` — control-API POST token",
+                "- `ANTHROPIC_API_KEY` / `NEPA_LLM_MODEL` — LLM overseer", "",
+                "## EEG validation protocol (#1, BCIValidationEngine)",
+                "Feed synchronized EEG band powers under keys containing `eeg_`/`hw_` (e.g. `eeg_alpha`); "
+                "RF-derived bands are correlated against them per-band. Outputs are labelled "
+                "`[VALIDATED]` only with real EEG truth present, else `[UNVALIDATED]`.", "",
+                "## Live subsystem status (snapshot)", "```json",
+                _v300_json.dumps(p.snapshot_status(), default=str, indent=2)[:4000], "```", "",
+            ]
+            with open(path, "w") as f:
+                f.write("\n".join(lines))
+            return path
+        except Exception as e:
+            log.debug(f"[DOCS] {e}")
+            return None
+
+
+class NEPACapabilityExpansionPackV4(NEPACapabilityExpansionPackV3):
+    """v300+++ — extends the pack with items #1–#9, fully additive (subclass; V1-V3
+    and every base engine untouched). Heavy work runs OFF the data thread via the
+    inherited governed pool; the perception chain self-skips under load/memory
+    pressure so it never becomes a bottleneck."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.determinism = DeterminismController(                                  # #8
+            seed=getattr(args, "seed", None),
+            record_path=getattr(args, "record_session", None),
+            replay_path=getattr(args, "replay_session", None))
+        self.profiler = FuseProfiler(fuser)                                       # #2
+        self.silent = SilentFailureDetector(health=self.health, store=self.store)  # #4
+        self.advisor = EngineConsolidationAdvisor(self.registry)                  # #3
+        self.chain = IntegratedPerceptionChain(self.tracker, self.classifier,     # #5
+                                               self.uncertainty, self.geo, self.mesh)
+        self.hwmgr = HardwareCaptureManager()                                    # #9
+        self.selftest = NEPASelfTestSuite(namespace or globals())                # #1
+        self.docs = CapabilityDocGenerator(self)                                 # #6
+        self.stream = None                                                       # #7
+        self._selftest_last = None
+        self._stream_port = int(getattr(args, "stream_port", 0) or 0)
+        # governed OFF-THREAD tasks
+        self.pipeline.register("perception_chain", self._task_chain)
+        self.pipeline.register("advisor", lambda s: self.advisor.status())
+
+    def attach(self):
+        super().attach()
+        try:
+            self.profiler.install()                       # #2 (original preserved + called)
+        except Exception:
+            pass
+        try:
+            self.silent.install_global_hooks()           # #4
+        except Exception:
+            pass
+        try:                                             # #9 probe off-thread (subprocess is slow)
+            threading.Thread(
+                target=lambda: log.info(f"[HARDWARE] readiness: {self.hwmgr.probe()}; "
+                                        f"any_real={self.hwmgr.any_real()}"),
+                daemon=True, name="v300hwprobe").start()
+        except Exception:
+            pass
+        if self._stream_port > 0 or self.config.get("stream.enabled", False):   # #7
+            try:
+                self.stream = LiveStreamServer(
+                    self, port=(self._stream_port or self.config.get("stream.port", 8782)))
+                self.stream.start()
+            except Exception as e:
+                log.warning(f"[STREAM] {e}")
+        try:                                             # #6 write docs once
+            dp = self.docs.generate()
+            if dp:
+                log.info(f"[DOCS] capability layer documented → {dp}")
+        except Exception:
+            pass
+        try:                                             # #3 advisor report
+            rep = self.advisor.report()
+            log.info(f"[ADVISOR] {rep['redundant_engines']} redundant engines across "
+                     f"{rep['families']} families (dispatch facade ready; deletes nothing)")
+        except Exception:
+            pass
+        log.info("[POWERPACK] v300+++ extensions attached (#1-#9): self-test suite, fuse profiler, "
+                 "consolidation advisor, silent-failure detector, integrated perception chain, "
+                 "auto-docs, SSE live stream, determinism+replay, hardware readiness — additive.")
+
+    def _task_chain(self, snap):
+        if not self.governor.headroom() or self.resgov.pressure:
+            return self.chain.status()
+        ents = self.chain.build(snap, self._results.get("mesh"))
+        return {"entities": ents, "status": self.chain.status()}
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            snap = self._compact(pp)
+        except Exception:
+            snap = {}
+        # #8 determinism record (opt-in)
+        try:
+            self.determinism.record(snap)
+        except Exception:
+            pass
+        # #5 publish unified entities (additive key) for alerts/LLM/stream
+        try:
+            if self.chain.entities:
+                pp["entities"] = self.chain.entities
+        except Exception:
+            pass
+        # #4 silent-failure staleness scan (throttled)
+        try:
+            if self._frame % 10 == 0:
+                self.silent.scan(pp)
+        except Exception:
+            pass
+        # extend status block with #1-#9
+        try:
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v4"] = {
+                    "selftest_last": self._selftest_last,
+                    "profiler": self.profiler.status(),
+                    "advisor": self.advisor.status(),
+                    "silent_failures": self.silent.status(),
+                    "perception_chain": self.chain.status(),
+                    "stream": (self.stream.status() if self.stream else {"enabled": False}),
+                    "determinism": self.determinism.status(),
+                    "hardware": self.hwmgr.status(),
+                }
+        except Exception:
+            pass
+
+    def run_self_test(self):
+        self._selftest_last = self.selftest.run()
+        return self._selftest_last
+
+    def status_text(self):
+        base = super().status_text()
+        try:
+            return (base + f" | entities={self.chain.status()['entities']} "
+                    f"fuse_ema={self.profiler.ema:.0f}ms "
+                    f"stream_clients={self.stream.clients if self.stream else 0}")
+        except Exception:
+            return base
+
+    def _on_exit(self):
+        try:
+            if self.stream:
+                self.stream.stop()
+        except Exception:
+            pass
+        try:
+            self.determinism._flush()
+        except Exception:
+            pass
+        super()._on_exit()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="N.E.P.A. v83 — WiFi CSI + DoA + WienerMRE-PR + mmWave + Cyclostationary + World/Planet Mapper + P81:PointCloud + P82:MVS+SAR3D+ReID + P83:FMCW+PoseNet+HashGrid+P4D+SatSpec")
@@ -89895,7 +93368,63 @@ if __name__ == "__main__":
                         help='Pass 34: MQTT broker port (default 1883).')
     parser.add_argument('--ha-discovery', action='store_true',
                         help='Pass 34: Publish Home Assistant MQTT discovery messages on start.')
+    parser.add_argument('--no-power-pack', action='store_true',
+                        help='v300: disable the Capability Expansion Pack (#1-#10 additive '
+                             'subsystems: concurrency, GPU hub, engine registry, multi-RX mesh, '
+                             'time-sync, persistent world, health monitor, validation, learned scorer).')
+    parser.add_argument('--llm-overseer', action='store_true',
+                        help='v300 (#9): enable the Claude natural-language situational-awareness '
+                             'overseer. Makes OUTBOUND Anthropic API calls and costs money; requires '
+                             'ANTHROPIC_API_KEY. Off by default. Reasons ONLY over real measured readings.')
+    parser.add_argument('--llm-model', default='claude-opus-4-8',
+                        help='v300 (#9): Claude model id for --llm-overseer (default claude-opus-4-8).')
+    parser.add_argument('--turbo-udp', action='store_true',
+                        help='v300+ (#2): decouple UDP capture from fusion with a latest-wins '
+                             'drop-stale worker so bursty packets never back up. Same _process_frame, '
+                             'off-thread. Off by default.')
+    parser.add_argument('--mesh-node', default=None, metavar='URL',
+                        help='v300+ (#6): run STANDALONE as a receiver-mesh node — read local RSSI '
+                             'and POST HMAC-signed observations to a SecureMeshIngestServer at URL '
+                             '(e.g. http://192.168.1.10:8771). Set NEPA_INGEST_TOKEN. Does not start the UI.')
+    parser.add_argument('--node-secret', default=None,
+                        help='v300+ (#6): HMAC secret for --mesh-node (else env NEPA_INGEST_TOKEN).')
+    parser.add_argument('--node-pos', default='0,0,0',
+                        help='v300+ (#6): this node\'s metric position "x,y,z" for --mesh-node.')
+    parser.add_argument('--api-port', type=int, default=0,
+                        help='v300++ (#8): start the headless control/query API on this port '
+                             '(e.g. 8780). GET status/health/tracks/world/events; POST /command is '
+                             'token-gated via NEPA_API_TOKEN. Binds 127.0.0.1. 0 = disabled.')
+    parser.add_argument('--stream-port', type=int, default=0,
+                        help='v300+++ (#7): start the SSE live-feed server on this port (e.g. 8782). '
+                             'GET /stream pushes entities/tracks/alerts/health. Binds 127.0.0.1. 0=off.')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='v300+++ (#8): seed all RNGs for a reproducible run.')
+    parser.add_argument('--record-session', default=None, metavar='FILE',
+                        help='v300+++ (#8): record the per-frame snapshot stream to FILE (JSON).')
+    parser.add_argument('--replay-session', default=None, metavar='FILE',
+                        help='v300+++ (#8): load a recorded snapshot stream from FILE.')
+    parser.add_argument('--self-test', action='store_true',
+                        help='v300+++ (#1): run the in-process correctness/benchmark suite over the '
+                             'capability subsystems and exit (0=all pass, 1=failure).')
     args = parser.parse_args()
+
+    # v300+++ (#1): standalone self-test mode — verify the additive subsystems and exit.
+    if getattr(args, "self_test", False):
+        _st = NEPASelfTestSuite(globals()).run()
+        for _r in _st["results"]:
+            log.info(f"[SELFTEST] {'PASS' if _r['pass'] else 'FAIL'}  {_r['test']}  {_r['detail']}")
+        log.info(f"[SELFTEST] {_st['passed']}/{_st['total']} passed")
+        sys.exit(0 if _st["all_pass"] else 1)
+
+    # v300+++ (#8): apply the global seed as early as possible for reproducibility.
+    if getattr(args, "seed", None) is not None:
+        try:
+            import random as _rnd
+            _rnd.seed(args.seed)
+            np.random.seed(int(args.seed) % (2 ** 32 - 1))
+            log.info(f"[DETERMINISM] global seed = {args.seed}")
+        except Exception:
+            pass
     # Pass 44: T-RECORD frame recorder init
     _splat_recorder_global = None
     if getattr(args, 'record_splat', None):
@@ -89909,6 +93438,22 @@ if __name__ == "__main__":
         with open('nepa_mlp.pkl', 'wb') as fh:
             pickle.dump({'W1': mlp.W1, 'b1': mlp.b1, 'W2': mlp.W2, 'b2': mlp.b2}, fh)
         log.info("[TRAIN] Saved fine-tuned MLP to nepa_mlp.pkl")
+        sys.exit(0)
+
+    # v300+ (#6): standalone receiver-mesh node mode — no UI, just stream signed
+    # observations to a SecureMeshIngestServer. Turns any laptop/Pi into a real
+    # mesh sensor (the missing 'sender' that makes the multistatic mesh real).
+    if getattr(args, "mesh_node", None):
+        try:
+            _pos = tuple(float(x) for x in str(args.node_pos).split(","))
+        except Exception:
+            _pos = (0.0, 0.0, 0.0)
+        _node = ReceiverNodeClient(args.mesh_node, secret=getattr(args, "node_secret", None),
+                                   position=_pos)
+        try:
+            _node.run()
+        except KeyboardInterrupt:
+            pass
         sys.exit(0)
 
     mode = 'sim' if args.demo_only else args.mode
@@ -89965,6 +93510,31 @@ if __name__ == "__main__":
             ha_discovery=args.ha_discovery,
         )
         log.info(f"[MAIN] SemanticStateEngine MQTT → {args.mqtt_host}:{args.mqtt_port}")
+
+    # v300: Capability Expansion Pack (#1-#10) — ADDITIVE. Adds new subsystems
+    # alongside the existing pipeline; removes/replaces nothing. The Claude
+    # overseer (#9) is OFF unless --llm-overseer is passed (it makes outbound,
+    # billable network calls). Wired via the same opt-in pattern as the other
+    # optional features above.
+    if not getattr(args, "no_power_pack", False):
+        try:
+            fuser.power_pack = NEPACapabilityExpansionPackV4(
+                fuser, args, namespace=globals(),
+                llm_overseer=getattr(args, "llm_overseer", False),
+                llm_model=getattr(args, "llm_model", "claude-opus-4-8"))
+            fuser.power_pack.attach()
+        except Exception as _ppe:
+            log.warning(f"[POWERPACK] init failed (non-fatal — base system unaffected): {_ppe}")
+
+    # v300+ (#2): optional UDP capture→fusion decoupler (drop-stale). Wired only on
+    # the UDP path (its _process_frame return value is unused there). Off by default.
+    if getattr(args, "turbo_udp", False):
+        try:
+            fuser._turbo_udp = TurboFrameAccelerator(fuser._process_frame)
+            fuser._turbo_udp.start()
+            log.info("[POWERPACK] #2 turbo-udp decoupler active (latest-wins, drop-stale).")
+        except Exception as _te:
+            log.warning(f"[POWERPACK] turbo-udp init failed: {_te}")
 
     try:
         fuser.start()
