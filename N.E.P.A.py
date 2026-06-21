@@ -93247,6 +93247,14 @@ class NEPASelfTestSuite:
                         v["state_sensing_real"] and v["neural_payload_zero"])
         except Exception as e:
             self._check("virtual_bci_honest_no_neural_payload", False, str(e)[:80])
+        # Overseer vision: must fuse layers into one scene, preserve provenance, and
+        # perceive the resolution limit (it 'sees' honestly).
+        try:
+            ov = ns["OverseerVisionModel"](None).verify()
+            self._check("overseer_vision_sees_honestly",
+                        ov["scene_built"] and ov["provenance_preserved"] and ov["perceives_resolution_limit"])
+        except Exception as e:
+            self._check("overseer_vision_sees_honestly", False, str(e)[:80])
         return self.report()
 
     def report(self):
@@ -94728,6 +94736,96 @@ class NEPACapabilityExpansionPackV7(NEPACapabilityExpansionPackV6):
             pass
 
 
+class OverseerVisionModel:
+    """The AI overseer's unified PERCEPTION — 'the overseer must be able to see'.
+    Fuses every sensing layer (tracked entities, occupancy world, FDR reflectogram,
+    through-wall + subsurface status, cognitive STATE, reality provenance + physical
+    resolution) into ONE coherent scene the overseer reasons over — the environmental
+    construction. Honest: every perceived element carries provenance (real/estimated/
+    sim) and confidence; the overseer perceives the reality tier and resolution limit,
+    never a fabricated certainty, and never thought-content."""
+    def __init__(self, fuser):
+        self.fuser = fuser
+        self.last_scene = None
+
+    def _occupancy_summary(self):
+        try:
+            pk = getattr(self.fuser, "power_pack", None)
+            if pk is not None and getattr(pk, "world", None) is not None:
+                return pk.world.stats()
+        except Exception:
+            pass
+        return None
+
+    def render_scene(self, pp):
+        pp = pp or {}
+        reality = pp.get("reality") or {}
+        v7 = ((pp.get("power_pack") or {}).get("v7") or {})
+        ents = pp.get("entities") or []
+        scene = {
+            "ts": time.time(),
+            "provenance": pp.get("reality_tier", "UNKNOWN"),
+            "resolution": {"range_m": reality.get("range_resolution_m"),
+                           "cross_range": reality.get("cross_range"),
+                           "photographic": False},
+            "entities": ents,
+            "tracks_n": len(ents),
+            "occupancy": self._occupancy_summary(),
+            "reflectogram": pp.get("reflectogram_peaks", []),
+            "reflectogram_provenance": pp.get("reflectogram_provenance"),
+            "through_wall": v7.get("through_wall"),
+            "subsurface": v7.get("subsurface"),
+            "cognitive_population": pp.get("cognitive_population"),
+            "image_fidelity_ssim": reality.get("image_ssim_superres"),
+        }
+        scene["summary"] = self._summarize(scene)
+        self.last_scene = scene
+        return scene
+
+    def _summarize(self, s):
+        n = len(s["entities"])
+        rr = s["resolution"].get("range_m")
+        parts = [f"Overseer perception [{s['provenance']}]",
+                 f"{n} tracked entit{'y' if n == 1 else 'ies'}"]
+        cls = sorted({e.get('class', '?') for e in s["entities"]})
+        if cls and cls != ['?']:
+            parts.append("classes: " + ",".join(cls))
+        if s["reflectogram"]:
+            parts.append(f"{len(s['reflectogram'])} RF reflections (picture-from-bounce)")
+        occ = s.get("occupancy")
+        if occ:
+            parts.append(f"{occ.get('occupied_voxels', 0)} occupied voxels (accumulated)")
+        if rr:
+            parts.append(f"resolution ~{rr} m, bearing-limited, NOT photographic")
+        cp = s.get("cognitive_population")
+        if cp:
+            parts.append(f"{cp.get('n_people', 0)} people cognitive-STATE (no thoughts)")
+        return " · ".join(parts)
+
+    def describe(self):
+        return self.last_scene["summary"] if self.last_scene else "Overseer: no scene yet"
+
+    def status(self):
+        s = self.last_scene
+        return {"perceiving": s is not None,
+                "entities": (len(s["entities"]) if s else 0),
+                "provenance": (s["provenance"] if s else None),
+                "summary": (s["summary"] if s else None)}
+
+    def verify(self):
+        pp = {"reality_tier": "MEASURED",
+              "reality": {"range_resolution_m": 1.9, "image_ssim_superres": 0.03,
+                          "cross_range": "UNKNOWN — single antenna"},
+              "entities": [{"id": 1, "class": "human", "confidence": 0.8, "position": [2, 2, 0]}],
+              "reflectogram_peaks": [{"distance_m": 15.0, "amplitude": 1.0}],
+              "cognitive_population": {"n_people": 1}}
+        sc = self.render_scene(pp)
+        return {"scene_built": sc["tracks_n"] == 1 and bool(sc["summary"]),
+                "provenance_preserved": sc["provenance"] == "MEASURED",
+                "perceives_resolution_limit": "NOT photographic" in sc["summary"],
+                "summary": sc["summary"]}
+
+
 class NEPACapabilityExpansionPackV8(NEPACapabilityExpansionPackV7):
     """v300++++++++ — frequency-domain reflectometry ('wired link via carriers':
     frequency bounce → reflectogram → picture-from-bounce) wired to the LIVE CSI,
@@ -94770,6 +94868,177 @@ class NEPACapabilityExpansionPackV8(NEPACapabilityExpansionPackV7):
             if isinstance(blk, dict):
                 blk["v8"] = {"fdr": self._fdr_status, "virtual_bci": self.virtual_bci.status(),
                              "live_reflectogram_peaks": pp.get("reflectogram_peaks", [])}
+        except Exception:
+            pass
+
+
+class TotalCorrelationMatrix:
+    """Reverse-engineers scene structure from the RELATIVE receptions across all
+    receivers — the 'total mass correlation matrix'. Builds the cross-reception
+    covariance, eigendecomposes it, and counts independent components above the
+    Marchenko–Pastur noise floor (how many distinct scatterers/movers the ensemble
+    can support) plus a frequency-decoherence measure. The math is exact (physics is
+    consistent, so the measure is); anything INFERRED beyond direct measurement is
+    handed to CrossValidatedInferenceEngine and flagged. Verified: recovers the known
+    number of independent sources."""
+    def correlation(self, X):
+        X = np.asarray(X, dtype=complex)
+        if X.ndim == 1:
+            X = X[None, :]
+        X = X - X.mean(axis=1, keepdims=True)
+        n = X.shape[1]
+        return (X @ X.conj().T) / max(1, n)
+
+    @staticmethod
+    def mp_upper_edge(n_rx, n_samp, noise_var=1.0):
+        beta = n_rx / max(1, n_samp)
+        return float(noise_var * (1 + np.sqrt(beta)) ** 2)
+
+    def independent_components(self, X):
+        X = np.asarray(X, dtype=complex)
+        if X.ndim == 1:
+            X = X[None, :]
+        R = self.correlation(X)
+        w = np.sort(np.real(np.linalg.eigvalsh(R)))[::-1]
+        noise_var = float(np.median(w))                       # robust noise floor
+        thr = self.mp_upper_edge(X.shape[0], X.shape[1], noise_var)
+        k = int(np.sum(w > thr))
+        coherence = float(w[0] / (np.sum(w) + 1e-12))
+        return {"n_independent": k, "mp_threshold": round(thr, 4), "top_eig": round(float(w[0]), 3),
+                "coherence": round(coherence, 3), "decoherence": round(1.0 - coherence, 3),
+                "eigenspectrum": [round(float(x), 3) for x in w[:8]]}
+
+    def verify(self):
+        rng = np.random.default_rng(0)
+        n_rx, n_samp, K = 8, 200, 3
+        S = rng.standard_normal((K, n_samp)) + 1j * rng.standard_normal((K, n_samp))
+        A = rng.standard_normal((n_rx, K)) + 1j * rng.standard_normal((n_rx, K))
+        X = A @ S + 0.1 * (rng.standard_normal((n_rx, n_samp)) + 1j * rng.standard_normal((n_rx, n_samp)))
+        res = self.independent_components(X)
+        return {"true_sources": K, "recovered": res["n_independent"],
+                "correct": res["n_independent"] == K, "decoherence": res["decoherence"]}
+
+    def status(self):
+        v = self.verify()
+        return {"recovers_independent_sources": v["correct"], "decoherence_measure": v["decoherence"]}
+
+
+class CrossValidatedInferenceEngine:
+    """The honest way to 'see what would be deemed impossible' via inference: every
+    reverse-engineered / gap-filled datum is FLAGGED [INFERRED] with a confidence, then
+    CONTINUOUSLY cross-referenced against incoming REAL measurements — confidence rises
+    when corroborated, falls when contradicted; below threshold it is discarded. A
+    periodic sweep re-tests ALL inferred data over time. Inferred data is NEVER promoted
+    to [REAL]; at best it becomes [INFERRED · CROSS-VALIDATED] while it keeps matching
+    reality. This is the no-false-data-compatible form of filling the big picture."""
+    def __init__(self, accept=0.7, discard=0.2):
+        self.items = {}
+        self.accept = float(accept)
+        self.discard = float(discard)
+        self._next = 1
+
+    @staticmethod
+    def _scalar(v):
+        try:
+            return float(v)
+        except Exception:
+            return float(np.mean(np.abs(np.atleast_1d(v))))
+
+    def infer(self, value, prior_conf=0.4, key=None):
+        k = key or f"inf{self._next}"
+        self._next += 1
+        self.items[k] = {"value": value, "conf": float(prior_conf), "flag": "[INFERRED]",
+                         "tests": 0, "hits": 0, "t": time.time()}
+        return k
+
+    def cross_validate(self, key, real_value, tol=1.0):
+        it = self.items.get(key)
+        if it is None:
+            return None
+        it["tests"] += 1
+        consistent = abs(self._scalar(it["value"]) - self._scalar(real_value)) <= tol
+        it["hits"] += int(consistent)
+        it["conf"] = it["conf"] * 0.9 + (0.95 if consistent else 0.05) * 0.1
+        it["t"] = time.time()
+        if it["conf"] >= self.accept:
+            it["flag"] = "[INFERRED · CROSS-VALIDATED]"
+        elif it["conf"] <= self.discard:
+            it["flag"] = "[DISCARDED — failed cross-reference]"
+        else:
+            it["flag"] = "[INFERRED]"
+        return it
+
+    def periodic_retest(self, real_lookup, tol=1.0):
+        for k in list(self.items):
+            rv = real_lookup(k) if callable(real_lookup) else None
+            if rv is not None:
+                self.cross_validate(k, rv, tol)
+        for k in [k for k, it in self.items.items() if it["conf"] <= self.discard]:
+            self.items.pop(k, None)
+        return self.status()
+
+    def status(self):
+        flags = {}
+        for it in self.items.values():
+            flags[it["flag"]] = flags.get(it["flag"], 0) + 1
+        return {"n_inferred": len(self.items), "by_flag": flags}
+
+    def verify(self):
+        e = CrossValidatedInferenceEngine()
+        good = e.infer(10.0)
+        bad = e.infer(99.0)
+        for _ in range(25):
+            e.cross_validate(good, 10.2, tol=1.0)   # corroborated by 'real' data
+            e.cross_validate(bad, 12.0, tol=1.0)    # contradicted by 'real' data
+        g = e.items[good]
+        b = e.items.get(bad)
+        return {"corroborated_flag": g["flag"], "corroborated_conf": round(g["conf"], 2),
+                "contradicted_flag": (b["flag"] if b else "pruned"),
+                "contradicted_conf": (round(b["conf"], 2) if b else 0.0),
+                "never_promoted_to_real": all("REAL" not in it["flag"] for it in e.items.values()),
+                "honest": g["conf"] > 0.6 and (b is None or b["conf"] < 0.4)}
+
+    def status_verify(self):
+        return self.verify()
+
+
+class NEPACapabilityExpansionPackV9(NEPACapabilityExpansionPackV8):
+    """v300+++++++++ — the AI overseer's PERCEPTION layer ('the overseer must be
+    able to see'). Fuses every sensing layer into one coherent scene (OverseerVisionModel)
+    and feeds that fused perception to the overseer (LLM + status), so it reasons over the
+    constructed environment, not raw scalars. Honest: the overseer perceives provenance +
+    the resolution limit, never fabricated certainty or thought-content."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.vision = OverseerVisionModel(fuser)
+        self._scene_log_tick = 0
+
+    def attach(self):
+        super().attach()
+        try:
+            v = self.vision.verify()
+            log.info(f"[OVERSEER-VISION] perception model verified={v['scene_built']} "
+                     f"(provenance preserved={v['provenance_preserved']}, perceives resolution "
+                     f"limit={v['perceives_resolution_limit']}) — the AI overseer can now SEE the "
+                     f"fused constructed environment (real + clearly-labelled estimated).")
+        except Exception:
+            pass
+
+    def on_frame(self, pp):
+        super().on_frame(pp)   # sets entities / reality / reflectogram / cognitive_population
+        try:
+            scene = self.vision.render_scene(pp)
+            pp["overseer_vision"] = scene
+            pp["overseer_vision_summary"] = scene["summary"]   # scalar → LLM sees it next cycle
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v9"] = self.vision.status()
+            # periodic human-readable log of what the overseer perceives
+            self._scene_log_tick += 1
+            if self._scene_log_tick % 200 == 0:
+                log.info(f"[OVERSEER SEES] {scene['summary']}")
         except Exception:
             pass
 
@@ -95083,7 +95352,7 @@ if __name__ == "__main__":
     # optional features above.
     if not getattr(args, "no_power_pack", False):
         try:
-            fuser.power_pack = NEPACapabilityExpansionPackV8(
+            fuser.power_pack = NEPACapabilityExpansionPackV9(
                 fuser, args, namespace=globals(),
                 llm_overseer=getattr(args, "llm_overseer", False),
                 llm_model=getattr(args, "llm_model", "claude-opus-4-8"))
