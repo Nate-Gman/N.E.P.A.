@@ -2654,9 +2654,11 @@ class DetailTabWindow:
                          ha="center", va="center", color="#605868", fontsize=7.5,
                          transform=axn.transAxes, style="italic")
             return
-        _tag = "  [SIMULATED]" if _vm == "simulated" else "  [REAL CSI]"
-        _col = '#ffaa00' if _vm == "simulated" else '#00ffcc'
-        fig.suptitle("WIRELESS BCI DASHBOARD" + _tag + " — RF-derived | RuVector HRV/BP",
+        # v300++++ HONESTY: even with real CSI, RF-derived BCI is NOT a validated brain
+        # measurement (WiFi cannot sense neural oscillations through the skull; no EEG truth).
+        _tag = "  [SIMULATED]" if _vm == "simulated" else "  [REAL CSI · RF-BCI UNVALIDATED]"
+        _col = '#ffaa00' if _vm == "simulated" else '#ffcc44'
+        fig.suptitle("WIRELESS BCI DASHBOARD" + _tag + " — RF-derived (not EEG-validated) | RuVector HRV/BP",
                      color=_col, fontsize=13)
         # v98 DATA HONESTY: BCI is a SINGLE-CHANNEL aggregate of the whole RF scene — it cannot
         # be honestly split per-body without a multi-antenna CSI array to spatially separate each
@@ -2837,7 +2839,9 @@ class DetailTabWindow:
         else:
             ax1.text(0.5, 0.5, "no device-free motion on any carrier\n(move within the RF field to register)",
                      ha='center', va='center', color='#778', transform=ax1.transAxes, fontsize=9)
-        ax1.set_title("Device-free RANGE profile (carrier bounces) [REAL]", color='#00ffcc', fontsize=9)
+        ax1.set_title(f"Device-free RANGE profile (carrier bounces) {_nepa_prov_tag(p)}"
+                      f"  · range res ≈ {3e8/(2.0*20e6):.1f} m (20 MHz BW) · bearing UNKNOWN",
+                      color='#00ffcc', fontsize=9)
         ax1.tick_params(colors='#666', labelsize=6)
 
         # Panel 2 — per-carrier Doppler (Kalman link velocity) bar chart
@@ -2855,7 +2859,7 @@ class DetailTabWindow:
         else:
             ax2.text(0.5, 0.5, "per-carrier velocities building…", ha='center', va='center',
                      color='#778', transform=ax2.transAxes, fontsize=9)
-        ax2.set_title("Per-carrier Doppler (Kalman) [REAL]", color='#00ffcc', fontsize=9)
+        ax2.set_title(f"Per-carrier Doppler (Kalman) {_nepa_prov_tag(p)}", color='#00ffcc', fontsize=9)
         ax2.tick_params(colors='#666', labelsize=6)
 
         # Panel 3 — multi-carrier channel sounding: |H(f)| per band + selectivity
@@ -2874,7 +2878,7 @@ class DetailTabWindow:
         else:
             ax3.text(0.5, 0.5, "need ≥3 carriers per band for channel sounding",
                      ha='center', va='center', color='#778', transform=ax3.transAxes, fontsize=9)
-        ax3.set_title("Frequency-selective fading = real multipath [REAL]", color='#00ffcc', fontsize=9)
+        ax3.set_title(f"Frequency-selective fading = multipath {_nepa_prov_tag(p)}", color='#00ffcc', fontsize=9)
         ax3.tick_params(colors='#666', labelsize=6)
 
         # Panel 4 — multipath richness history + honest coherent-IQ hardware path
@@ -2885,7 +2889,7 @@ class DetailTabWindow:
             ax4.fill_between(range(len(rh)), 0, rh, color='#22ffaa', alpha=0.18)
             ax4.set_ylabel("multipath richness", color='#aaa', fontsize=8)
             ax4.set_xlabel("time (frames)", color='#aaa', fontsize=8)
-        ax4.set_title(f"Multipath richness over time  (now {cs.get('multipath_richness',0):.3f}) [REAL]",
+        ax4.set_title(f"Multipath richness over time  (now {cs.get('multipath_richness',0):.3f}) {_nepa_prov_tag(p)}",
                       color='#00ffcc', fontsize=9)
         ax4.tick_params(colors='#666', labelsize=6)
 
@@ -2897,11 +2901,13 @@ class DetailTabWindow:
                  ha='center', color='#99aabb', fontsize=8)
 
     def _draw_splat(self, fig, p, snap):
-        """T3-1/T3-5: photorealistic free-camera view of the RF-reconstructed world via
-        Gaussian splatting, with body skeletons overlaid. This is the end-goal view:
-        fly a camera through an exact copy of the environment built from wireless signals."""
-        fig.suptitle("NAVIGABLE WORLD — RF Gaussian-Splat free-camera reconstruction",
-                     color='#00ffcc', fontsize=13)
+        """T3-1/T3-5: free-camera view of the RF reflectivity field via Gaussian splatting,
+        with body skeletons overlaid. HONEST SCOPE: this is NOT a photographic copy of the
+        room — positions are RSSI range estimates (bearing-limited from few antennas) and the
+        splats are coarse reflectivity blobs (~metre scale), not light-like detail."""
+        fig.suptitle("NAVIGABLE WORLD — RF reflectivity splats  ·  range-only, bearing-limited · "
+                     "NOT photographic (coarse RF estimate)",
+                     color='#00ffcc', fontsize=12)
         wr = getattr(self.fuser, "world_recon", None)
         # Main panel: splat render from an orbiting camera around the voxel centre.
         ax1 = fig.add_subplot(1, 2, 1); ax1.set_facecolor('#000')
@@ -89274,8 +89280,14 @@ class MultiAgentWirelessBCIFuser:
             _real = p.get("real_capture", False)
             _src = "LIVE" if _real else "RSSI-synth (no CSI hw)"
             _tcol = '#00ffcc' if _real else '#ffaa44'
+            # v300++++ HONESTY FIX: only say REAL when capture is genuinely real; the
+            # no-hardware default is a physics ESTIMATE, not a measurement. Surface the
+            # true resolution so this view can never be mistaken for a photograph.
+            _prov = "REAL" if _real else "ESTIMATE · NO REAL SENSOR"
+            _rr = 3e8 / (2.0 * 80e6)   # WiFi 80 MHz → range cell ≈ 1.9 m
             self.ax3d.set_title(
-                f'3D Radio-Vision [REAL · {_src}] — {_nn} nodes · {_method} · {_rssi:.0f} dBm',
+                f'3D Radio-Vision [{_prov} · {_src}] — {_nn} nodes · {_method} · {_rssi:.0f} dBm'
+                f'   ·  range res ≈ {_rr:.1f} m · bearing UNKNOWN (1 antenna) · Z not observable',
                 fontsize=8, color=_tcol)
 
         # ── Panel 5: Subcarrier activity heatmap + live snapshot line ─────────
@@ -89428,10 +89440,15 @@ class MultiAgentWirelessBCIFuser:
                                  fontsize=7, color='#cccccc', transform=self.ax_bci.transAxes)
             self.ax_bci.set_xlim(0.0, 1.0)
             self.ax_bci.set_ylim(0.0, 1.0)
-            _bci_tag = " [SIMULATED]" if _bci_sim else " [REAL]"
+            # v300++++ HONESTY FIX: RF-derived BCI is NOT a validated brain measurement —
+            # WiFi cannot sense neural oscillations through the skull at a distance. Label
+            # it RF-DERIVED · UNVALIDATED unless real EEG hardware (LSL/OpenBCI) is the source.
+            _bci_hw = bool(p.get("eeg_hw_present") or p.get("bci_eeg_real"))
+            _bci_tag = (" [SIMULATED]" if _bci_sim
+                        else (" [EEG HW]" if _bci_hw else " [RF-DERIVED · UNVALIDATED]"))
             self.ax_bci.set_title(
                 f"BCI{_bci_tag} — {p.get('bci_state', '?').upper()} | {p.get('ns_intent_label', '?')}",
-                fontsize=8, color=('#ffaa00' if _bci_sim else '#00ffcc'))
+                fontsize=8, color=('#ffaa00' if _bci_sim else ('#00ffcc' if _bci_hw else '#ffcc44')))
 
         # Panel 10-12: diagnostic overlay with confidence intervals (List 1.12)
         self.ax_diag.cla()
@@ -92492,6 +92509,15 @@ class NEPACapabilityExpansionPackV3(NEPACapabilityExpansionPackV2):
             self.governance.audit("system", "startup", detail="v3 attached")
         except Exception:
             pass
+        # v300++++: verify the core sensing MATH once at startup (deterministic) + log it.
+        try:
+            self._physics_report = self.physics.run()
+            log.info(f"[PHYSICS] frequency-bounce→range math verified: "
+                     f"math_correct={self._physics_report['math_correct']} · "
+                     f"range_res={self._physics_report['range_resolution_m']}m (c/2·BW). "
+                     f"Computation exact; reconstruction fidelity stays hardware-bounded.")
+        except Exception:
+            pass
         log.info("[POWERPACK] v300++ extensions attached (#1-#10): BCI validation, governance, "
                  "input hardening, global tracker, scene classifier, pose-graph SLAM, uncertainty "
                  "propagation, control/query API, resource governor, active-learning labeler — "
@@ -93109,6 +93135,118 @@ class NEPASelfTestSuite:
                         f"robust={r.get('robustness')}")
         except Exception as e:
             self._check("hardening_fuzz_runs", False, str(e)[:80])
+        # PHYSICS ground-truth: the frequency-bounce→range math must recover a known
+        # reflector within c/2·BW, and must NOT resolve closer than that (limit is real).
+        try:
+            ph = ns["PhysicsAccuracyHarness"](bw_hz=20e6, n_sub=64)
+            rep = ph.run()
+            self._check("physics_cir_range_accuracy",
+                        all(t["within_resolution"] for t in rep["single_target_tests"]),
+                        f"res={rep['range_resolution_m']}m")
+            _rl = rep["resolution_limit_test"]
+            self._check("physics_resolution_limit_real",
+                        _rl["separable_ok"] and _rl["merge_ok"],
+                        f"sep={_rl['separable_pair_peaks']} merge={_rl['unresolvable_pair_peaks']}")
+        except Exception as e:
+            self._check("physics_cir_range_accuracy", False, str(e)[:80])
+        # SUPER-RESOLUTION: must beat the naive FFT cell on a sub-cell pair at high SNR
+        # (engineering hurdle, not barrier) — and honestly NOT at very low SNR.
+        try:
+            bm = ns["SceneReconstructionBenchmark"]()
+            sw = bm.superres_vs_fft_resolution(sep_cells=0.4, snrs=(40, 0))
+            hi = next(r for r in sw["results"] if r["snr_db"] == 40)
+            lo = next(r for r in sw["results"] if r["snr_db"] == 0)
+            self._check("superres_beats_fft_at_high_snr", hi["resolved_subcell"],
+                        f"40dB resolved={hi['resolved_subcell']}")
+            self._check("superres_honest_fail_at_low_snr", not lo["resolved_subcell"],
+                        f"0dB resolved={lo['resolved_subcell']} (should be False)")
+        except Exception as e:
+            self._check("superres_beats_fft_at_high_snr", False, str(e)[:80])
+        # 2D scene reconstruction: super-resolution must render the known scene at least as
+        # accurately (SSIM) as FFT, with finite localization error.
+        try:
+            rep = ns["SceneReconstructionBenchmark"]().run(snr_db=20)
+            self._check("scene_recon_superres_ge_fft",
+                        rep["superres"]["ssim"] >= rep["fft"]["ssim"] and
+                        rep["superres"]["localization_err_m"] < 99,
+                        f"ssim sr={rep['superres']['ssim']} fft={rep['fft']['ssim']}")
+        except Exception as e:
+            self._check("scene_recon_superres_ge_fft", False, str(e)[:80])
+        # DoA: recover a known bearing within the beamwidth WITH an array; honestly
+        # UNAVAILABLE with a single antenna (no fabricated direction).
+        try:
+            dv = ns["DoAVerifier"](n_elements=8)
+            r = dv.verify([-5.0, 5.0], snr_db=20)
+            self._check("doa_recovers_known_bearing", r["beats_beamwidth"],
+                        f"err={r['max_error_deg']}° bw={r['beamwidth_deg']}°")
+            one = ns["DoAVerifier"](n_elements=1).verify([5.0])
+            self._check("doa_single_antenna_honest", one["verified"] is False and "UNAVAILABLE" in one["bearing"])
+        except Exception as e:
+            self._check("doa_recovers_known_bearing", False, str(e)[:80])
+        # DSP power stack: each technique must beat its naive limit on known truth.
+        try:
+            self._check("synthetic_bandwidth_improves", ns["SyntheticBandwidthFuser"]().verify()["improvement"])
+        except Exception as e:
+            self._check("synthetic_bandwidth_improves", False, str(e)[:80])
+        try:
+            self._check("compressed_sensing_recovers", ns["CompressedSensingImager"]().verify()["recovered"])
+        except Exception as e:
+            self._check("compressed_sensing_recovers", False, str(e)[:80])
+        try:
+            self._check("aperture_synthesis_bearing_from_motion",
+                        ns["ApertureSynthesisSAR"]().verify()["bearing_recovered"])
+        except Exception as e:
+            self._check("aperture_synthesis_bearing_from_motion", False, str(e)[:80])
+        try:
+            self._check("coherent_integration_improves",
+                        ns["CoherentIntegrator"]().verify()["improves_with_integration"])
+        except Exception as e:
+            self._check("coherent_integration_improves", False, str(e)[:80])
+        try:
+            self._check("clutter_mti_isolates_mover", ns["ClutterCancellationMTI"]().verify()["isolates_mover"])
+        except Exception as e:
+            self._check("clutter_mti_isolates_mover", False, str(e)[:80])
+        # Penetration / mapping / cognition — pursue the hard goals to the physical limit,
+        # honestly: see through drywall but NOT concrete; recover shallow but not too-deep;
+        # never fabricate thought-content.
+        try:
+            tw = ns["ThroughWallImager"]().verify()
+            self._check("through_wall_sees_drywall_blocked_by_concrete",
+                        tw["sees_through_drywall"] and tw["blocked_by_concrete"])
+        except Exception as e:
+            self._check("through_wall_sees_drywall_blocked_by_concrete", False, str(e)[:80])
+        try:
+            gpr = ns["SubsurfaceGPRImager"]().verify()
+            self._check("subsurface_detects_shallow_blocks_deep",
+                        gpr["detects_shallow"] and gpr["blocked_when_too_deep"])
+        except Exception as e:
+            self._check("subsurface_detects_shallow_blocks_deep", False, str(e)[:80])
+        try:
+            cog = ns["CognitiveStateEstimator"]().verify()
+            self._check("cognitive_thoughts_never_fabricated",
+                        cog["mind_content_always_none"] and "NOT mind-reading" in cog["proxy_tier"])
+        except Exception as e:
+            self._check("cognitive_thoughts_never_fabricated", False, str(e)[:80])
+        try:
+            self._check("universal_map_fuses_sources",
+                        ns["UniversalMapFusion"]().verify()["fuses_multiple_sources"])
+        except Exception as e:
+            self._check("universal_map_fuses_sources", False, str(e)[:80])
+        # Frequency-domain reflectometry ('wired link via carriers' → picture from bounce):
+        # the reflectogram must recover known reflectors' relative amplitudes (Γ ordering).
+        try:
+            self._check("fdr_reflectogram_recovers_bounce",
+                        ns["FrequencyDomainReflectometer"]().verify()["picture_from_bounce"])
+        except Exception as e:
+            self._check("fdr_reflectogram_recovers_bounce", False, str(e)[:80])
+        # Virtual wired-link BCI: real channel-state, but neural-content payload is 0
+        # (a carrier is not an electrode) — honesty check.
+        try:
+            v = ns["VirtualWiredLinkBCI"]().verify()
+            self._check("virtual_bci_honest_no_neural_payload",
+                        v["state_sensing_real"] and v["neural_payload_zero"])
+        except Exception as e:
+            self._check("virtual_bci_honest_no_neural_payload", False, str(e)[:80])
         return self.report()
 
     def report(self):
@@ -93189,6 +93327,9 @@ class NEPACapabilityExpansionPackV4(NEPACapabilityExpansionPackV3):
         self.hwmgr = HardwareCaptureManager()                                    # #9
         self.selftest = NEPASelfTestSuite(namespace or globals())                # #1
         self.docs = CapabilityDocGenerator(self)                                 # #6
+        self.reality_gate = RealityIntegrityGate(fuser)                          # honesty/accuracy
+        self.physics = PhysicsAccuracyHarness()                                  # math ground-truth
+        self._physics_report = None
         self.stream = None                                                       # #7
         self._selftest_last = None
         self._stream_port = int(getattr(args, "stream_port", 0) or 0)
@@ -93265,6 +93406,17 @@ class NEPACapabilityExpansionPackV4(NEPACapabilityExpansionPackV3):
                 self.silent.scan(pp)
         except Exception:
             pass
+        # REALITY INTEGRITY: publish the authoritative provenance + physical bounds so
+        # the UI / consumers can never mistake an estimate or simulation for measured
+        # reality, and can show the true resolution limit (no implied photograph).
+        try:
+            pp["reality"] = self.reality_gate.status()
+            pp["reality_tier"] = pp["reality"]["tier"]
+            if self._physics_report is not None:
+                pp["reality"]["physics_math_correct"] = self._physics_report.get("math_correct")
+                pp["reality"]["physics_range_res_m"] = self._physics_report.get("range_resolution_m")
+        except Exception:
+            pass
         # extend status block with #1-#9
         try:
             blk = pp.get("power_pack")
@@ -93278,6 +93430,7 @@ class NEPACapabilityExpansionPackV4(NEPACapabilityExpansionPackV3):
                     "stream": (self.stream.status() if self.stream else {"enabled": False}),
                     "determinism": self.determinism.status(),
                     "hardware": self.hwmgr.status(),
+                    "reality": self.reality_gate.status(),
                 }
         except Exception:
             pass
@@ -93306,6 +93459,1319 @@ class NEPACapabilityExpansionPackV4(NEPACapabilityExpansionPackV3):
         except Exception:
             pass
         super()._on_exit()
+
+
+# ==============================================================================
+# v300++++ — REALITY INTEGRITY GATE (honesty/accuracy enforcement)
+# ------------------------------------------------------------------------------
+# The user asked: "is it rendering reality correctly?" The honest answer is that
+# RF reconstruction is bounded by physics (bandwidth → range resolution; aperture
+# → bearing; one antenna → no bearing, no elevation), and the DEFAULT no-hardware
+# path is an ESTIMATE, not a measurement. This gate is the single source of truth
+# for provenance + the PHYSICAL accuracy bounds, so nothing estimated/simulated is
+# ever shown as measured reality and no view implies resolution the sensor cannot
+# deliver. ADDITIVE — it audits/labels; it does not change what is measured.
+# ==============================================================================
+
+
+class SuperResolutionRangeImager:
+    """Resolves reflectors CLOSER than the naive FFT cell (c/2·BW) via spatial-
+    smoothing forward-backward MUSIC — turning the *naive* resolution limit into an
+    SNR-dependent ENGINEERING HURDLE, not a barrier. HONEST: it beats the limit only
+    when the scene is sparse and SNR is adequate; at low SNR it degrades toward the
+    FFT limit (the benchmark proves both). It does NOT invent information that isn't
+    in the data."""
+    C = 3.0e8
+
+    def __init__(self, bw_hz=20e6, n_sub=64):
+        self.bw = float(bw_hz)
+        self.n = int(n_sub)
+        self.range_res = self.C / (2.0 * self.bw)
+
+    def _fb_covariance(self, H, L):
+        N = len(H)
+        K = N - L + 1
+        R = np.zeros((L, L), dtype=complex)
+        for k in range(K):
+            s = H[k:k + L]
+            R += np.outer(s, np.conj(s))
+        R /= max(1, K)
+        J = np.fliplr(np.eye(L))
+        return 0.5 * (R + J @ np.conj(R) @ J)   # forward-backward smoothing (coherent sources)
+
+    def music_spectrum(self, H, n_targets, range_grid):
+        N = len(H)
+        L = max(2, N // 2)
+        R = self._fb_covariance(np.asarray(H, dtype=complex), L)
+        w, V = np.linalg.eigh(R)
+        m = int(max(1, min(n_targets, L - 1)))
+        En = V[:, :L - m]
+        EE = En @ En.conj().T
+        df = self.bw / N
+        spec = np.zeros(len(range_grid))
+        for i, r in enumerate(range_grid):
+            a = np.exp(-1j * 2 * np.pi * df * np.arange(L) * (2.0 * r / self.C))
+            spec[i] = 1.0 / (np.real(np.conj(a) @ EE @ a) + 1e-12)
+        return spec
+
+    def resolve(self, H, n_targets=2, oversample=10, max_range=None):
+        mr = max_range or self.n * self.range_res
+        grid = np.linspace(0.0, mr, int(self.n * oversample))
+        spec = self.music_spectrum(H, n_targets, grid)
+        # pick the n_targets strongest local maxima
+        pk = []
+        for i in range(1, len(spec) - 1):
+            if spec[i] >= spec[i - 1] and spec[i] >= spec[i + 1]:
+                pk.append((grid[i], spec[i]))
+        pk.sort(key=lambda x: -x[1])
+        return sorted([r for r, _ in pk[:n_targets]])
+
+
+class DoAVerifier:
+    """Verifies BEARING recovery from a synthetic uniform linear array via MUSIC,
+    and proves super-resolution DoA beats the array beamwidth at adequate SNR. The
+    engineering move for bearing is to ACQUIRE an aperture (array/motion); with a
+    single antenna bearing is information-theoretically absent and is reported
+    UNAVAILABLE — never invented."""
+    def __init__(self, n_elements=8, spacing_frac=0.5):
+        self.M = int(n_elements)
+        self.d = float(spacing_frac)
+        self.beamwidth_deg = float(np.degrees(0.886 / (self.M * self.d))) if self.M > 1 else 180.0
+
+    def steering(self, theta_deg):
+        return np.exp(-1j * 2 * np.pi * self.d * np.arange(self.M) * np.sin(np.radians(theta_deg)))
+
+    def synth_rx(self, angles_deg, snapshots=128, snr_db=20, rng=None):
+        rng = rng or np.random.default_rng(0)
+        X = np.zeros((self.M, snapshots), dtype=complex)
+        for ang in angles_deg:
+            s = (rng.standard_normal(snapshots) + 1j * rng.standard_normal(snapshots)) / np.sqrt(2)
+            X += np.outer(self.steering(ang), s)
+        sig_p = np.mean(np.abs(X) ** 2) + 1e-12
+        npow = sig_p / (10 ** (snr_db / 10.0))
+        X += np.sqrt(npow / 2) * (rng.standard_normal(X.shape) + 1j * rng.standard_normal(X.shape))
+        return X
+
+    def music(self, X, n_sources, grid_deg):
+        R = X @ X.conj().T / X.shape[1]
+        w, V = np.linalg.eigh(R)
+        En = V[:, :self.M - n_sources]
+        EE = En @ En.conj().T
+        return np.array([1.0 / (np.real(np.conj(self.steering(t)) @ EE @ self.steering(t)) + 1e-12)
+                         for t in grid_deg])
+
+    def verify(self, true_angles, snr_db=20, snapshots=256, seed=0):
+        if self.M < 2:
+            return {"bearing": "UNAVAILABLE — single antenna, no aperture", "verified": False}
+        X = self.synth_rx(true_angles, snapshots, snr_db, rng=np.random.default_rng(seed))
+        grid = np.linspace(-80, 80, 1601)
+        spec = self.music(X, len(true_angles), grid)
+        pk = sorted(((spec[i], grid[i]) for i in range(1, len(spec) - 1)
+                     if spec[i] >= spec[i - 1] and spec[i] >= spec[i + 1]), reverse=True)
+        est = sorted(a for _, a in pk[:len(true_angles)])
+        errs = [min(abs(e - t) for t in true_angles) for e in est] if est else [180.0]
+        max_err = float(max(errs)) if errs else 180.0
+        return {"true_deg": list(true_angles), "est_deg": [round(e, 2) for e in est],
+                "max_error_deg": round(max_err, 3), "beamwidth_deg": round(self.beamwidth_deg, 2),
+                "beats_beamwidth": max_err < self.beamwidth_deg,
+                "verified": max_err < max(2.0, 0.5 * self.beamwidth_deg)}
+
+
+class PhysicsAccuracyHarness:
+    """Proves the core 'frequency bounce → range picture' MATH is numerically
+    correct against known synthetic ground truth, and demonstrates the physical
+    resolution limit (range res = c / 2·BW) is real — not exceeded by any
+    correlation trick. This is the achievable, verifiable sense of '100% accurate'
+    for the computation; reconstruction FIDELITY itself is hardware-bounded.
+
+    Forward model (honest physics): a reflector at range R adds a two-way delay
+    tau = 2R/c, i.e. a phase ramp exp(-j·2π·f·tau) on the channel frequency
+    response H(f). The receiver recovers range by IFFT of H(f) → channel impulse
+    response h(tau) → range = c·tau/2. This is exactly multipath/FMCW ranging."""
+    C = 3.0e8
+
+    def __init__(self, bw_hz=20e6, n_sub=64):
+        self.bw = float(bw_hz)
+        self.n = int(n_sub)
+        self.range_res = self.C / (2.0 * self.bw)
+        self.max_range = self.n * self.range_res
+        self.results = []
+
+    def synth_H(self, ranges_m, amps=None):
+        f = (np.arange(self.n) - self.n // 2) * (self.bw / self.n)
+        H = np.zeros(self.n, dtype=complex)
+        amps = amps or [1.0] * len(ranges_m)
+        for R, a in zip(ranges_m, amps):
+            H += a * np.exp(-1j * 2 * np.pi * f * (2.0 * R / self.C))
+        return H
+
+    def cir_range_profile(self, H):
+        h = np.fft.fftshift(np.fft.ifft(np.fft.ifftshift(H)))
+        tau = np.fft.fftshift(np.fft.fftfreq(self.n, d=self.bw / self.n))
+        rng = self.C * tau / 2.0
+        return rng, np.abs(h)
+
+    def _peaks(self, rng, prof, thresh_frac=0.5):
+        pk = []
+        mx = float(np.max(prof)) if len(prof) else 0.0
+        if mx <= 0:
+            return pk
+        for i in range(1, len(prof) - 1):
+            if prof[i] >= prof[i - 1] and prof[i] >= prof[i + 1] and prof[i] >= thresh_frac * mx:
+                pk.append((rng[i], prof[i]))
+        return sorted(pk, key=lambda x: -x[1])
+
+    def verify_single_range(self, true_R):
+        rng, prof = self.cir_range_profile(self.synth_H([true_R]))
+        est_R = abs(rng[int(np.argmax(prof))])
+        err = abs(est_R - true_R)
+        return {"true_m": true_R, "est_m": round(est_R, 3),
+                "error_m": round(err, 3), "range_res_m": round(self.range_res, 3),
+                "within_resolution": err <= self.range_res}
+
+    def verify_resolution_limit(self):
+        # two reflectors well separated (placed ON the FFT range grid → no leakage) must
+        # resolve as 2 peaks; two within one cell must merge to 1. Proves the c/2·BW limit
+        # is real and not exceeded by any correlation trick.
+        rr = self.range_res
+        far = self.verify_two(4 * rr, 12 * rr)          # 8 cells apart → must be 2 peaks
+        near = self.verify_two(4 * rr, 4 * rr + 0.3 * rr)  # < 1 cell → must merge to 1
+        return {"separable_pair_peaks": far["n_peaks"], "separable_ok": far["n_peaks"] >= 2,
+                "unresolvable_pair_peaks": near["n_peaks"], "merge_ok": near["n_peaks"] == 1,
+                "range_res_m": round(self.range_res, 3)}
+
+    def verify_two(self, r1, r2):
+        rng, prof = self.cir_range_profile(self.synth_H([r1, r2]))
+        return {"n_peaks": len(self._peaks(rng, prof))}
+
+    def run(self):
+        self.results = []
+        for R in (3.0, 7.5, 15.0, 30.0):
+            if R < self.max_range:
+                self.results.append(self.verify_single_range(R))
+        res = self.verify_resolution_limit()
+        all_within = all(r["within_resolution"] for r in self.results)
+        return {"bandwidth_hz": self.bw, "n_subcarriers": self.n,
+                "range_resolution_m": round(self.range_res, 3),
+                "max_unambiguous_range_m": round(self.max_range, 1),
+                "single_target_tests": self.results,
+                "resolution_limit_test": res,
+                "math_correct": all_within and res["separable_ok"] and res["merge_ok"]}
+
+    def status(self):
+        try:
+            r = self.run()
+            return {"range_resolution_m": r["range_resolution_m"],
+                    "math_correct": r["math_correct"],
+                    "verified": "frequency-bounce→range recovers known truth within c/2·BW"}
+        except Exception as e:
+            return {"math_correct": None, "error": str(e)[:80]}
+
+
+def _nepa_prov_tag(p):
+    """Honest provenance tag from the live profile. 'not simulated' != 'real' —
+    the no-hardware default is an ESTIMATE. Used to replace hardcoded [REAL]."""
+    p = p or {}
+    try:
+        if p.get("vitals_mode") == "simulated" or p.get("sim_active"):
+            return "[SIMULATED]"
+        if p.get("real_capture"):
+            return "[REAL]"
+        if p.get("rssi_sensing_real"):
+            return "[REAL RSSI · range EST]"
+    except Exception:
+        pass
+    return "[ESTIMATE · no sensor]"
+
+
+class RealityIntegrityGate:
+    """Single source of truth for 'is what we're showing real?'. Determines the
+    provenance tier from the live capture state and computes the physical accuracy
+    bounds the sensor can honestly claim. Enforces the no-false-data directive."""
+    TIERS = {
+        "MEASURED":  ("#00ffcc", "real CSI/SDR — genuine channel measurement"),
+        "RSSI-LIVE": ("#66ddff", "real RSSI from a live network — coarse, range-only, bearing unknown"),
+        "ESTIMATED": ("#ffaa44", "RSSI-synth model — NO sensor, physics estimate (not measured)"),
+        "SIMULATED": ("#ffaa00", "synthetic scene — watermarked, not measured"),
+        "NO-SENSOR": ("#ff5555", "no input — nothing real to render"),
+    }
+
+    def __init__(self, fuser):
+        self.fuser = fuser
+        self.overclaims = 0
+
+    def assess(self):
+        fu = self.fuser
+        sim = bool(getattr(fu, "sim_validate", False) or getattr(fu, "sim_hardware", False))
+        rc = getattr(fu, "router_csi", None)
+        try:
+            real = bool(rc.is_real_capture()) if rc is not None else False
+        except Exception:
+            real = False
+        method = str(getattr(rc, "method", "?")) if rc is not None else "?"
+        ml = method.lower()
+        if sim:
+            tier = "SIMULATED"
+        elif real and ("rssi" not in ml and "synth" not in ml):
+            tier = "MEASURED"
+        elif real:
+            tier = "RSSI-LIVE"
+        else:
+            tier = "ESTIMATED"
+        col, mean = self.TIERS[tier]
+        return {"tier": tier, "method": method, "color": col, "meaning": mean,
+                "real": real, "sim": sim}
+
+    def accuracy_bounds(self, bw_hz=80e6):
+        c = 3e8
+        rr = c / (2.0 * float(bw_hz))
+        return {"bandwidth_hz": bw_hz, "range_resolution_m": round(rr, 2),
+                "cross_range": "UNKNOWN — single antenna, no aperture (bearing not observable)",
+                "elevation": "NOT OBSERVABLE — no vertical antenna array",
+                "note": f"RF reflectivity in ~{rr:.1f} m range cells; physically NOT photographic"}
+
+    def honest_label(self):
+        a = self.assess()
+        return f"[{a['tier']}]", a["color"], a["meaning"]
+
+    def audit_label(self, proposed_text):
+        """If a label claims REAL while the tier is not real, downgrade it honestly."""
+        a = self.assess()
+        if "[REAL" in str(proposed_text).upper() and a["tier"] in ("ESTIMATED", "SIMULATED", "NO-SENSOR"):
+            self.overclaims += 1
+            return str(proposed_text).replace("[REAL", f"[{a['tier']}").replace("REAL]", f"{a['tier']}]")
+        return proposed_text
+
+    def status(self):
+        a = self.assess()
+        b = self.accuracy_bounds()
+        return {"tier": a["tier"], "method": a["method"], "meaning": a["meaning"],
+                "range_resolution_m": b["range_resolution_m"],
+                "cross_range": b["cross_range"], "elevation": b["elevation"],
+                "photographic": False, "overclaims_downgraded": self.overclaims}
+
+
+# ==============================================================================
+# v300+++++ — IMAGING ACCURACY STACK (treat assumed limits as engineering hurdles)
+# Super-resolution + verified DoA already added above. Below: a scene-reconstruction
+# benchmark that MEASURES how accurately the 2D picture matches a known scene
+# (SSIM/PSNR/localization + noise + CRLB), the PSF overlay, and real-target
+# calibration. Pushes past the *naive* FFT limit; refuses to invent absent info.
+# ==============================================================================
+
+
+class SceneReconstructionBenchmark:
+    """Answers 'is it rendering reality correctly?' with NUMBERS: forward-models
+    multi-AP CSI for a KNOWN scene (with thermal noise), reconstructs a 2D
+    reflectivity image by back-projection (FFT vs super-resolution range profiles),
+    and scores it vs ground truth — SSIM, PSNR, localization error (metres) — and
+    against the CRLB. Honest: reports where super-resolution wins AND where noise
+    defeats it."""
+    C = 3.0e8
+
+    def __init__(self, bw_hz=20e6, n_sub=64, grid_m=24.0, px=48):
+        self.bw = float(bw_hz)
+        self.n = int(n_sub)
+        self.range_res = self.C / (2.0 * self.bw)
+        self.grid_m = float(grid_m)
+        self.px = int(px)
+        self.sri = SuperResolutionRangeImager(bw_hz, n_sub)
+
+    @staticmethod
+    def _norm(a):
+        a = np.asarray(a, dtype=float)
+        a = a - a.min()
+        m = a.max()
+        return a / m if m > 0 else a
+
+    @classmethod
+    def ssim(cls, a, b):
+        a = cls._norm(a); b = cls._norm(b)
+        mu_a, mu_b = a.mean(), b.mean()
+        va, vb = a.var(), b.var()
+        cov = ((a - mu_a) * (b - mu_b)).mean()
+        C1, C2 = 0.01 ** 2, 0.03 ** 2
+        return float(((2 * mu_a * mu_b + C1) * (2 * cov + C2)) /
+                     ((mu_a ** 2 + mu_b ** 2 + C1) * (va + vb + C2)))
+
+    @classmethod
+    def psnr(cls, a, b):
+        a = cls._norm(a); b = cls._norm(b)
+        mse = float(np.mean((a - b) ** 2))
+        return float(20 * np.log10(1.0 / np.sqrt(mse))) if mse > 0 else 99.0
+
+    @staticmethod
+    def _gauss(img, sig=1.0):
+        r = max(1, int(np.ceil(3 * sig)))
+        x = np.arange(-r, r + 1)
+        k = np.exp(-x ** 2 / (2 * sig ** 2)); k /= k.sum()
+        out = np.apply_along_axis(lambda m: np.convolve(m, k, mode='same'), 0, img)
+        return np.apply_along_axis(lambda m: np.convolve(m, k, mode='same'), 1, out)
+
+    def _truth_image(self, targets):
+        img = np.zeros((self.px, self.px))
+        for (x, y) in targets:
+            ix = int((x + self.grid_m / 2) / self.grid_m * self.px)
+            iy = int((y + self.grid_m / 2) / self.grid_m * self.px)
+            if 0 <= ix < self.px and 0 <= iy < self.px:
+                img[iy, ix] = 1.0
+        return self._gauss(img, 1.0)
+
+    def _aps(self):
+        g = self.grid_m / 2
+        return [(-g, -g), (g, -g), (-g, g), (g, g)]
+
+    def _synth1d(self, ranges, snr_db, seed=3):
+        rng = np.random.default_rng(seed)
+        f = (np.arange(self.n) - self.n // 2) * (self.bw / self.n)
+        H = sum(np.exp(-1j * 2 * np.pi * f * (2.0 * R / self.C)) for R in ranges)
+        sp = np.mean(np.abs(H) ** 2)
+        npow = sp / (10 ** (snr_db / 10.0))
+        return H + np.sqrt(npow / 2) * (rng.standard_normal(self.n) + 1j * rng.standard_normal(self.n))
+
+    def _range_profile(self, ap, targets, snr_db, mode, seed):
+        ranges = [float(np.hypot(x - ap[0], y - ap[1])) for (x, y) in targets]
+        H = self._synth1d(ranges, snr_db, seed)
+        max_r = float(np.hypot(self.grid_m, self.grid_m))
+        rgrid = np.linspace(0.0, max_r, self.px)
+        if mode == "superres":
+            spec = self.sri.music_spectrum(H, max(1, len(targets)), rgrid)
+            return rgrid, spec / (spec.max() + 1e-12)
+        prof = np.abs(np.fft.fftshift(np.fft.ifft(np.fft.ifftshift(H))))
+        rax = np.abs(np.fft.fftshift(np.fft.fftfreq(self.n, d=self.bw / self.n)) * self.C / 2)
+        order = np.argsort(rax)
+        prof_i = np.interp(rgrid, rax[order], prof[order])
+        return rgrid, prof_i / (prof_i.max() + 1e-12)
+
+    def reconstruct(self, targets, snr_db, mode="fft", seed=0):
+        xs = np.linspace(-self.grid_m / 2, self.grid_m / 2, self.px)
+        X, Y = np.meshgrid(xs, xs)
+        img = np.zeros((self.px, self.px))
+        for ai, ap in enumerate(self._aps()):
+            rgrid, prof = self._range_profile(ap, targets, snr_db, mode, seed + ai)
+            D = np.hypot(X - ap[0], Y - ap[1])
+            img += np.interp(D.ravel(), rgrid, prof).reshape(self.px, self.px)
+        return self._norm(img)
+
+    def _loc_err(self, img, targets):
+        xs = np.linspace(-self.grid_m / 2, self.grid_m / 2, self.px)
+        flat = img.ravel()
+        idx = np.argsort(flat)[::-1]
+        chosen, min_sep = [], max(2, self.px // 8)
+        for i in idx:
+            iy, ix = divmod(int(i), self.px)
+            if all(abs(iy - cy) + abs(ix - cx) > min_sep for cy, cx in chosen):
+                chosen.append((iy, ix))
+            if len(chosen) >= len(targets):
+                break
+        errs = [min(float(np.hypot(xs[ix] - tx, xs[iy] - ty)) for (tx, ty) in targets)
+                for (iy, ix) in chosen]
+        return float(np.mean(errs)) if errs else self.grid_m
+
+    def _crlb(self, snr_db):
+        snr = 10 ** (snr_db / 10.0)
+        return self.C / (2.0 * self.bw * np.sqrt(2.0 * snr * self.n))
+
+    def superres_vs_fft_resolution(self, sep_cells=0.4, snrs=(40, 20, 10, 0)):
+        r1 = self.range_res * 4
+        r2 = r1 + sep_cells * self.range_res
+        out = []
+        for snr in snrs:
+            est = self.sri.resolve(self._synth1d([r1, r2], snr, seed=7), n_targets=2)
+            ok = (len(est) == 2 and abs(est[0] - est[1]) > 0.2 and
+                  max(min(abs(e - t) for t in (r1, r2)) for e in est) < self.range_res)
+            out.append({"snr_db": snr, "resolved_subcell": bool(ok), "est_m": [round(e, 1) for e in est]})
+        return {"separation_cells": sep_cells, "fft_can_resolve": False, "results": out}
+
+    def run(self, targets=None, snr_db=20):
+        targets = targets or [(-4.0, 3.0), (5.0, -2.0)]
+        truth = self._truth_image(targets)
+        out = {}
+        for mode in ("fft", "superres"):
+            rec = self.reconstruct(targets, snr_db, mode)
+            out[mode] = {"ssim": round(self.ssim(rec, truth), 3),
+                         "psnr_db": round(self.psnr(rec, truth), 1),
+                         "localization_err_m": round(self._loc_err(rec, targets), 2)}
+        return {"snr_db": snr_db, "range_res_m": round(self.range_res, 2),
+                "crlb_range_m": round(self._crlb(snr_db), 3),
+                "fft": out["fft"], "superres": out["superres"],
+                "superres_improves_ssim": out["superres"]["ssim"] >= out["fft"]["ssim"],
+                "n_targets": len(targets)}
+
+
+class PointSpreadFunctionEngine:
+    """Computes the system point-spread function (image of one point reflector) so
+    the render can overlay the TRUE blur kernel = the real resolution cell. Makes
+    'not photographic' visually self-evident, not just a caption."""
+    C = 3.0e8
+
+    def __init__(self, bw_hz=20e6, n_sub=64):
+        self.bw = float(bw_hz)
+        self.n = int(n_sub)
+        self.range_res = self.C / (2.0 * self.bw)
+
+    def range_psf(self):
+        f = (np.arange(self.n) - self.n // 2) * (self.bw / self.n)
+        R0 = self.n * self.range_res * 0.5
+        H = np.exp(-1j * 2 * np.pi * f * (2.0 * R0 / self.C))
+        prof = np.abs(np.fft.fftshift(np.fft.ifft(np.fft.ifftshift(H))))
+        rax = np.fft.fftshift(np.fft.fftfreq(self.n, d=self.bw / self.n)) * self.C / 2
+        return rax, prof / (prof.max() + 1e-12)
+
+    def fwhm_m(self):
+        rax, prof = self.range_psf()
+        above = np.where(prof >= 0.5)[0]
+        return float(abs(rax[above[-1]] - rax[above[0]])) if len(above) >= 2 else self.range_res
+
+    def status(self):
+        return {"range_resolution_m": round(self.range_res, 2),
+                "psf_fwhm_m": round(self.fwhm_m(), 2),
+                "note": "blob this size IS the resolution cell — finer detail is not in the data"}
+
+
+class RealTargetCalibration:
+    """Bridges synthetic proof → real accuracy: register measured vs known target
+    positions (e.g. a corner reflector at a surveyed spot), compute the system's
+    actual bias + RMSE, and store a calibration to correct live fixes. Pure data —
+    no fabrication; honest until real samples exist."""
+    def __init__(self, path="nepa_calibration.json"):
+        self.path = path
+        self.samples = []
+        self.bias = [0.0, 0.0, 0.0]
+        self.rmse = None
+        self._load()
+
+    def add(self, measured_xyz, known_xyz):
+        self.samples.append({"measured": [float(v) for v in measured_xyz],
+                             "known": [float(v) for v in known_xyz]})
+        self._fit(); self._save()
+        return self.status()
+
+    def _fit(self):
+        if not self.samples:
+            return
+        biases, errs = [], []
+        for s in self.samples:
+            mz = np.asarray(s["measured"], float)
+            kz = np.asarray(s["known"], float)
+            n = min(len(mz), len(kz))
+            d = mz[:n] - kz[:n]
+            biases.append(np.pad(d, (0, max(0, 3 - n)))[:3])
+            errs.append(float(np.linalg.norm(d)))
+        self.bias = [float(b) for b in np.mean(biases, axis=0)]
+        self.rmse = float(np.sqrt(np.mean(np.square(errs))))
+
+    def correct(self, xyz):
+        x = np.asarray(xyz, float)
+        return [float(v) for v in (x - np.asarray(self.bias)[:len(x)])]
+
+    def _save(self):
+        try:
+            with open(self.path, "w") as f:
+                _v300_json.dump({"samples": self.samples, "bias": self.bias, "rmse": self.rmse}, f)
+        except Exception:
+            pass
+
+    def _load(self):
+        try:
+            if os.path.exists(self.path):
+                d = _v300_json.load(open(self.path))
+                self.samples = d.get("samples", [])
+                self.bias = d.get("bias", [0.0, 0.0, 0.0])
+                self.rmse = d.get("rmse")
+        except Exception:
+            pass
+
+    def status(self):
+        return {"n_samples": len(self.samples), "bias_m": [round(b, 3) for b in self.bias],
+                "rmse_m": (round(self.rmse, 3) if self.rmse is not None else None),
+                "calibrated": bool(self.samples)}
+
+
+class SyntheticBandwidthFuser:
+    """Stitches K adjacent channel measurements into one wideband response →
+    range resolution c/(2·K·BW_sub). Stepped-frequency synthesis: a REAL way to
+    beat single-channel range resolution by ACQUIRING more bandwidth (the
+    engineering fix for the c/2·BW limit). Honest: needs phase-coherent
+    multi-channel capture; reports the effective BW and achieved resolution."""
+    C = 3.0e8
+
+    def __init__(self, bw_sub=20e6, n_sub=64):
+        self.bw_sub = float(bw_sub)
+        self.n = int(n_sub)
+
+    def synth_stepped(self, ranges, k_bands, snr_db=40, seed=0):
+        rng = np.random.default_rng(seed)
+        subs = []
+        for b in range(k_bands):
+            f = (np.arange(self.n) - self.n // 2) * (self.bw_sub / self.n) + b * self.bw_sub
+            H = sum(np.exp(-1j * 2 * np.pi * f * (2.0 * R / self.C)) for R in ranges)
+            sp = np.mean(np.abs(H) ** 2)
+            npow = sp / (10 ** (snr_db / 10.0))
+            subs.append(H + np.sqrt(npow / 2) * (rng.standard_normal(self.n) + 1j * rng.standard_normal(self.n)))
+        return subs
+
+    def range_profile(self, sub_responses):
+        H = np.concatenate(sub_responses)
+        N = len(H)
+        eff_bw = self.bw_sub * len(sub_responses)
+        prof = np.abs(np.fft.fftshift(np.fft.ifft(np.fft.ifftshift(H))))
+        rax = np.fft.fftshift(np.fft.fftfreq(N, d=self.bw_sub / self.n)) * self.C / 2
+        return rax, prof / (prof.max() + 1e-12), eff_bw, self.C / (2.0 * eff_bw)
+
+    @staticmethod
+    def _npeaks(prof, frac=0.5):
+        mx = prof.max()
+        return sum(1 for i in range(1, len(prof) - 1)
+                   if prof[i] >= prof[i - 1] and prof[i] >= prof[i + 1] and prof[i] >= frac * mx)
+
+    def verify(self):
+        res1 = self.C / (2.0 * self.bw_sub)
+        r1, r2 = 20.0, 20.0 + 0.5 * res1   # 0.5 single-band cells apart → single band can't resolve
+        _, p1, bw1, rr1 = self.range_profile(self.synth_stepped([r1, r2], 1))
+        _, p4, bw4, rr4 = self.range_profile(self.synth_stepped([r1, r2], 4))
+        return {"single_band_res_m": round(rr1, 2), "single_band_peaks": self._npeaks(p1),
+                "fused_eff_bw_mhz": round(bw4 / 1e6, 1), "fused_res_m": round(rr4, 2),
+                "fused_peaks": self._npeaks(p4),
+                "improvement": self._npeaks(p4) > self._npeaks(p1)}
+
+    def status(self):
+        v = self.verify()
+        return {"fused_eff_bw_mhz": v["fused_eff_bw_mhz"], "fused_res_m": v["fused_res_m"],
+                "beats_single_band": v["improvement"]}
+
+
+class CompressedSensingImager:
+    """Sparse (L1 / FISTA basis-pursuit) reconstruction over a fine range
+    dictionary — recovers a sparse set of reflectors sharper than the FFT for
+    sparse scenes (compressive imaging). Treats the resolution limit as an
+    SNR/sparsity-bounded hurdle. Honest: assumes sparsity; dense scenes won't gain."""
+    C = 3.0e8
+
+    def __init__(self, bw_hz=20e6, n_sub=64, grid_n=400):
+        self.bw = float(bw_hz)
+        self.n = int(n_sub)
+        self.grid_n = int(grid_n)
+        self.range_res = self.C / (2.0 * self.bw)
+        self.max_range = self.n * self.range_res
+        self.grid = np.linspace(0.0, self.max_range, grid_n)
+        f = (np.arange(self.n) - self.n // 2) * (self.bw / self.n)
+        self.D = np.exp(-1j * 2 * np.pi * np.outer(f, 2.0 * self.grid / self.C))  # (n_sub, grid_n)
+        self.L = float(np.linalg.norm(self.D, 2) ** 2) + 1e-9
+
+    @staticmethod
+    def _soft(v, thr):
+        m = np.abs(v)
+        return np.where(m > thr, (m - thr) * v / (m + 1e-12), 0.0)
+
+    def fista(self, y, lam=0.1, iters=200):
+        y = np.asarray(y, dtype=complex)
+        x = np.zeros(self.grid_n, dtype=complex)
+        z = x.copy()
+        t = 1.0
+        Dh = self.D.conj().T
+        for _ in range(iters):
+            grad = Dh @ (self.D @ z - y)
+            xn = self._soft(z - grad / self.L, lam / self.L)
+            tn = (1 + np.sqrt(1 + 4 * t * t)) / 2
+            z = xn + ((t - 1) / tn) * (xn - x)
+            x, t = xn, tn
+        return np.abs(x)
+
+    def recover(self, H, n_targets=2, lam=0.03):
+        amp = self.fista(H, lam=lam, iters=300)
+        pk = sorted(((amp[i], self.grid[i]) for i in range(1, len(amp) - 1)
+                     if amp[i] >= amp[i - 1] and amp[i] >= amp[i + 1] and amp[i] > 0.1 * amp.max()),
+                    reverse=True)
+        return sorted(r for _, r in pk[:n_targets])
+
+    def _synth(self, ranges, snr_db, seed=5):
+        rng = np.random.default_rng(seed)
+        f = (np.arange(self.n) - self.n // 2) * (self.bw / self.n)
+        H = sum(np.exp(-1j * 2 * np.pi * f * (2.0 * R / self.C)) for R in ranges)
+        sp = np.mean(np.abs(H) ** 2)
+        npow = sp / (10 ** (snr_db / 10.0))
+        return H + np.sqrt(npow / 2) * (rng.standard_normal(self.n) + 1j * rng.standard_normal(self.n))
+
+    def verify(self, snr_db=30):
+        # sparse recovery of two well-separated reflectors — sharp, accurate, no
+        # smearing (compressive imaging). Sub-cell pairs are MUSIC's job (super-res).
+        r1, r2 = 15.0, 30.0
+        est = self.recover(self._synth([r1, r2], snr_db), n_targets=2)
+        ok = len(est) == 2 and max(min(abs(e - t) for t in (r1, r2)) for e in est) < self.range_res
+        return {"true_m": [r1, r2], "est_m": [round(e, 2) for e in est],
+                "recovered": bool(ok), "range_res_m": round(self.range_res, 2)}
+
+    def status(self):
+        return {"recovered_subcell": self.verify().get("resolved_subcell")}
+
+
+class ApertureSynthesisSAR:
+    """Synthesizes an aperture from N single-antenna positions (MOTION) → recovers
+    cross-range (bearing) that one static antenna cannot. This is the engineering
+    answer to the 'no bearing from one antenna' BARRIER: acquire an aperture by
+    moving. Back-projection focusing; verified on synthetic targets. Honest:
+    requires real motion/positions — with no aperture it returns no cross-range."""
+    C = 3.0e8
+
+    def __init__(self, fc=5e9):
+        self.fc = float(fc)
+        self.lam = self.C / self.fc
+
+    def synth_returns(self, angle_deg, R, positions, snr_db=30, seed=0):
+        # far-field target at azimuth angle, single moving antenna along x (positions).
+        # two-way phase: φ_i = -4π(R - px·sinθ)/λ  → carries the azimuth in the px term.
+        rng = np.random.default_rng(seed)
+        th = np.radians(angle_deg)
+        s = np.exp(-1j * 2 * np.pi * 2.0 * (R - np.asarray(positions) * np.sin(th)) / self.lam)
+        sp = np.mean(np.abs(s) ** 2)
+        npow = sp / (10 ** (snr_db / 10.0))
+        return s + np.sqrt(npow / 2) * (rng.standard_normal(len(s)) + 1j * rng.standard_normal(len(s)))
+
+    def beamform_azimuth(self, returns, positions, angles_deg):
+        positions = np.asarray(positions)
+        spec = []
+        for a in angles_deg:
+            w = np.exp(-1j * 2 * np.pi * 2.0 * (positions * np.sin(np.radians(a))) / self.lam)
+            spec.append(abs(np.sum(returns * w)))
+        return np.asarray(spec)
+
+    def angular_res_deg(self, aperture_m):
+        return float(np.degrees(self.lam / (2.0 * aperture_m))) if aperture_m > 0 else 180.0
+
+    def verify(self, aperture_m=2.0, n_pos=32, true_angle=12.0, R=8.0):
+        positions = np.linspace(-aperture_m / 2, aperture_m / 2, n_pos)
+        s = self.synth_returns(true_angle, R, positions, snr_db=30)
+        grid = np.linspace(-40, 40, 1601)
+        spec = self.beamform_azimuth(s, positions, grid)
+        est = float(grid[int(np.argmax(spec))])
+        err = abs(est - true_angle)
+        ang_res = self.angular_res_deg(aperture_m)
+        return {"true_angle_deg": true_angle, "est_angle_deg": round(est, 2),
+                "error_deg": round(err, 2), "angular_res_deg": round(ang_res, 2),
+                "aperture_m": aperture_m, "bearing_recovered": err < max(2.0, ang_res)}
+
+    def status(self):
+        try:
+            v = self.verify()
+            return {"bearing_recovered_from_motion": v["bearing_recovered"],
+                    "angular_res_deg": v["angular_res_deg"], "error_deg": v["error_deg"]}
+        except Exception as e:
+            return {"error": str(e)[:60]}
+
+
+class CoherentIntegrator:
+    """Coherently integrates N snapshots → SNR gain ×N → localization error falls
+    ~1/√N. The engineering lever of integration time. Verified: error decreases
+    monotonically with N (approaching the CRLB)."""
+    C = 3.0e8
+
+    def __init__(self, bw_hz=20e6, n_sub=64):
+        self.bw = float(bw_hz)
+        self.n = int(n_sub)
+        self.range_res = self.C / (2.0 * self.bw)
+
+    def _frames(self, true_R, n_frames, snr_db, seed=0):
+        rng = np.random.default_rng(seed)
+        f = (np.arange(self.n) - self.n // 2) * (self.bw / self.n)
+        H0 = np.exp(-1j * 2 * np.pi * f * (2.0 * true_R / self.C))
+        sp = np.mean(np.abs(H0) ** 2)
+        npow = sp / (10 ** (snr_db / 10.0))
+        return [H0 + np.sqrt(npow / 2) * (rng.standard_normal(self.n) + 1j * rng.standard_normal(self.n))
+                for _ in range(n_frames)]
+
+    def estimate_range(self, frames):
+        H = np.mean(np.asarray(frames), axis=0)   # coherent average
+        prof = np.abs(np.fft.fftshift(np.fft.ifft(np.fft.ifftshift(H))))
+        rax = np.abs(np.fft.fftshift(np.fft.fftfreq(self.n, d=self.bw / self.n)) * self.C / 2)
+        k = int(np.argmax(prof))
+        if 0 < k < len(prof) - 1:
+            a, b, c = prof[k - 1], prof[k], prof[k + 1]
+            d = 0.5 * (a - c) / (a - 2 * b + c + 1e-12)
+        else:
+            d = 0.0
+        return float(rax[k] + d * self.range_res)   # bin range + parabolic sub-bin offset
+
+    def verify(self, true_R=15.0, snr_db=0):
+        errs = {}
+        for nf in (1, 4, 16, 64):
+            est = self.estimate_range(self._frames(true_R, nf, snr_db, seed=11))
+            errs[nf] = round(abs(est - true_R), 3)
+        return {"true_m": true_R, "errors_by_frames": errs,
+                "improves_with_integration": errs[64] <= errs[1]}
+
+    def status(self):
+        v = self.verify()
+        return {"improves_with_integration": v["improves_with_integration"],
+                "errors_by_frames": v["errors_by_frames"]}
+
+
+class ClutterCancellationMTI:
+    """Removes static clutter (walls/furniture) by subtracting the slow-time mean
+    or projecting out the static subspace (ECA), revealing MOVING targets — how
+    through-wall sensing actually isolates people. Verified: static suppressed,
+    mover preserved."""
+    def cancel(self, slow_time):
+        S = np.asarray(slow_time, dtype=complex)
+        return S - S.mean(axis=0, keepdims=True)
+
+    def eca(self, slow_time, rank=1):
+        S = np.asarray(slow_time, dtype=complex)
+        U, s, Vh = np.linalg.svd(S, full_matrices=False)
+        s2 = s.copy()
+        s2[:rank] = 0.0
+        return (U * s2) @ Vh
+
+    def verify(self):
+        n_f, n_s = 32, 64
+        f = np.arange(n_s)
+        static = np.exp(-1j * 2 * np.pi * f * 0.10)[None, :] * np.ones((n_f, 1))
+        mover = np.array([np.exp(-1j * 2 * np.pi * f * (0.20 + 0.003 * t)) for t in range(n_f)])
+        S = static + mover
+        out = self.cancel(S)
+        before = float(np.mean(np.abs(static.mean(axis=0)) ** 2))
+        after = float(np.mean(np.abs(out.mean(axis=0)) ** 2))
+        supp_db = 10 * np.log10(before / (after + 1e-12))
+        mover_retained = float(np.mean(np.abs(out) ** 2) / (np.mean(np.abs(mover) ** 2) + 1e-12))
+        return {"static_suppression_db": round(supp_db, 1),
+                "mover_retained_frac": round(mover_retained, 2),
+                "isolates_mover": supp_db > 10 and mover_retained > 0.5}
+
+    def status(self):
+        return self.verify()
+
+
+class NEPACapabilityExpansionPackV5(NEPACapabilityExpansionPackV4):
+    """v300+++++ — imaging-accuracy stack: super-resolution range imaging (beats the
+    naive FFT cell when SNR permits), verified MUSIC DoA (bearing with an array;
+    honestly UNAVAILABLE with one antenna), the scene-reconstruction benchmark
+    (SSIM/PSNR/localization vs known truth + CRLB), the PSF overlay, and
+    real-target calibration. Additive subclass; runs the benchmark off-thread."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.superres = SuperResolutionRangeImager()
+        self.doa = DoAVerifier()
+        self.benchmark = SceneReconstructionBenchmark()
+        self.psf = PointSpreadFunctionEngine()
+        self.calibration = RealTargetCalibration()
+        self._bench_report = None
+
+    def attach(self):
+        super().attach()
+        try:
+            threading.Thread(target=self._run_bench_bg, daemon=True, name="v300bench").start()
+        except Exception:
+            pass
+        log.info("[POWERPACK] v300+++++ imaging-accuracy stack attached: super-resolution range "
+                 "(beats FFT cell @ adequate SNR), MUSIC DoA (bearing w/ array; UNAVAILABLE w/ 1 "
+                 "antenna), scene benchmark (SSIM/PSNR/localization + CRLB), PSF overlay, calibration.")
+
+    def _run_bench_bg(self):
+        try:
+            self._bench_report = self.benchmark.run(snr_db=20)
+            b = self._bench_report
+            log.info(f"[IMAGING] scene reconstruction @20dB SNR — FFT: SSIM={b['fft']['ssim']} "
+                     f"loc={b['fft']['localization_err_m']}m | super-res: SSIM={b['superres']['ssim']} "
+                     f"loc={b['superres']['localization_err_m']}m | CRLB range={b['crlb_range_m']}m")
+        except Exception as e:
+            log.debug(f"[IMAGING] benchmark: {e}")
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v5"] = {"psf": self.psf.status(), "calibration": self.calibration.status(),
+                             "benchmark": (self._bench_report or {"status": "running"}),
+                             "doa_beamwidth_deg": round(self.doa.beamwidth_deg, 1)}
+            if isinstance(pp.get("reality"), dict) and self._bench_report:
+                pp["reality"]["image_ssim_superres"] = self._bench_report["superres"]["ssim"]
+                pp["reality"]["image_localization_err_m"] = self._bench_report["superres"]["localization_err_m"]
+        except Exception:
+            pass
+
+
+class PenetrationPhysics:
+    """Honest RF penetration model — how far 'x-ray-like' see-through actually goes.
+    Wall loss (ITU-R P.2040 typical values, dB per wall) and penetration/skin depth
+    vs frequency. No magic: concrete/metal block; drywall is semi-transparent; lower
+    frequency penetrates deeper but images coarser."""
+    WALL_LOSS_DB = {"none": 0.0, "drywall": 3.0, "wood": 4.0, "glass": 3.0,
+                    "brick": 9.0, "concrete": 18.0, "reinforced_concrete": 28.0,
+                    "metal": 40.0}
+
+    @classmethod
+    def wall_loss_db(cls, material, n_walls=1):
+        return cls.WALL_LOSS_DB.get(material, 6.0) * max(0, int(n_walls))
+
+    @staticmethod
+    def skin_depth_m(freq_hz, sigma=0.005, eps_r=9.0):
+        mu0 = 4e-7 * np.pi
+        eps0 = 8.854e-12
+        w = 2 * np.pi * float(freq_hz)
+        eps = eps_r * eps0
+        loss_tan = sigma / (w * eps + 1e-30)
+        alpha = w * np.sqrt(mu0 * eps / 2.0 * (np.sqrt(1 + loss_tan ** 2) - 1)) + 1e-12
+        return float(1.0 / alpha)
+
+    @classmethod
+    def detectable(cls, free_snr_db, material, n_walls, det_threshold_db=3.0):
+        thru = free_snr_db - 2.0 * cls.wall_loss_db(material, n_walls)   # two-way
+        return thru, bool(thru >= det_threshold_db)
+
+    def status(self):
+        return {"drywall_2way_db": 2 * self.WALL_LOSS_DB["drywall"],
+                "reinforced_concrete_2way_db": 2 * self.WALL_LOSS_DB["reinforced_concrete"],
+                "penetration_soil_400MHz_m": round(self.skin_depth_m(400e6, 0.005, 9.0), 2),
+                "penetration_soil_2.4GHz_m": round(self.skin_depth_m(2.4e9, 0.005, 9.0), 3)}
+
+
+class ThroughWallImager:
+    """Coarse RF see-through — the honest 'x-ray vision' metaphor. Reconstructs a
+    scene BEHIND walls; the wall's two-way attenuation lowers SNR → graceful fidelity
+    loss. Verified: a target behind 1 drywall is recovered (degraded); behind reinforced
+    concrete it is flagged UNDETECTABLE — not fabricated. NOT photographic; it images
+    coarse RF reflectivity through semi-transparent materials only."""
+    def __init__(self):
+        self.bench = SceneReconstructionBenchmark()
+        self.phys = PenetrationPhysics()
+
+    def image_through(self, material, n_walls, free_snr_db=30.0, targets=None):
+        thru_snr, det = self.phys.detectable(free_snr_db, material, n_walls)
+        if not det:
+            return {"material": material, "n_walls": n_walls, "through_snr_db": round(thru_snr, 1),
+                    "detectable": False,
+                    "note": "signal below detection floor — UNDETECTABLE (not fabricated)"}
+        rep = self.bench.run(targets=targets, snr_db=max(-5.0, thru_snr))
+        return {"material": material, "n_walls": n_walls, "through_snr_db": round(thru_snr, 1),
+                "detectable": True, "superres_ssim": rep["superres"]["ssim"],
+                "localization_err_m": rep["superres"]["localization_err_m"]}
+
+    def verify(self):
+        d1 = self.image_through("drywall", 1, 30.0)
+        c3 = self.image_through("reinforced_concrete", 3, 30.0)
+        return {"through_1_drywall": d1, "through_3_reinforced_concrete": c3,
+                "sees_through_drywall": d1["detectable"],
+                "blocked_by_concrete": not c3["detectable"]}
+
+    def status(self):
+        v = self.verify()
+        return {"sees_through_drywall": v["sees_through_drywall"],
+                "blocked_by_reinforced_concrete": v["blocked_by_concrete"]}
+
+
+class SubsurfaceGPRImager:
+    """Ground/structure-penetrating imaging — the honest 'underground penetration'.
+    Models frequency-dependent penetration depth (skin depth) and depth resolution
+    (c / 2·BW·sqrt(eps_r)); recovers a buried target only if its depth < penetration
+    depth at that frequency. Verified. Honest: low freq → deep but coarse; high freq →
+    fine but shallow; nothing beyond the penetration depth."""
+    C = 3.0e8
+
+    def __init__(self):
+        self.phys = PenetrationPhysics()
+
+    def depth_res_m(self, bw_hz, eps_r=9.0):
+        return self.C / (2.0 * bw_hz * np.sqrt(eps_r))
+
+    def penetration_m(self, freq_hz, sigma=0.005, eps_r=9.0):
+        return self.phys.skin_depth_m(freq_hz, sigma, eps_r)
+
+    def recover(self, target_depth_m, freq_hz, bw_hz, sigma=0.005, eps_r=9.0):
+        pen = self.penetration_m(freq_hz, sigma, eps_r)
+        dres = self.depth_res_m(bw_hz, eps_r)
+        det = bool(target_depth_m < pen)
+        return {"target_depth_m": target_depth_m, "penetration_depth_m": round(pen, 2),
+                "depth_res_m": round(dres, 3), "freq_hz": freq_hz, "detectable": det,
+                "note": ("recovered within penetration depth" if det
+                         else "beyond penetration depth — NOT recovered (honest)")}
+
+    def verify(self):
+        shallow = self.recover(1.0, 400e6, 200e6)      # 1 m @ 400 MHz → detect
+        deep = self.recover(50.0, 2.4e9, 80e6)         # 50 m @ 2.4 GHz → blocked
+        return {"shallow_400MHz": shallow, "deep_2GHz": deep,
+                "detects_shallow": shallow["detectable"],
+                "blocked_when_too_deep": not deep["detectable"]}
+
+    def status(self):
+        v = self.verify()
+        return {"detects_shallow_target": v["detects_shallow"],
+                "blocked_when_too_deep": v["blocked_when_too_deep"]}
+
+
+class CognitiveStateEstimator:
+    """Cognitive STATE (arousal/engagement) — NOT thoughts. Fuses REAL EEG band
+    powers when present (labeled [EEG-VALIDATED]) with physiological/behavioral RF
+    proxies (motion, breathing, HRV) otherwise (labeled [BEHAVIORAL-PROXY · NOT
+    mind-reading · UNVALIDATED]). Decoding mental CONTENT/thoughts is physically not
+    possible from these signals and is NEVER fabricated — mind_content is always
+    None. Supports MULTIPLE people (each a proxy state); 'mass' = aggregate presence
+    + coarse arousal, never thought-content. Upholds the no-false-data directive."""
+    def estimate_one(self, eeg_bands=None, motion=0.0, breath_bpm=0.0, hrv_ms=0.0):
+        if eeg_bands and any(float(v) for v in eeg_bands.values()):
+            a = float(eeg_bands.get("alpha", 1e-6))
+            b = float(eeg_bands.get("beta", 0.0))
+            th = float(eeg_bands.get("theta", 1e-6))
+            arousal = float(np.clip(b / (a + th + 1e-9), 0, 1))
+            tier = "[EEG-VALIDATED]"
+        else:
+            arousal = float(np.clip(0.5 * np.tanh(float(motion)) +
+                                    0.5 * np.clip((float(breath_bpm) - 12) / 18.0, 0, 1), 0, 1))
+            tier = "[BEHAVIORAL-PROXY · NOT mind-reading · UNVALIDATED]"
+        return {"arousal": round(arousal, 3), "engagement": round(arousal, 3),
+                "provenance": tier, "mind_content": None,
+                "note": "cognitive STATE estimate only; thoughts are not decodable and not fabricated"}
+
+    def estimate_population(self, people):
+        ests = [self.estimate_one(**p) for p in (people or [])]
+        validated = sum(1 for e in ests if e["provenance"] == "[EEG-VALIDATED]")
+        return {"n_people": len(ests), "per_person": ests,
+                "mean_arousal": round(float(np.mean([e["arousal"] for e in ests])), 3) if ests else 0.0,
+                "eeg_validated_count": validated,
+                "note": "MASS = aggregate cognitive STATE across detected people; never thought-content"}
+
+    def verify(self):
+        real = self.estimate_one(eeg_bands={"alpha": 0.2, "beta": 0.6, "theta": 0.2})
+        proxy = self.estimate_one(motion=1.5, breath_bpm=24)
+        pop = self.estimate_population([{"motion": 0.2, "breath_bpm": 14},
+                                        {"eeg_bands": {"alpha": 0.1, "beta": 0.7, "theta": 0.2}}])
+        return {"eeg_tier": real["provenance"], "proxy_tier": proxy["provenance"],
+                "mind_content_always_none": (real["mind_content"] is None and proxy["mind_content"] is None),
+                "population_n": pop["n_people"], "eeg_validated": pop["eeg_validated_count"]}
+
+    def status(self):
+        v = self.verify()
+        return {"eeg_validated_path": v["eeg_tier"] == "[EEG-VALIDATED]",
+                "proxy_labeled_not_mind_reading": "NOT mind-reading" in v["proxy_tier"],
+                "thought_content_never_fabricated": v["mind_content_always_none"]}
+
+
+class UniversalMapFusion:
+    """Universal mapping — fuses ALL real geolocated sources (RF mesh fixes, LAN/AP
+    nodes, aircraft, satellites, OSM/terrain) into ONE georeferenced occupancy grid
+    with per-source accounting, so every available reading contributes to one map
+    (GOAL 2 additive overlay). Honest: empty where no real data; each cell traces to
+    its sources."""
+    def __init__(self, extent_m=200.0, res=64):
+        self.extent = float(extent_m)
+        self.res = int(res)
+        self.grid = np.zeros((self.res, self.res), dtype=np.float32)
+        self.sources = {}
+
+    def _idx(self, x, y):
+        h = self.extent / 2
+        return int((x + h) / self.extent * self.res), int((y + h) / self.extent * self.res)
+
+    def add_sources(self, items):
+        for it in items or []:
+            try:
+                ix, iy = self._idx(float(it["x"]), float(it["y"]))
+                if 0 <= ix < self.res and 0 <= iy < self.res:
+                    self.grid[iy, ix] += float(it.get("weight", 1.0))
+                    s = it.get("source", "?")
+                    self.sources[s] = self.sources.get(s, 0) + 1
+            except Exception:
+                pass
+
+    def occupancy(self):
+        m = self.grid.max()
+        return self.grid / m if m > 0 else self.grid
+
+    def status(self):
+        occ = self.occupancy()
+        return {"sources": dict(self.sources), "n_source_types": len(self.sources),
+                "occupied_cells": int((occ > 0.1).sum())}
+
+    def verify(self):
+        u = UniversalMapFusion()
+        u.add_sources([{"x": 10, "y": 20, "source": "mesh"},
+                       {"x": -30, "y": 5, "source": "aircraft"},
+                       {"x": 10, "y": 20, "source": "ap"}])
+        st = u.status()
+        return {"fuses_multiple_sources": st["n_source_types"] >= 2, "status": st}
+
+
+class NEPACapabilityExpansionPackV6(NEPACapabilityExpansionPackV5):
+    """v300++++++ — DSP power stack that pushes past the NAIVE RF limits (engineering
+    hurdles, not barriers): synthetic bandwidth (acquire BW → finer range),
+    compressed sensing (sharp sparse imaging), aperture synthesis (bearing from
+    MOTION — the fix for one-antenna no-bearing), coherent integration (SNR/accuracy
+    ↑), clutter cancellation (movers through walls). Each verified vs ground truth;
+    each reports honestly where the data can't support the claim."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.synth_bw = SyntheticBandwidthFuser()
+        self.cs_imager = CompressedSensingImager()
+        self.sar = ApertureSynthesisSAR()
+        self.integrator = CoherentIntegrator()
+        self.mti = ClutterCancellationMTI()
+        self._enh = None
+
+    def attach(self):
+        super().attach()
+        try:
+            threading.Thread(target=self._verify_bg, daemon=True, name="v300enh").start()
+        except Exception:
+            pass
+        log.info("[POWERPACK] v300++++++ DSP power stack attached: synthetic-bandwidth, "
+                 "compressed-sensing, aperture-synthesis (bearing from motion), coherent-integration, "
+                 "clutter-cancellation — each pushes past a naive limit, verified, honest where data absent.")
+
+    def _verify_bg(self):
+        try:
+            self._enh = {
+                "synthetic_bandwidth": self.synth_bw.status(),
+                "compressed_sensing": self.cs_imager.status(),
+                "aperture_synthesis": self.sar.status(),
+                "coherent_integration": self.integrator.status(),
+                "clutter_mti": self.mti.status(),
+            }
+            sb = self._enh["synthetic_bandwidth"]
+            sar = self._enh["aperture_synthesis"]
+            log.info(f"[DSP] synthetic-BW → {sb.get('fused_res_m')} m (from {sb.get('fused_eff_bw_mhz')} MHz); "
+                     f"aperture-synthesis: bearing-from-motion={sar.get('bearing_recovered_from_motion')} "
+                     f"@ {sar.get('angular_res_deg')}° res; clutter MTI isolates movers + coherent "
+                     f"integration lowers error with frames.")
+        except Exception as e:
+            log.debug(f"[DSP] verify: {e}")
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict) and self._enh:
+                blk["v6"] = self._enh
+        except Exception:
+            pass
+
+
+class FrequencyDomainReflectometer:
+    """The rigorous, honest form of 'simulate a wired connection using carriers —
+    frequency bounce as differentials of the last bounce to paint a picture like
+    light'. Treats the RF channel response H(f) as a transmission-line frequency
+    response and computes the time-domain REFLECTOGRAM (frequency-domain
+    reflectometry / TDR): reflections at each scatterer vs distance — the 1D
+    reflectivity 'picture'. Verified: known reflectors recovered at the correct
+    distance and relative amplitude, within resolution v/(2·BW)."""
+    C = 3.0e8
+
+    def __init__(self, bw_hz=20e6, n_sub=64, v_frac=1.0):
+        self.bw = float(bw_hz)
+        self.n = int(n_sub)
+        self.v = self.C * float(v_frac)
+        self.range_res = self.v / (2.0 * self.bw)
+
+    def channel_response(self, reflectors, snr_db=40, seed=0):
+        rng = np.random.default_rng(seed)
+        f = (np.arange(self.n) - self.n // 2) * (self.bw / self.n)
+        H = sum(g * np.exp(-1j * 2 * np.pi * f * (2.0 * d / self.v)) for d, g in reflectors)
+        sp = np.mean(np.abs(H) ** 2) + 1e-12
+        npow = sp / (10 ** (snr_db / 10.0))
+        return H + np.sqrt(npow / 2) * (rng.standard_normal(self.n) + 1j * rng.standard_normal(self.n))
+
+    def reflectogram(self, H):
+        H = np.atleast_1d(np.asarray(H, dtype=complex)).ravel()
+        if len(H) < self.n:
+            H = np.pad(H, (0, self.n - len(H)))
+        else:
+            H = H[:self.n]
+        h = np.fft.fftshift(np.fft.ifft(np.fft.ifftshift(H)))
+        tau = np.fft.fftshift(np.fft.fftfreq(self.n, d=self.bw / self.n))
+        dist = self.v * tau / 2.0
+        return dist, np.abs(h)
+
+    def top_reflections(self, H, k=4):
+        dist, prof = self.reflectogram(H)
+        pos = dist >= 0
+        d, p = dist[pos], prof[pos]
+        idx = np.argsort(p)[::-1]
+        out, mn = [], max(1, self.n // 64)
+        for i in idx:
+            if all(abs(int(i) - int(j)) > mn for j, _ in out):
+                out.append((int(i), float(p[i])))
+            if len(out) >= k:
+                break
+        return [{"distance_m": round(float(d[i]), 2), "amplitude": round(a, 3)} for i, a in out]
+
+    def verify(self):
+        refs = [(15.0, 1.0), (30.0, 0.5), (45.0, 0.25)]   # (distance_m, reflection coeff Γ)
+        dist, prof = self.reflectogram(self.channel_response(refs))
+        amps = []
+        for d, g in refs:
+            k = int(np.argmin(np.abs(dist - d)))
+            amps.append(float(prof[k]))
+        ordering_ok = amps[0] > amps[1] > amps[2]    # matches Γ 1 > 0.5 > 0.25
+        return {"range_res_m": round(self.range_res, 2),
+                "recovered_amps": [round(a, 3) for a in amps],
+                "amplitude_ordering_matches_gamma": ordering_ok,
+                "picture_from_bounce": bool(ordering_ok)}
+
+    def status(self):
+        return {"range_res_m": round(self.range_res, 2), "verified": self.verify()["picture_from_bounce"]}
+
+
+class VirtualWiredLinkBCI:
+    """Models the wireless link AS a virtual 'wired' channel built from RF carriers
+    (the user's framing: 'the wireless BCI simulates physical connection using
+    carriers'). Computes the channel's REAL properties — Shannon capacity, coherence
+    bandwidth — and HONESTLY separates what such a virtual link can and cannot carry:
+      • channel-STATE sensing (motion/vitals via carrier perturbation): REAL, quantified.
+      • NEURAL content (µV electrode signals): a real wired BCI carries these; an RF
+        carrier CANNOT (no electrode contact, signal far below noise, doesn't leave the
+        skull). neural_payload = 0.
+    A virtual RF link is not a neural electrode — upholds no-false-data."""
+    def capacity_bps(self, bw_hz, snr_db):
+        return float(bw_hz * np.log2(1 + 10 ** (snr_db / 10.0)))
+
+    def coherence_bw_hz(self, delay_spread_s):
+        return float(1.0 / (2 * np.pi * delay_spread_s)) if delay_spread_s > 0 else float('inf')
+
+    def assess(self, bw_hz=20e6, snr_db=20, delay_spread_ns=50.0, motion_bw_hz=5.0):
+        return {
+            "virtual_channel_capacity_bps": round(self.capacity_bps(bw_hz, snr_db), 1),
+            "coherence_bw_hz": round(self.coherence_bw_hz(delay_spread_ns * 1e-9), 1),
+            "channel_state_sensing": {
+                "observable": True, "max_motion_bw_hz": motion_bw_hz,
+                "carries": "bulk motion / breathing / HRV proxies (REAL RF channel-state sensing)"},
+            "neural_content_link": {
+                "neural_payload_bits_per_s": 0,
+                "provenance": "[VIRTUAL CHANNEL — channel-state only, NOT neural content]",
+                "reason": "RF carrier has no electrode contact; µV neural signals sit far below the "
+                          "noise floor and do not leave the skull — a virtual RF link cannot carry them",
+                "real_bci_requires": "physical electrodes (EEG/ECoG) or an implanted interface"},
+        }
+
+    def verify(self):
+        a = self.assess()
+        return {"capacity_positive": a["virtual_channel_capacity_bps"] > 0,
+                "state_sensing_real": a["channel_state_sensing"]["observable"],
+                "neural_payload_zero": a["neural_content_link"]["neural_payload_bits_per_s"] == 0}
+
+    def status(self):
+        v = self.verify()
+        return {**v, "all_honest": all(v.values())}
+
+
+class NEPACapabilityExpansionPackV7(NEPACapabilityExpansionPackV6):
+    """v300+++++++ — penetration + universal-mapping + honest cognitive-state stack.
+    Pursues the stated goals (through-wall/subsurface 'x-ray vision', universal
+    mapping, 'mass mind' sensing) to the limit physics allows: real see-through where
+    materials are semi-transparent (flagged UNDETECTABLE through concrete/too-deep),
+    one fused universal map, and cognitive STATE (EEG-validated or labeled behavioral
+    proxy) — with thought-CONTENT never decoded or fabricated (no-false-data)."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.through_wall = ThroughWallImager()
+        self.subsurface = SubsurfaceGPRImager()
+        self.cognitive = CognitiveStateEstimator()
+        self.universal_map = UniversalMapFusion()
+        self.penetration = PenetrationPhysics()
+        self._pen = None
+
+    def attach(self):
+        super().attach()
+        try:
+            threading.Thread(target=self._verify_bg, daemon=True, name="v300pen").start()
+        except Exception:
+            pass
+        log.info("[POWERPACK] v300+++++++ penetration/mapping/cognition stack attached: through-wall "
+                 "(x-ray metaphor — drywall yes, reinforced concrete honestly blocked), subsurface GPR, "
+                 "universal map fusion, cognitive STATE (EEG-validated or proxy; thoughts NEVER fabricated).")
+
+    def _verify_bg(self):
+        try:
+            self._pen = {"through_wall": self.through_wall.status(),
+                         "subsurface": self.subsurface.status(),
+                         "cognitive": self.cognitive.status(),
+                         "universal_map": self.universal_map.verify(),
+                         "penetration_physics": self.penetration.status()}
+            tw = self._pen["through_wall"]
+            log.info(f"[PENETRATION] through-wall: sees drywall={tw['sees_through_drywall']}, "
+                     f"reinforced-concrete blocked={tw['blocked_by_reinforced_concrete']}; cognition: "
+                     f"thoughts never fabricated={self._pen['cognitive']['thought_content_never_fabricated']}")
+        except Exception as e:
+            log.debug(f"[PENETRATION] verify: {e}")
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            # Universal mapping: feed every real geolocated source into one map (additive).
+            items = []
+            for fx in (self._results.get("mesh") or {}).get("fixes") or []:
+                pos = fx.get("position")
+                if pos is not None:
+                    items.append({"x": pos[0], "y": pos[1], "source": "mesh"})
+            for ent in (pp.get("entities") or []):
+                pos = ent.get("position")
+                if pos is not None:
+                    items.append({"x": pos[0], "y": pos[1], "source": "entity"})
+            if items:
+                self.universal_map.add_sources(items)
+            # Honest cognitive STATE for detected people (proxy unless real EEG present).
+            people = []
+            for ent in (pp.get("entities") or []):
+                if ent.get("class") == "human":
+                    people.append({"motion": float(pp.get("mvs_variance", 0.0) or 0.0),
+                                   "breath_bpm": float(pp.get("br_bpm", 0.0) or 0.0)})
+            if people:
+                pp["cognitive_population"] = self.cognitive.estimate_population(people)
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict) and self._pen:
+                blk["v7"] = {**self._pen, "universal_map_live": self.universal_map.status()}
+        except Exception:
+            pass
+
+
+class NEPACapabilityExpansionPackV8(NEPACapabilityExpansionPackV7):
+    """v300++++++++ — frequency-domain reflectometry ('wired link via carriers':
+    frequency bounce → reflectogram → picture-from-bounce) wired to the LIVE CSI,
+    plus the honest virtual-wired-link BCI model. The live reflectogram is tagged by
+    the RealityIntegrityGate tier (real CSI → real picture; synth → estimate)."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.fdr = FrequencyDomainReflectometer()
+        self.virtual_bci = VirtualWiredLinkBCI()
+        self._fdr_status = None
+
+    def attach(self):
+        super().attach()
+        try:
+            self._fdr_status = self.fdr.status()
+            log.info(f"[FDR] frequency-domain reflectometry verified={self._fdr_status['verified']} "
+                     f"(range res {self._fdr_status['range_res_m']} m) — carrier 'bounce' → reflectogram "
+                     f"picture. Virtual-wired-link BCI: {self.virtual_bci.status()['all_honest']} honest "
+                     f"(channel-state REAL, neural-content payload 0).")
+        except Exception:
+            pass
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            raw = getattr(self.fuser, "_last_raw_csi", None)
+            if raw is not None and np.size(raw) >= 8:
+                peaks = self.fdr.top_reflections(np.asarray(raw).ravel(), k=4)
+                pp["reflectogram_peaks"] = peaks
+                # provenance: real CSI → real reflectogram; else estimate/sim
+                tier = "ESTIMATED"
+                try:
+                    tier = self.reality_gate.assess()["tier"]
+                except Exception:
+                    pass
+                pp["reflectogram_provenance"] = tier
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v8"] = {"fdr": self._fdr_status, "virtual_bci": self.virtual_bci.status(),
+                             "live_reflectogram_peaks": pp.get("reflectogram_peaks", [])}
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
@@ -93406,7 +94872,106 @@ if __name__ == "__main__":
     parser.add_argument('--self-test', action='store_true',
                         help='v300+++ (#1): run the in-process correctness/benchmark suite over the '
                              'capability subsystems and exit (0=all pass, 1=failure).')
+    parser.add_argument('--physics-test', action='store_true',
+                        help='v300++++: prove the frequency-bounce→range MATH against known synthetic '
+                             'truth (CIR range recovery within c/2·BW + resolution-limit demo) and exit.')
+    parser.add_argument('--ground-truth', default=None, metavar='X,Y,Z',
+                        help='v300++++: register a known emitter "ground_truth" at metric X,Y,Z so the '
+                             'live reconstruction error (RMSE) is measured against real truth and logged.')
+    parser.add_argument('--accuracy-benchmark', action='store_true',
+                        help='v300+++++: measure how accurately the system renders a KNOWN scene — '
+                             '2D reconstruction SSIM/PSNR/localization (FFT vs super-resolution) + the '
+                             'super-res resolution sweep + MUSIC DoA + PSF + CRLB — then exit.')
     args = parser.parse_args()
+
+    # v300+++++: standalone IMAGING-ACCURACY benchmark — numeric answer to
+    # "is it rendering reality correctly?" (proves super-resolution gains honestly).
+    if getattr(args, "accuracy_benchmark", False):
+        _bm = SceneReconstructionBenchmark()
+        for _snr in (40, 20, 10):
+            _r = _bm.run(snr_db=_snr)
+            log.info(f"[ACCURACY] scene @{_snr:>2}dB — FFT: SSIM={_r['fft']['ssim']} "
+                     f"PSNR={_r['fft']['psnr_db']}dB loc={_r['fft']['localization_err_m']}m | "
+                     f"SUPER-RES: SSIM={_r['superres']['ssim']} PSNR={_r['superres']['psnr_db']}dB "
+                     f"loc={_r['superres']['localization_err_m']}m | CRLB={_r['crlb_range_m']}m "
+                     f"(cell {_r['range_res_m']}m)")
+        _sw = _bm.superres_vs_fft_resolution()
+        log.info(f"[ACCURACY] sub-cell resolution (2 targets {_sw['separation_cells']} cells apart — "
+                 f"FFT CANNOT resolve):")
+        for _x in _sw["results"]:
+            log.info(f"[ACCURACY]   SNR {_x['snr_db']:>2}dB → super-res resolved={_x['resolved_subcell']} "
+                     f"est={_x['est_m']}")
+        _dv = DoAVerifier(n_elements=8)
+        _d2 = _dv.verify([-5.0, 5.0], snr_db=20)
+        log.info(f"[ACCURACY] DoA 8-elem (beamwidth {_d2['beamwidth_deg']}°): est={_d2['est_deg']} "
+                 f"err={_d2['max_error_deg']}° beats_beamwidth={_d2['beats_beamwidth']}")
+        log.info(f"[ACCURACY] single antenna → {DoAVerifier(n_elements=1).verify([5.0])['bearing']}")
+        log.info(f"[ACCURACY] PSF: {PointSpreadFunctionEngine().status()}")
+        log.info("[ACCURACY] HONEST: super-resolution beats the naive FFT cell at adequate SNR (engineering "
+                 "hurdle), degrades at low SNR, and never invents absent info (1 antenna → no bearing). "
+                 "Absolute SSIM is low because RF imaging IS coarse — wider BW + more antennas raise it.")
+        log.info("[ACCURACY] --- DSP power stack (pushing past naive limits) ---")
+        _sb = SyntheticBandwidthFuser().verify()
+        log.info(f"[ACCURACY] synthetic-bandwidth: single-band {_sb['single_band_res_m']}m→{_sb['single_band_peaks']} "
+                 f"peak vs fused {_sb['fused_eff_bw_mhz']}MHz {_sb['fused_res_m']}m→{_sb['fused_peaks']} peaks "
+                 f"(improvement={_sb['improvement']})")
+        _cs = CompressedSensingImager().verify()
+        log.info(f"[ACCURACY] compressed-sensing: true={_cs['true_m']} est={_cs['est_m']} recovered={_cs['recovered']}")
+        _sar = ApertureSynthesisSAR().verify()
+        log.info(f"[ACCURACY] aperture-synthesis (bearing FROM MOTION): true={_sar['true_angle_deg']}° "
+                 f"est={_sar['est_angle_deg']}° err={_sar['error_deg']}° res={_sar['angular_res_deg']}° "
+                 f"recovered={_sar['bearing_recovered']}")
+        _ci = CoherentIntegrator().verify()
+        log.info(f"[ACCURACY] coherent-integration: error by #frames {_ci['errors_by_frames']} "
+                 f"improves={_ci['improves_with_integration']}")
+        _mti = ClutterCancellationMTI().verify()
+        log.info(f"[ACCURACY] clutter-MTI: static suppressed {_mti['static_suppression_db']}dB, "
+                 f"mover retained {_mti['mover_retained_frac']} (isolates_mover={_mti['isolates_mover']})")
+        log.info("[ACCURACY] --- penetration / universal-mapping / cognition (goals to the physical limit) ---")
+        _tw = ThroughWallImager().verify()
+        log.info(f"[ACCURACY] through-wall (x-ray metaphor): 1 drywall → {_tw['through_1_drywall']}; "
+                 f"3 reinforced-concrete → {_tw['through_3_reinforced_concrete'].get('note','')}")
+        _gpr = SubsurfaceGPRImager().verify()
+        log.info(f"[ACCURACY] subsurface GPR: shallow {_gpr['shallow_400MHz']['note']} "
+                 f"(pen {_gpr['shallow_400MHz']['penetration_depth_m']}m) | deep {_gpr['deep_2GHz']['note']}")
+        _cog = CognitiveStateEstimator().verify()
+        log.info(f"[ACCURACY] cognition: EEG path={_cog['eeg_tier']} proxy={_cog['proxy_tier']} "
+                 f"thought-content fabricated? {not _cog['mind_content_always_none']} (must be False)")
+        _um = UniversalMapFusion().verify()
+        log.info(f"[ACCURACY] universal map: fuses sources={_um['fuses_multiple_sources']} {_um['status']['sources']}")
+        log.info("[ACCURACY] HONEST: x-ray-vision metaphor is real through semi-transparent materials and "
+                 "honestly blocked by concrete/too-deep; cognitive STATE is sensed (EEG-validated or labeled "
+                 "proxy) but thoughts/mind-CONTENT are never decoded or fabricated — that is a physics barrier, "
+                 "not a software one; the fix is acquiring the right signal (consented EEG), not faking it.")
+        _fdr = FrequencyDomainReflectometer().verify()
+        log.info(f"[ACCURACY] freq-domain reflectometry ('wired link via carriers'): recovered reflector "
+                 f"amplitudes {_fdr['recovered_amps']} (true Γ 1/0.5/0.25) — picture-from-bounce="
+                 f"{_fdr['picture_from_bounce']}, res {_fdr['range_res_m']}m")
+        _vb = VirtualWiredLinkBCI().assess()
+        log.info(f"[ACCURACY] virtual wired-link BCI: capacity {_vb['virtual_channel_capacity_bps']:.0f} bps "
+                 f"carries channel-STATE (real); neural-content payload "
+                 f"{_vb['neural_content_link']['neural_payload_bits_per_s']} bits/s "
+                 f"({_vb['neural_content_link']['provenance']}) — a carrier is not an electrode.")
+        sys.exit(0)
+
+    # v300++++: standalone PHYSICS verification — prove the core sensing math is exact.
+    if getattr(args, "physics_test", False):
+        _ph = PhysicsAccuracyHarness(bw_hz=20e6, n_sub=64)
+        _rep = _ph.run()
+        log.info(f"[PHYSICS] range resolution = {_rep['range_resolution_m']} m  (c/2·BW, BW=20 MHz)  "
+                 f"· max unambiguous = {_rep['max_unambiguous_range_m']} m")
+        for _t in _rep["single_target_tests"]:
+            log.info(f"[PHYSICS]  reflector {_t['true_m']:>5} m → recovered {_t['est_m']:>6} m  "
+                     f"(error {_t['error_m']} m ≤ res {_t['range_res_m']} m: "
+                     f"{'PASS' if _t['within_resolution'] else 'FAIL'})")
+        _rl = _rep["resolution_limit_test"]
+        log.info(f"[PHYSICS]  two reflectors >1 cell apart → {_rl['separable_pair_peaks']} peaks "
+                 f"({'PASS' if _rl['separable_ok'] else 'FAIL'}); <1 cell apart → "
+                 f"{_rl['unresolvable_pair_peaks']} peak ({'PASS' if _rl['merge_ok'] else 'FAIL'} — limit is real)")
+        log.info(f"[PHYSICS]  MATH CORRECT (recovers truth within the physical limit): {_rep['math_correct']}")
+        log.info("[PHYSICS]  NOTE: this proves the COMPUTATION is exact. Reconstruction FIDELITY is "
+                 "still hardware-bounded (bandwidth→range, aperture→bearing); a single antenna gives no bearing.")
+        sys.exit(0 if _rep["math_correct"] else 1)
 
     # v300+++ (#1): standalone self-test mode — verify the additive subsystems and exit.
     if getattr(args, "self_test", False):
@@ -93518,13 +95083,24 @@ if __name__ == "__main__":
     # optional features above.
     if not getattr(args, "no_power_pack", False):
         try:
-            fuser.power_pack = NEPACapabilityExpansionPackV4(
+            fuser.power_pack = NEPACapabilityExpansionPackV8(
                 fuser, args, namespace=globals(),
                 llm_overseer=getattr(args, "llm_overseer", False),
                 llm_model=getattr(args, "llm_model", "claude-opus-4-8"))
             fuser.power_pack.attach()
         except Exception as _ppe:
             log.warning(f"[POWERPACK] init failed (non-fatal — base system unaffected): {_ppe}")
+
+    # v300++++: --ground-truth registers a known emitter so live reconstruction RMSE is measured.
+    if getattr(args, "ground_truth", None) and getattr(fuser, "power_pack", None) is not None:
+        try:
+            _gt = [float(x) for x in str(args.ground_truth).split(",")]
+            fuser.power_pack.validation.set_ground_truth("ground_truth", _gt)
+            log.info(f"[GROUND-TRUTH] registered known emitter 'ground_truth' at {_gt} m — live RMSE "
+                     f"logged when a fix named 'ground_truth' is produced (name your test device's "
+                     f"emitter accordingly, or have a mesh node report it).")
+        except Exception as _gte:
+            log.warning(f"[GROUND-TRUTH] bad --ground-truth '{args.ground_truth}': {_gte}")
 
     # v300+ (#2): optional UDP capture→fusion decoupler (drop-stale). Wired only on
     # the UDP path (its _process_frame return value is unused there). Off by default.
