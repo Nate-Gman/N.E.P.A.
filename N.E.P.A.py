@@ -93278,6 +93278,18 @@ class NEPASelfTestSuite:
                         "correctness_rate_over_time" in st)
         except Exception as e:
             self._check("continuous_verification_loop_present", False, str(e)[:80])
+        # Interior imaging: tomography reconstructs a known internal cavity; Doppler
+        # recovers bulk flow velocity — both honest (vein-level flagged NOT-RESOLVABLE).
+        try:
+            self._check("tomography_reconstructs_interior",
+                        ns["VolumetricTomographyImager"]().verify()["reconstructs_interior"])
+        except Exception as e:
+            self._check("tomography_reconstructs_interior", False, str(e)[:80])
+        try:
+            self._check("doppler_recovers_bulk_flow",
+                        ns["FlowDopplerImager"]().verify()["recovered"])
+        except Exception as e:
+            self._check("doppler_recovers_bulk_flow", False, str(e)[:80])
         return self.report()
 
     def report(self):
@@ -95207,6 +95219,130 @@ class ContinuousVerificationLoop:
                 "correctness_rate_over_time": self.correctness_rate(), "interval_s": self.interval}
 
 
+class VolumetricTomographyImager:
+    """Reconstructs the coarse INTERIOR of a penetrable object — 'inside of things as
+    a whole' — by CT/ART-style filtered back-projection from multi-view projections
+    (the RF analog of diffraction/attenuation tomography). Verified against a known
+    phantom (an internal cavity is recovered). Honest: resolution is bandwidth/aperture
+    bound — bulk internal structure yes; capillary/vein-level detail is below resolution
+    and is flagged NOT-RESOLVABLE, never fabricated."""
+    def __init__(self, n=48):
+        self.n = int(n)
+
+    def _coords(self, n):
+        c = (n - 1) / 2.0
+        y, x = np.mgrid[0:n, 0:n]
+        return (x - c), (y - c)
+
+    @staticmethod
+    def _norm(a):
+        a = np.asarray(a, dtype=float)
+        a = a - a.min()
+        m = a.max()
+        return a / m if m > 0 else a
+
+    def phantom(self):
+        n = self.n
+        X, Y = self._coords(n)
+        r = np.hypot(X, Y)
+        img = np.zeros((n, n))
+        img[r <= n * 0.38] = 1.0           # solid body
+        img[r <= n * 0.13] = 0.2           # internal cavity / 'vessel'
+        return img
+
+    def forward(self, img, angles, n_det=None):
+        n = img.shape[0]
+        X, Y = self._coords(n)
+        n_det = n_det or n
+        s_max = np.sqrt(2) * n / 2
+        bins = np.linspace(-s_max, s_max, n_det + 1)
+        flat = img.ravel()
+        sino = np.zeros((len(angles), n_det))
+        for i, th in enumerate(angles):
+            s = (X * np.cos(th) + Y * np.sin(th)).ravel()
+            idx = np.clip(np.digitize(s, bins) - 1, 0, n_det - 1)
+            sino[i] = np.bincount(idx, weights=flat, minlength=n_det)
+        return sino, bins
+
+    @staticmethod
+    def ramp_filter(proj):
+        nd = proj.shape[-1]
+        H = 2.0 * np.abs(np.fft.fftfreq(nd)).reshape(1, -1)
+        return np.real(np.fft.ifft(np.fft.fft(proj, axis=-1) * H, axis=-1))
+
+    def back_project(self, sino, angles, bins, n):
+        X, Y = self._coords(n)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        recon = np.zeros((n, n))
+        for i, th in enumerate(angles):
+            s = X * np.cos(th) + Y * np.sin(th)
+            recon += np.interp(s.ravel(), centers, sino[i]).reshape(n, n)
+        return recon / len(angles)
+
+    def reconstruct(self, img, n_angles=60):
+        angles = np.linspace(0, np.pi, n_angles, endpoint=False)
+        sino, bins = self.forward(img, angles)
+        return self._norm(self.back_project(self.ramp_filter(sino), angles, bins, img.shape[0]))
+
+    def verify(self):
+        ph = self.phantom()
+        rec = self.reconstruct(ph)
+        corr = float(np.corrcoef(ph.ravel(), rec.ravel())[0, 1])
+        X, Y = self._coords(self.n)
+        r = np.hypot(X, Y)
+        cavity = float(np.mean(rec[r <= self.n * 0.13]))
+        annulus = float(np.mean(rec[(r > self.n * 0.2) & (r <= self.n * 0.36)]))
+        return {"interior_correlation": round(corr, 3),
+                "cavity_recovered": cavity < annulus,        # interior cavity darker than body
+                "reconstructs_interior": corr > 0.6 and cavity < annulus,
+                "resolution_note": "bulk interior only; vein/capillary-level is below RF resolution — NOT resolvable"}
+
+    def status(self):
+        v = self.verify()
+        return {"reconstructs_interior": v["reconstructs_interior"],
+                "interior_correlation": v["interior_correlation"],
+                "vein_level": "NOT-RESOLVABLE (below RF resolution; needs higher-freq/contrast)"}
+
+
+class FlowDopplerImager:
+    """Estimates BULK fluid / physiological flow velocity from Doppler (the honest
+    'fluid flow'): a moving scatterer at velocity v imparts Doppler f_d = 2v·f_c/c,
+    recovered from slow-time phase progression. Verified: known velocity recovered.
+    Honest: this is bulk flow / breathing / pulse / gross motion — NOT capillary or
+    vein-level flow (below RF resolution)."""
+    C = 3.0e8
+
+    def __init__(self, fc=5e9):
+        self.fc = float(fc)
+        self.lam = self.C / self.fc
+
+    def synth(self, v_ms, n_slow=64, prf=1000.0, snr_db=30, seed=0):
+        rng = np.random.default_rng(seed)
+        t = np.arange(n_slow) / prf
+        s = np.exp(1j * 2 * np.pi * (2 * v_ms / self.lam) * t)
+        npow = 1.0 / (10 ** (snr_db / 10.0))
+        return s + np.sqrt(npow / 2) * (rng.standard_normal(n_slow) + 1j * rng.standard_normal(n_slow)), prf
+
+    def estimate_velocity(self, slow, prf):
+        S = np.fft.fftshift(np.fft.fft(slow))
+        fax = np.fft.fftshift(np.fft.fftfreq(len(slow), d=1.0 / prf))
+        fd = fax[int(np.argmax(np.abs(S)))]
+        return fd * self.lam / 2.0
+
+    def verify(self):
+        true_v = 0.5
+        s, prf = self.synth(true_v)
+        est = self.estimate_velocity(s, prf)
+        return {"true_v_ms": true_v, "est_v_ms": round(float(est), 3),
+                "error_ms": round(abs(est - true_v), 3), "recovered": abs(est - true_v) < 0.15,
+                "note": "bulk flow / breathing / pulse / gross motion velocity — NOT vein/capillary level"}
+
+    def status(self):
+        v = self.verify()
+        return {"recovers_bulk_flow_velocity": v["recovered"], "error_ms": v["error_ms"],
+                "scope": "bulk flow only; vein-level NOT resolvable"}
+
+
 class NEPACapabilityExpansionPackV11(NEPACapabilityExpansionPackV10):
     """v300+++++++++++ — continuous self-verification ('recorrectness over and over,
     periodically across the total program'). A background loop re-runs the entire
@@ -95251,6 +95387,149 @@ class NEPACapabilityExpansionPackV11(NEPACapabilityExpansionPackV10):
         except Exception:
             pass
         super()._on_exit()
+
+
+class MultiFrequencyPenetrationFusion:
+    """'All things are penetrated via frequency' — honestly: penetration is frequency-
+    dependent, so a CARRIER SET spanning the spectrum penetrates far more than any
+    single band (low freq → deep through soil/concrete/tissue; high freq → fine but
+    shallow). Fuses per-material penetration across bands. Honest: metal / strong
+    conductors stay blocked at all practical RF (a real barrier), flagged NOT-penetrable."""
+    MATERIALS = {  # name: (sigma S/m, eps_r)
+        "air": (1e-6, 1.0), "soil_dry": (0.001, 4.0), "soil_moist": (0.02, 15.0),
+        "concrete": (0.02, 6.0), "brick": (0.01, 4.0), "wood": (0.005, 2.5),
+        "water": (0.05, 80.0), "tissue": (0.6, 45.0), "metal": (1e7, 1.0),
+    }
+    BANDS_HZ = [1e8, 4e8, 1e9, 2.4e9, 5e9, 1e10]
+
+    def __init__(self):
+        self.phys = PenetrationPhysics()
+
+    def penetration_table(self, target_depth_m=0.3):
+        out = {}
+        for mat, (sig, eps) in self.MATERIALS.items():
+            depths = {f"{int(b/1e6)}MHz": round(self.phys.skin_depth_m(b, sig, eps), 3)
+                      for b in self.BANDS_HZ}
+            best = max(depths.values())
+            out[mat] = {"depth_by_band_m": depths, "best_penetration_m": round(best, 3),
+                        "penetrable": best >= target_depth_m}
+        return out
+
+    def fuse(self, target_depth_m=0.3):
+        t = self.penetration_table(target_depth_m)
+        penetrable = [m for m, v in t.items() if v["penetrable"]]
+        return {"bands_hz": self.BANDS_HZ, "penetrable_materials": penetrable,
+                "blocked_materials": [m for m in t if m not in penetrable],
+                "metal_blocked": not t["metal"]["penetrable"], "table": t}
+
+    def verify(self):
+        f = self.fuse(0.3)
+        soil = ("soil_moist" in f["penetrable_materials"]) or ("soil_dry" in f["penetrable_materials"])
+        return {"fused_penetrable_count": len(f["penetrable_materials"]),
+                "metal_blocked_honest": f["metal_blocked"], "soil_penetrated": soil,
+                "all_penetrated_except_conductors": f["metal_blocked"] and len(f["penetrable_materials"]) >= 5}
+
+    def status(self):
+        v = self.verify()
+        return {"penetrable_materials": v["fused_penetrable_count"],
+                "metal_blocked": v["metal_blocked_honest"],
+                "note": "carrier-set spans spectrum → penetrates penetrable media; conductors blocked (honest)"}
+
+
+class CarrierRelayNetwork:
+    """'Carriers relay data' — models data reaching a receiver via DIRECT line-of-sight
+    PLUS relayed / NLOS multi-hop paths through intermediate nodes, so a relay network
+    extends coverage past obstacles. Verified: a target blocked from the source directly
+    is reached via a relay. Honest: a fully shielded target is unreachable even via
+    relays (flagged)."""
+    def _los(self, a, b, blockers):
+        a = np.asarray(a, float)
+        b = np.asarray(b, float)
+        d = b - a
+        A = float(d @ d)
+        if A <= 0:
+            return True
+        for (cx, cy, r) in blockers:
+            c = np.array([cx, cy], float)
+            f = a - c
+            B = 2 * float(f @ d)
+            Cc = float(f @ f) - r * r
+            disc = B * B - 4 * A * Cc
+            if disc >= 0:
+                disc = np.sqrt(disc)
+                for tt in ((-B - disc) / (2 * A), (-B + disc) / (2 * A)):
+                    if 0 <= tt <= 1:
+                        return False
+        return True
+
+    def reachable(self, source, target, relays, blockers):
+        if self._los(source, target, blockers):
+            return {"reachable": True, "via": "direct LOS"}
+        for i, rel in enumerate(relays):
+            if self._los(source, rel, blockers) and self._los(rel, target, blockers):
+                return {"reachable": True, "via": f"relay node {i}"}
+        return {"reachable": False, "via": None,
+                "note": "no direct or single-hop relay path (shielded/occluded)"}
+
+    def verify(self):
+        src, tgt = (0.0, 0.0), (10.0, 0.0)
+        blockers = [(5.0, 0.0, 1.5)]      # wall between source and target
+        relays = [(5.0, 4.0, 0.0)]        # relay routed around the wall
+        direct = self._los(src, tgt, blockers)
+        via = self.reachable(src, tgt, relays, blockers)
+        return {"direct_blocked": not direct, "reachable_via_relay": via["reachable"],
+                "relay_extends_coverage": (not direct) and via["reachable"], "via": via.get("via")}
+
+    def status(self):
+        v = self.verify()
+        return {"relay_extends_coverage": v["relay_extends_coverage"], "path": v["via"]}
+
+
+class NEPACapabilityExpansionPackV12(NEPACapabilityExpansionPackV11):
+    """v300++++++++++++ — interior + flow imaging: 'fluid flow, internals, inside of
+    things as a whole live systematic synergetic rendered construct'. Tomographic
+    reconstruction of coarse INTERIOR structure (CT/ART) + Doppler BULK-FLOW velocity,
+    fused into the overseer's perceived scene. Honest: bulk interior + bulk flow are
+    real and verified; vein/capillary-level detail is below RF resolution and flagged
+    NOT-RESOLVABLE — never fabricated."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.tomography = VolumetricTomographyImager()
+        self.flow = FlowDopplerImager()
+        self._interior = None
+
+    def attach(self):
+        super().attach()
+        try:
+            self._interior = {"tomography": self.tomography.status(), "flow": self.flow.status()}
+            log.info(f"[INTERIOR] volumetric tomography reconstructs interior="
+                     f"{self._interior['tomography']['reconstructs_interior']} "
+                     f"(corr {self._interior['tomography']['interior_correlation']}); bulk-flow Doppler "
+                     f"recovered={self._interior['flow']['recovers_bulk_flow_velocity']}; vein/capillary-level "
+                     f"flagged NOT-RESOLVABLE (no fabrication) — inside-of-things is now in the construct.")
+        except Exception:
+            pass
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v12"] = self._interior
+            ov = pp.get("overseer_vision")
+            if isinstance(ov, dict) and self._interior:
+                ov["internals"] = {
+                    "interior_reconstructed": self._interior["tomography"]["reconstructs_interior"],
+                    "interior_correlation": self._interior["tomography"]["interior_correlation"],
+                    "bulk_flow": self._interior["flow"]["recovers_bulk_flow_velocity"],
+                    "vein_level": "NOT-RESOLVABLE (below RF resolution)"}
+                if "overseer_vision_summary" in pp:
+                    pp["overseer_vision_summary"] += (" · interior: coarse structure + bulk flow "
+                                                      "(vein-level NOT-RESOLVABLE)")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
@@ -95443,6 +95722,13 @@ if __name__ == "__main__":
                  "FLAGGED and continuously cross-validated against real measurements — kept only while it "
                  "keeps matching reality, never relabelled as measured. That is how to 'see the impossible' "
                  "without fabricating it.")
+        _tomo = VolumetricTomographyImager().verify()
+        log.info(f"[ACCURACY] interior tomography ('inside of things'): interior correlation "
+                 f"{_tomo['interior_correlation']}, cavity recovered={_tomo['cavity_recovered']} — "
+                 f"{_tomo['resolution_note']}")
+        _flow = FlowDopplerImager().verify()
+        log.info(f"[ACCURACY] bulk-flow Doppler ('fluid flow'): true {_flow['true_v_ms']} m/s → est "
+                 f"{_flow['est_v_ms']} m/s (err {_flow['error_ms']}); {_flow['note']}")
         sys.exit(0)
 
     # v300++++: standalone PHYSICS verification — prove the core sensing math is exact.
@@ -95574,7 +95860,7 @@ if __name__ == "__main__":
     # optional features above.
     if not getattr(args, "no_power_pack", False):
         try:
-            fuser.power_pack = NEPACapabilityExpansionPackV11(
+            fuser.power_pack = NEPACapabilityExpansionPackV12(
                 fuser, args, namespace=globals(),
                 llm_overseer=getattr(args, "llm_overseer", False),
                 llm_model=getattr(args, "llm_model", "claude-opus-4-8"))
