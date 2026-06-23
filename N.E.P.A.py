@@ -1986,6 +1986,7 @@ class DetailTabWindow:
                  "xmodal":       "CROSS-MODAL VALIDATION GATE (TIER 19) — EACH CLAIM CONFIRMED ONLY BY ≥2 INDEPENDENT SENSOR MODALITIES · TRUST MULTIPLIER · NO SINGLE-SOURCE CLAIMS PASS AS CERTAIN",
                  "provenance":   "PROVENANCE LEDGER (TIER 24) — EVERY DISPLAYED VALUE → ITS REAL SOURCE + TRANSFORM CHAIN + CLASS · DEAD-SOURCE ROWS FLAGGED AWAITING · NO-FALSE-DATA, AUDITABLE",
                  "temporal":     "4D TEMPORAL WORLD (TIER 18) — TIME-INDEXED RING BUFFER OF WORLD SNAPSHOTS · EACH ENTITY'S RANGE-OVER-TIME TRAJECTORY · SCRUB ANY RECORDED MOMENT · GAPS STAY GAPS",
+                 "realityrender": "◉ REALITY RENDER (V20–V34) — DENSE FIELD · PBR PHOTOREAL SURFACE · VOLUMETRIC SEE-INSIDE · PROVENANCE MAP · RENDERED ON-DEMAND FROM THE LIVE STACK · measured/inferred/estimated/synth LABELLED",
                  "receivers":    "ANY-RECEIVER AUTO-ENROLL (TIER 20) — EVERY REAL INPUT BECOMES A ROW OF THE SENSORY MATRIX · LIVE / AWAITING / STALE · 0 REQUIRED HARDWARE · MORE DEVICES = MORE ROWS",
                  "emitgraph":    "RF-EMITTER IDENTITY & RELATIONSHIP GRAPH (TIER 15) — STABLE BSSID IDENTITIES · CO-OCCURRENCE LINKS · RSSI σ MOBILITY · NEW-EMITTER / SPOOF ANOMALIES · INTENT NOT FAKED",
                  "spectrum_radar": "SPECTRUM-AS-RADAR (PASS 93) — RANGE/BEARING DERIVED FROM REAL RSSI ACROSS CARRIERS · NO COHERENT IQ · NOTHING FABRICATED",
@@ -8846,6 +8847,73 @@ class DetailTabWindow:
                   "v216 TIER 19: the trust multiplier of the unified sensory→correlation-matrix system. More "
                   "real sensors connected → more independent corroboration → stronger gate. Never single-source-certain.",
                   color="#5a8a9a", fontsize=6.0, family="monospace", transform=ax_f.transAxes, va="center")
+
+    def _draw_realityrender(self, fig, p, snap):
+        """v300++++: a real view that NATIVELY draws the V20–V34 reality-render stack — dense
+        field, PBR photoreal surface, volumetric see-inside, provenance map — rendered ON-DEMAND
+        from the live pack (no per-frame cost; render happens only when this view is open). Every
+        panel is provenance-labelled; absent layers show 'awaiting', never faked."""
+        pack = getattr(self.fuser, "power_pack", None)
+        F = getattr(pack, "_last_field2d", None)
+        C = getattr(pack, "_last_conf2d", None)
+        Pv = getattr(pack, "_last_prov2d", None)
+        tier = snap.get("reality_tier", "UNKNOWN")
+        ax_h = fig.add_axes([0.02, 0.945, 0.96, 0.05]); ax_h.axis("off")
+        ax_h.text(0.0, 0.6, f"◉ REALITY RENDER  ·  tier [{tier}]  ·  rendered on-demand from the live stack",
+                  color="#33ddaa", fontsize=11, fontweight="bold", family="monospace",
+                  transform=ax_h.transAxes, va="center")
+        ax_h.text(0.0, 0.04, "measured = solid truth · inferred/estimated = flagged interpolation · "
+                  "synthesized = visual material (not a measurement). Detail under a non-measured tier is "
+                  "honest PRESENTATION, not sensed reality.", color="#5a8a9a", fontsize=6.6,
+                  family="monospace", transform=ax_h.transAxes, va="center")
+        if F is None:
+            ax = fig.add_subplot(111); ax.axis("off")
+            ax.text(0.5, 0.5, "reality-render stack awaiting first frame…", color="#557a88",
+                    ha="center", va="center", fontsize=11)
+            return
+        # Panel 1: dense field (top-down) ───────────────────────────────────────────────
+        ax1 = fig.add_subplot(2, 2, 1); ax1.set_facecolor("#050505")
+        ax1.imshow(F, origin="lower", cmap="viridis", aspect="auto")
+        ax1.set_title("DENSE FIELD — interpolated reflectivity (live)", color="cyan", fontsize=9)
+        ax1.tick_params(colors="#666", labelsize=5)
+        # Panel 2: PBR photoreal surface (on-demand) ────────────────────────────────────
+        ax2 = fig.add_subplot(2, 2, 2); ax2.set_facecolor("#050505")
+        try:
+            img = pack.pbr.render(F, np.clip(F, 0, 1))["image"]
+            ax2.imshow(img, origin="lower", cmap="bone", aspect="auto")
+            ax2.set_title("PBR PHOTOREAL SURFACE — shaded + AO + specular (material from RF)",
+                          color="cyan", fontsize=9)
+        except Exception:
+            ax2.text(0.5, 0.5, "surface render unavailable", color="#557a88", ha="center", transform=ax2.transAxes)
+        ax2.tick_params(colors="#666", labelsize=5)
+        # Panel 3: volumetric see-inside (on-demand ray-march) ───────────────────────────
+        ax3 = fig.add_subplot(2, 2, 3); ax3.set_facecolor("#050505")
+        try:
+            vol = getattr(pack.construct, "voxels", None)
+            if vol is not None:
+                see, _ = pack.volume.ray_march(vol, np.clip(vol, 0, 1) * 0.35)
+                ax3.imshow(see, origin="lower", cmap="inferno", aspect="auto")
+                ax3.set_title("VOLUMETRIC SEE-INSIDE — ray-marched depth (x-ray metaphor)",
+                              color="cyan", fontsize=9)
+        except Exception:
+            ax3.text(0.5, 0.5, "volumetric unavailable", color="#557a88", ha="center", transform=ax3.transAxes)
+        ax3.tick_params(colors="#666", labelsize=5)
+        # Panel 4: provenance map + live metrics ─────────────────────────────────────────
+        ax4 = fig.add_subplot(2, 2, 4); ax4.set_facecolor("#050505")
+        if Pv is not None:
+            from matplotlib.colors import ListedColormap
+            cmap = ListedColormap(["#0a0a0a", "#22ff88", "#ffcc44", "#ff7766"])  # none/meas/inf/est
+            ax4.imshow(Pv, origin="lower", cmap=cmap, vmin=0, vmax=3, aspect="auto")
+        ax4.set_title("PROVENANCE MAP — green=measured · amber=inferred · red=estimated",
+                      color="cyan", fontsize=9)
+        ax4.tick_params(colors="#666", labelsize=5)
+        rcr = snap.get("reality_construct_report") or {}
+        mtxt = (f"render pts {(snap.get('dense_field_render') or {}).get('n_render_points','—')} · "
+                f"voxels {(snap.get('volumetric_render') or {}).get('voxels','—')} · "
+                f"spectrum {rcr.get('spectrum_information_gain_x','—')} · "
+                f"corr {rcr.get('correlation_count','—')}")
+        fig.text(0.5, 0.012, mtxt, color="#33ddaa", fontsize=7, ha="center", va="center",
+                 family="monospace")
 
     def _draw_provenance(self, fig, p, snap):
         """v218: PROVENANCE LEDGER (TIER 24) — every important displayed value traced to its real
@@ -43019,6 +43087,35 @@ class OverseerActionEngine:
             actions.append(self._mk("LOW_COVERAGE", "LOW", "RE-TASK",
                 f"Data-provenance coverage {float(cov):.0f}% is low — connect more receivers (see "
                 f"[Receivers]) to raise confidence across the matrix.", {"prov_coverage_pct": cov}))
+
+        # ── RULE: live motion in the render field → attention (LOW) [render-stack perception] ──
+        mf = (pp.get("motion_flow") or {}).get("moving_fraction")
+        if mf is not None and float(mf) > 0.15:
+            actions.append(self._mk("RENDER_MOTION", "LOW", "ALERT",
+                f"Live motion (Doppler-grounded optical flow) across {float(mf)*100:.0f}% of the render "
+                f"field — recommend attention to moving structure.", {"motion_flow.moving_fraction": mf}))
+
+        # ── RULE: interior/subsurface structure visible in volumetric see-inside → prioritize (LOW) ──
+        vr = pp.get("volumetric_render") or {}
+        v7 = (pp.get("power_pack") or {}).get("v7") or {}
+        tw = v7.get("through_wall"); ss = v7.get("subsurface")
+        if vr.get("interior_nonempty") and (bool(tw and tw not in ("UNDETECTABLE", None))
+                                            or bool(ss and ss not in ("UNDETECTABLE", None))):
+            actions.append(self._mk("INTERIOR_STRUCTURE", "LOW", "PRIORITIZE",
+                "Interior/subsurface structure resolved in the volumetric see-inside view (penetration "
+                "within skin-depth) — prioritize this region.",
+                {"volumetric_render.interior_nonempty": True, "through_wall": tw, "subsurface": ss}))
+
+        # ── RULE: render is rich but tier is ESTIMATED → connect hardware to make it MEASURED (LOW) ──
+        # The honest core: a detailed render under a non-measured tier is presentation, not measurement.
+        npts = (pp.get("dense_field_render") or {}).get("n_render_points")
+        tier = str(pp.get("reality_tier", ""))
+        if npts and tier in ("ESTIMATED", "SIMULATED", "NO-SENSOR", "RSSI-LIVE"):
+            actions.append(self._mk("RENDER_PRESENTATION_NOT_MEASURED", "LOW", "RE-TASK",
+                f"World view renders {int(npts):,} points but the reality tier is {tier} — that detail is "
+                f"honest PRESENTATION (interpolated/estimated/synthesized), not measurement. Connect real "
+                f"sensors (CSI/SDR/mmWave) to convert it to measured truth.",
+                {"dense_field_render.n_render_points": npts, "reality_tier": tier}))
 
         actions.sort(key=lambda a: self._sev_rank.get(a["severity"], 0), reverse=True)
         for a in actions:
@@ -83821,6 +83918,8 @@ class MultiAgentWirelessBCIFuser:
             self._open_tab("motion")
         elif key == "m":
             self._open_tab("medical")
+        elif key == "r":
+            self._open_tab("realityrender")
         elif key == "f":
             self._open_tab("rfmap")
         elif key == "b":
@@ -89893,7 +89992,8 @@ NEPA — REAL-DATA ONLY. No fabricated vitals/pose/BCI. Humanitarian sensing."""
                 self._open_tab("world")
             except Exception as e:
                 log.warning(f"[WORLD] could not open 3D world: {e}")
-        log.info("[UI] Tab bar ready — press 1-9 (7=BCI, 8=Radar, 9=Navigable World/Splat, 0=Motion/W3D) to open a view window")
+        log.info("[UI] Tab bar ready — press 1-9 (7=BCI, 8=Radar, 9=Navigable World/Splat, 0=Motion/W3D), "
+                 "r=Reality-Render (dense field·PBR·see-inside·provenance) to open a view window")
         # Keep ani referenced on self so GC cannot collect it before plt.show() returns.
         # Pass 26: live refresh at the target FPS (default 20 → 50 ms) for a constantly
         # updating constructed environment.
@@ -93306,8 +93406,25 @@ class NEPASelfTestSuite:
             ov = ns["OverseerVisionModel"](None).verify()
             self._check("overseer_vision_sees_honestly",
                         ov["scene_built"] and ov["provenance_preserved"] and ov["perceives_resolution_limit"])
+            # The overseer must also SEE the full V20–V34 render stack, not just legacy layers.
+            self._check("overseer_sees_render_stack", ov.get("perceives_render_stack", False))
         except Exception as e:
             self._check("overseer_vision_sees_honestly", False, str(e)[:80])
+            self._check("overseer_sees_render_stack", False, str(e)[:80])
+        # Overseer ACTS on what it sees: render-stack evidence → recommendations, while a
+        # nominal scene still yields 0 actions (no false alarms).
+        try:
+            _oae = ns["OverseerActionEngine"]()
+            _nominal = _oae.evaluate({})["overseer_n_actions"]
+            _seen = _oae.evaluate({"motion_flow": {"moving_fraction": 0.4},
+                                   "dense_field_render": {"n_render_points": 9216},
+                                   "reality_tier": "ESTIMATED"})
+            _rules = {a["rule"] for a in _seen["overseer_actions"]}
+            self._check("overseer_acts_on_render_no_false_alarm",
+                        _nominal == 0 and "RENDER_MOTION" in _rules
+                        and "RENDER_PRESENTATION_NOT_MEASURED" in _rules)
+        except Exception as e:
+            self._check("overseer_acts_on_render_no_false_alarm", False, str(e)[:80])
         # Total mass correlation matrix: reverse-engineers the right # of independent sources.
         try:
             self._check("total_correlation_recovers_sources",
@@ -93517,8 +93634,12 @@ class NEPASelfTestSuite:
         try:
             self._check("all_displays_reality_overlay_wired",
                         hasattr(ns.get("DetailTabWindow"), "_apply_reality_render_overlay"))
+            # Native render-stack view (key 'r') draws dense field / PBR / volumetric / provenance.
+            self._check("realityrender_view_wired",
+                        hasattr(ns.get("DetailTabWindow"), "_draw_realityrender"))
         except Exception as e:
             self._check("all_displays_reality_overlay_wired", False, str(e)[:80])
+            self._check("realityrender_view_wired", False, str(e)[:80])
         # Bottleneck solver + error correction: low-rank tractable + accurate, consensus error
         # correction, KD-tree O(log N) mapping.
         try:
@@ -95071,6 +95192,21 @@ class OverseerVisionModel:
             "cognitive_population": pp.get("cognitive_population"),
             "image_fidelity_ssim": reality.get("image_ssim_superres"),
         }
+        # v300++++: the overseer must SEE the full V20–V34 reality-render stack, not just the
+        # legacy layers — dense field, volumetric see-inside, motion/flow, temporal coherence,
+        # spectrum/correlation scale, material. All provenance-aware; absent layers stay None.
+        ppk = pp.get("power_pack") or {}
+        scene["render_stack"] = {
+            "dense_points": (pp.get("dense_field_render") or {}).get("n_render_points"),
+            "volumetric_voxels": (pp.get("volumetric_render") or {}).get("voxels"),
+            "see_inside": (pp.get("volumetric_render") or {}).get("interior_nonempty"),
+            "motion_fraction": (pp.get("motion_flow") or {}).get("moving_fraction"),
+            "temporal_error_reduction_x": (pp.get("temporal_coherence") or {}).get("error_reduction_x"),
+            "world_construct_fps": (pp.get("world_construct") or {}).get("fps_capacity"),
+            "material": (pp.get("surface_texture") or {}).get("material"),
+            "spectrum_info_gain_x": (ppk.get("v22") or {}).get("spectrum_information_gain_x"),
+            "triple_correlations": (ppk.get("v32") or {}).get("triple_correlations"),
+        }
         scene["summary"] = self._summarize(scene)
         self.last_scene = scene
         return scene
@@ -95093,6 +95229,20 @@ class OverseerVisionModel:
         cp = s.get("cognitive_population")
         if cp:
             parts.append(f"{cp.get('n_people', 0)} people cognitive-STATE (no thoughts)")
+        rs = s.get("render_stack") or {}
+        if rs.get("dense_points"):
+            parts.append(f"render {rs['dense_points']:,} pts")
+        if rs.get("volumetric_voxels"):
+            parts.append(f"{rs['volumetric_voxels']:,} voxels"
+                         + (" (see-inside)" if rs.get("see_inside") else ""))
+        if rs.get("motion_fraction") is not None:
+            parts.append(f"motion {rs['motion_fraction']:.0%}")
+        if rs.get("material"):
+            parts.append(f"material {str(rs['material']).split('/')[0]}")
+        if rs.get("spectrum_info_gain_x"):
+            parts.append(f"spectrum {rs['spectrum_info_gain_x']:.1e}×")
+        if rs.get("triple_correlations"):
+            parts.append(f"corr {rs['triple_correlations']:.1e}")
         return " · ".join(parts)
 
     def describe(self):
@@ -95111,11 +95261,20 @@ class OverseerVisionModel:
                           "cross_range": "UNKNOWN — single antenna"},
               "entities": [{"id": 1, "class": "human", "confidence": 0.8, "position": [2, 2, 0]}],
               "reflectogram_peaks": [{"distance_m": 15.0, "amplitude": 1.0}],
-              "cognitive_population": {"n_people": 1}}
+              "cognitive_population": {"n_people": 1},
+              "dense_field_render": {"n_render_points": 9216},
+              "volumetric_render": {"voxels": 110592, "interior_nonempty": True},
+              "motion_flow": {"moving_fraction": 0.12},
+              "surface_texture": {"material": "rough/fabric/hair-like"},
+              "power_pack": {"v22": {"spectrum_information_gain_x": 1.73e6},
+                             "v32": {"triple_correlations": 1.86e12}}}
         sc = self.render_scene(pp)
+        rs = sc.get("render_stack") or {}
         return {"scene_built": sc["tracks_n"] == 1 and bool(sc["summary"]),
                 "provenance_preserved": sc["provenance"] == "MEASURED",
                 "perceives_resolution_limit": "NOT photographic" in sc["summary"],
+                "perceives_render_stack": bool(rs.get("dense_points") and rs.get("volumetric_voxels")
+                                               and rs.get("see_inside")),
                 "summary": sc["summary"]}
 
 
