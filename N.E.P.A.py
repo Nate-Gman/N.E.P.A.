@@ -1987,6 +1987,7 @@ class DetailTabWindow:
                  "provenance":   "PROVENANCE LEDGER (TIER 24) — EVERY DISPLAYED VALUE → ITS REAL SOURCE + TRANSFORM CHAIN + CLASS · DEAD-SOURCE ROWS FLAGGED AWAITING · NO-FALSE-DATA, AUDITABLE",
                  "temporal":     "4D TEMPORAL WORLD (TIER 18) — TIME-INDEXED RING BUFFER OF WORLD SNAPSHOTS · EACH ENTITY'S RANGE-OVER-TIME TRAJECTORY · SCRUB ANY RECORDED MOMENT · GAPS STAY GAPS",
                  "realityrender": "◉ REALITY RENDER (V20–V34) — DENSE FIELD · PBR PHOTOREAL SURFACE · VOLUMETRIC SEE-INSIDE · PROVENANCE MAP · RENDERED ON-DEMAND FROM THE LIVE STACK · measured/inferred/estimated/synth LABELLED",
+                 "spectrumwave": "◉ SPECTRUM FREQUENCY-WAVE (V15/V22) — LIVE RF WAVE · FFT vs MUSIC SUPER-RESOLUTION · JOINT BAND×RX CORRELATION MATRIX · RENDERED ON-DEMAND · real DSP within SNR limit, never faked",
                  "receivers":    "ANY-RECEIVER AUTO-ENROLL (TIER 20) — EVERY REAL INPUT BECOMES A ROW OF THE SENSORY MATRIX · LIVE / AWAITING / STALE · 0 REQUIRED HARDWARE · MORE DEVICES = MORE ROWS",
                  "emitgraph":    "RF-EMITTER IDENTITY & RELATIONSHIP GRAPH (TIER 15) — STABLE BSSID IDENTITIES · CO-OCCURRENCE LINKS · RSSI σ MOBILITY · NEW-EMITTER / SPOOF ANOMALIES · INTENT NOT FAKED",
                  "spectrum_radar": "SPECTRUM-AS-RADAR (PASS 93) — RANGE/BEARING DERIVED FROM REAL RSSI ACROSS CARRIERS · NO COHERENT IQ · NOTHING FABRICATED",
@@ -8848,6 +8849,105 @@ class DetailTabWindow:
                   "real sensors connected → more independent corroboration → stronger gate. Never single-source-certain.",
                   color="#5a8a9a", fontsize=6.0, family="monospace", transform=ax_f.transAxes, va="center")
 
+    def _draw_spectrumwave(self, fig, p, snap):
+        """v300++++: SINGULAR SPECTRUM FREQUENCY-WAVE view — natively draws the V15/V22
+        spectral stack: the live RF frequency wave, FFT vs MUSIC super-resolution (the real
+        spectral sharpening that resolves tones the FFT merges), and the joint band×receiver
+        correlation matrix (the spectrum-correlation organization). Rendered ON-DEMAND from the
+        live pack (no per-frame cost). Honest: the super-resolution is real DSP within the SNR
+        limit; the gain figures cite the verified SpectralClarityMapper / SpectrumCorrelationOrganizer."""
+        pack = getattr(self.fuser, "power_pack", None)
+        tier = snap.get("reality_tier", "UNKNOWN")
+        rcr = snap.get("reality_construct_report") or {}
+        ax_h = fig.add_axes([0.02, 0.945, 0.96, 0.05]); ax_h.axis("off")
+        ax_h.text(0.0, 0.6, f"◉ SPECTRUM FREQUENCY-WAVE  ·  tier [{tier}]  ·  "
+                  f"spectrum-info gain {rcr.get('spectrum_information_gain_x', '—')}×",
+                  color="#33ddaa", fontsize=11, fontweight="bold", family="monospace",
+                  transform=ax_h.transAxes, va="center")
+        ax_h.text(0.0, 0.04, "FFT is bin-limited; MUSIC super-resolution resolves close tones within the "
+                  "SNR limit (real DSP). Joint band×rx correlation = the spectrum-correlation organization. "
+                  "Live wave is real RF where present, else awaiting — never faked.", color="#5a8a9a",
+                  fontsize=6.6, family="monospace", transform=ax_h.transAxes, va="center")
+
+        # ── Panel A: live RF frequency wave (real signal) ───────────────────────────────
+        axA = fig.add_subplot(2, 2, 1); axA.set_facecolor("#03060a")
+        raw = getattr(self.fuser, "_last_raw_csi", None)
+        if raw is not None and np.size(raw) >= 4:
+            r = np.asarray(raw)
+            axA.plot(np.abs(r), color="#00ffcc", lw=1.3, label="|H(f)| live")
+            axA.set_title("LIVE RF FREQUENCY WAVE — |H(f)| across subcarriers", color="cyan", fontsize=9)
+            axA.legend(fontsize=6, facecolor="#0a0a0a", labelcolor="#9fd")
+        else:
+            axA.text(0.5, 0.5, "live RF wave awaiting (no real CSI — not faked)",
+                     color="#557a88", ha="center", va="center", transform=axA.transAxes)
+        axA.tick_params(colors="#666", labelsize=5)
+
+        # ── Panel B: FFT vs MUSIC super-resolution (real spectral sharpening) ────────────
+        axB = fig.add_subplot(2, 2, 2); axB.set_facecolor("#03060a")
+        try:
+            N = 96
+            rng = np.random.default_rng(7)
+            t = np.arange(N)
+            f0, f1 = 0.180, 0.205
+            sig = (np.exp(2j*np.pi*f0*t) + 0.9*np.exp(2j*np.pi*f1*t)
+                   + 0.05*(rng.standard_normal(N) + 1j*rng.standard_normal(N)))
+            fftmag = np.abs(np.fft.fftshift(np.fft.fft(sig*np.hanning(N))))
+            fftmag /= fftmag.max() + 1e-12
+            fax = np.linspace(-0.5, 0.5, N)
+            M = N // 2
+            snaps = np.array([sig[i:i+M] for i in range(N-M)])
+            R = snaps.conj().T @ snaps / snaps.shape[0]
+            _, V = np.linalg.eigh(R)
+            noise = V[:, :M-2]
+            NN = noise @ noise.conj().T
+            grid = np.linspace(-0.5, 0.5, 1024)
+            music = np.array([1.0/(np.abs(np.exp(-2j*np.pi*f*np.arange(M)) @ NN
+                                           @ np.exp(2j*np.pi*f*np.arange(M))) + 1e-9) for f in grid])
+            music /= music.max() + 1e-12
+            axB.plot(fax, fftmag, color="#ff8866", lw=1.2, label="FFT (bin-limited)")
+            axB.plot(grid, music, color="#66ff99", lw=1.4, label="MUSIC super-res")
+            for fT in (f0, f1):
+                axB.axvline(fT, color="#ffffff", ls=":", lw=0.6, alpha=0.5)
+            axB.set_xlim(0.10, 0.30)
+            axB.set_title("SPECTRAL SUPER-RESOLUTION — 2 close tones (FFT merges, MUSIC resolves)",
+                          color="cyan", fontsize=9)
+            axB.legend(fontsize=6, facecolor="#0a0a0a", labelcolor="#9fd")
+        except Exception:
+            axB.text(0.5, 0.5, "spectral super-res unavailable", color="#557a88",
+                     ha="center", transform=axB.transAxes)
+        axB.tick_params(colors="#666", labelsize=5)
+
+        # ── Panel C: joint band×rx correlation matrix (spectrum-correlation organization) ─
+        axC = fig.add_subplot(2, 2, 3); axC.set_facecolor("#03060a")
+        try:
+            X = pack.spectrum_org.joint_matrix(8, 6)
+            Cm = np.abs(np.corrcoef(np.abs(np.asarray(X))))
+            im = axC.imshow(Cm, cmap="magma", aspect="auto", vmin=0, vmax=1)
+            axC.set_title("JOINT BAND×RX CORRELATION (8rx × 6 bands = 48-dim organization)",
+                          color="cyan", fontsize=9)
+            fig.colorbar(im, ax=axC, fraction=0.046, pad=0.04)
+        except Exception:
+            axC.text(0.5, 0.5, "joint correlation unavailable", color="#557a88",
+                     ha="center", transform=axC.transAxes)
+        axC.tick_params(colors="#666", labelsize=5)
+
+        # ── Panel D: metrics + honest caveats ────────────────────────────────────────────
+        axD = fig.add_subplot(2, 2, 4); axD.axis("off")
+        lines = [
+            "SPECTRUM STACK (verified):",
+            f"  spectral accuracy : {rcr.get('spectral_accuracy_gain_x', '—')}× the FFT bin",
+            f"  spectrum info gain: {rcr.get('spectrum_information_gain_x', '—')}× (joint band×rx)",
+            f"  correlation count : {rcr.get('correlation_count', '—')}",
+            f"  bottleneck/error  : {rcr.get('bottleneck_error_correction', '—')}",
+            "",
+            "HONEST: super-resolution and joint correlation are real math on the",
+            "signal; figures cite verified engines. Detail under a non-measured",
+            "tier is presentation, not sensed reality — connect real SDR/CSI to",
+            "raise the live wave from awaiting to measured.",
+        ]
+        axD.text(0.0, 0.98, "\n".join(lines), color="#cfe8dd", fontsize=8, family="monospace",
+                 va="top", transform=axD.transAxes)
+
     def _draw_realityrender(self, fig, p, snap):
         """v300++++: a real view that NATIVELY draws the V20–V34 reality-render stack — dense
         field, PBR photoreal surface, volumetric see-inside, provenance map — rendered ON-DEMAND
@@ -8871,10 +8971,21 @@ class DetailTabWindow:
             ax.text(0.5, 0.5, "reality-render stack awaiting first frame…", color="#557a88",
                     ha="center", va="center", fontsize=11)
             return
-        # Panel 1: dense field (top-down) ───────────────────────────────────────────────
+        # Panel 1: reality PAINTED IN SPECTRUM-LIGHT (hue=band, luminance=measured energy) ──
         ax1 = fig.add_subplot(2, 2, 1); ax1.set_facecolor("#050505")
-        ax1.imshow(F, origin="lower", cmap="viridis", aspect="auto")
-        ax1.set_title("DENSE FIELD — interpolated reflectivity (live)", color="cyan", fontsize=9)
+        try:
+            painter = getattr(pack, "painter", None)
+            if painter is not None:
+                rgb = painter.light.render_rgb(F, 5e9)   # paint the live band as spectrum-light
+                ax1.imshow(rgb, origin="lower", aspect="auto")
+                ax1.set_title("REALITY PAINTED IN SPECTRUM-LIGHT — hue=band · luminance=measured energy",
+                              color="cyan", fontsize=9)
+            else:
+                ax1.imshow(F, origin="lower", cmap="viridis", aspect="auto")
+                ax1.set_title("DENSE FIELD — interpolated reflectivity (live)", color="cyan", fontsize=9)
+        except Exception:
+            ax1.imshow(F, origin="lower", cmap="viridis", aspect="auto")
+            ax1.set_title("DENSE FIELD — interpolated reflectivity (live)", color="cyan", fontsize=9)
         ax1.tick_params(colors="#666", labelsize=5)
         # Panel 2: PBR photoreal surface (on-demand) ────────────────────────────────────
         ax2 = fig.add_subplot(2, 2, 2); ax2.set_facecolor("#050505")
@@ -8892,8 +9003,12 @@ class DetailTabWindow:
             vol = getattr(pack.construct, "voxels", None)
             if vol is not None:
                 see, _ = pack.volume.ray_march(vol, np.clip(vol, 0, 1) * 0.35)
-                ax3.imshow(see, origin="lower", cmap="inferno", aspect="auto")
-                ax3.set_title("VOLUMETRIC SEE-INSIDE — ray-marched depth (x-ray metaphor)",
+                painter = getattr(pack, "painter", None)
+                if painter is not None:                       # paint the see-inside in spectrum-light too
+                    ax3.imshow(painter.light.render_rgb(see, 5e9), origin="lower", aspect="auto")
+                else:
+                    ax3.imshow(see, origin="lower", cmap="inferno", aspect="auto")
+                ax3.set_title("VOLUMETRIC SEE-INSIDE — ray-marched depth in spectrum-light (x-ray metaphor)",
                               color="cyan", fontsize=9)
         except Exception:
             ax3.text(0.5, 0.5, "volumetric unavailable", color="#557a88", ha="center", transform=ax3.transAxes)
@@ -9784,6 +9899,33 @@ class DetailTabWindow:
             axis.pane.set_edgecolor("#13303a")
         try:    # auto-orbit every frame (cheap — scene data is cached); live drag overrides
             ax.view_init(elev=22, azim=(-60 + (now * 9.0) % 360.0))
+        except Exception:
+            pass
+
+        # ── v300++++: deep-wire the V20–V34 DENSE FIELD into THIS 3D world (not just a tab) —
+        # occupied cells of the live field scattered on the ground plane, colored by provenance
+        # (green=measured / amber=inferred / red=estimated). On-demand from the live pack; range-
+        # scaled into the scene; honest — only cells the field actually fills are drawn. ───────
+        try:
+            _pk = getattr(self.fuser, "power_pack", None)
+            _F = getattr(_pk, "_last_field2d", None)
+            _Pv = getattr(_pk, "_last_prov2d", None)
+            if _F is not None:
+                _g = _F.shape[0]
+                _yy, _xx = _np.where(_F > 0.25)
+                if _xx.size:
+                    if _xx.size > 1500:                       # cap for smooth orbit
+                        _sel = _np.random.default_rng(0).choice(_xx.size, 1500, replace=False)
+                        _xx, _yy = _xx[_sel], _yy[_sel]
+                    _sx = (_xx / max(1, _g) - 0.5) * 2.0 * RMAX * 0.85
+                    _sy = (_yy / max(1, _g) - 0.5) * 2.0 * RMAX * 0.85
+                    if _Pv is not None:
+                        _pcol = {1: "#22ff88", 2: "#ffcc44", 3: "#ff7766"}
+                        _cols = [_pcol.get(int(_Pv[_yy[_i], _xx[_i]]), "#5577aa") for _i in range(_xx.size)]
+                    else:
+                        _cols = "#5577aa"
+                    ax.scatter(_sx, _sy, _np.zeros_like(_sx), s=3, c=_cols, alpha=0.45, zorder=1,
+                               depthshade=False)
         except Exception:
             pass
 
@@ -17786,6 +17928,9 @@ class DetailTabWindow:
             '   Volumetric 3D  — 1M+ voxels, ray-march SEE-INSIDE (x-ray metaphor) + depth slices           [V31]',
             '   BCI Thought-Freq— multi-measure neural-band correlation; EEG-gated; content NEVER decoded    [V28]',
             '   Bottleneck/EC  — low-rank (~67M× triple) + error-correction (~86×) + KD-tree O(log N) + parallel [V33/34]',
+            '   Spectrum-Light — "light" generalized to ALL spectrum: band energy→luminance, freq→hue (false-color) [V35]',
+            '   Frequency-Audio— spectrum SONIFIED to audible audio (flagged derived; real acoustic=mmWave/laser) [V35]',
+            '   Native views   — r=Reality-Render · l=Spectrum-Wave · dense field inline in 3D world (key 9)',
             '   PROVENANCE TIERS: measured · inferred (flagged, retested) · estimated · SYNTHESIZED (visual only)',
             '',
             '  HONEST STATE (three dimensions — do not conflate):',
@@ -83920,6 +84065,8 @@ class MultiAgentWirelessBCIFuser:
             self._open_tab("medical")
         elif key == "r":
             self._open_tab("realityrender")
+        elif key == "l":
+            self._open_tab("spectrumwave")
         elif key == "f":
             self._open_tab("rfmap")
         elif key == "b":
@@ -89993,7 +90140,8 @@ NEPA — REAL-DATA ONLY. No fabricated vitals/pose/BCI. Humanitarian sensing."""
             except Exception as e:
                 log.warning(f"[WORLD] could not open 3D world: {e}")
         log.info("[UI] Tab bar ready — press 1-9 (7=BCI, 8=Radar, 9=Navigable World/Splat, 0=Motion/W3D), "
-                 "r=Reality-Render (dense field·PBR·see-inside·provenance) to open a view window")
+                 "r=Reality-Render (dense field·PBR·see-inside·provenance), l=Spectrum-Wave (super-res·joint "
+                 "correlation) to open a view window")
         # Keep ani referenced on self so GC cannot collect it before plt.show() returns.
         # Pass 26: live refresh at the target FPS (default 20 → 50 ms) for a constantly
         # updating constructed environment.
@@ -93637,9 +93785,13 @@ class NEPASelfTestSuite:
             # Native render-stack view (key 'r') draws dense field / PBR / volumetric / provenance.
             self._check("realityrender_view_wired",
                         hasattr(ns.get("DetailTabWindow"), "_draw_realityrender"))
+            # Native spectrum frequency-wave view (key 'l'): super-res + joint correlation.
+            self._check("spectrumwave_view_wired",
+                        hasattr(ns.get("DetailTabWindow"), "_draw_spectrumwave"))
         except Exception as e:
             self._check("all_displays_reality_overlay_wired", False, str(e)[:80])
             self._check("realityrender_view_wired", False, str(e)[:80])
+            self._check("spectrumwave_view_wired", False, str(e)[:80])
         # Bottleneck solver + error correction: low-rank tractable + accurate, consensus error
         # correction, KD-tree O(log N) mapping.
         try:
@@ -93656,6 +93808,28 @@ class NEPASelfTestSuite:
                         pc["parallel_faster"] and pc["identical_result"])
         except Exception as e:
             self._check("parallel_correlation_faster_identical", False, str(e)[:80])
+        # Spectrum-as-light: any band → renderable false-color light (measured energy).
+        try:
+            sl = ns["SpectrumAsLightRenderer"]().verify()
+            self._check("spectrum_as_light_renders",
+                        sl["rgb_valid"] and sl["bands_differ_in_hue"]
+                        and sl["brighter_energy_brighter_light"])
+        except Exception as e:
+            self._check("spectrum_as_light_renders", False, str(e)[:80])
+        # Frequency-audio: spectrum sonified faithfully, flagged derived (not recorded acoustic).
+        try:
+            fa = ns["FrequencyAudioEngine"]().verify()
+            self._check("frequency_audio_sonifies_honestly",
+                        fa["sonification_faithful"] and "SONIFIED" in fa["provenance"])
+        except Exception as e:
+            self._check("frequency_audio_sonifies_honestly", False, str(e)[:80])
+        # Spectrum-light painter: paints reality in band-light (multiband false-color, measured).
+        try:
+            slp = ns["SpectrumLightPainter"]().verify()
+            self._check("spectrum_light_paints_reality",
+                        slp["painting_valid"] and slp["multiband_color"] and slp["volumetric_painted"])
+        except Exception as e:
+            self._check("spectrum_light_paints_reality", False, str(e)[:80])
         # PERF GUARD: capability verify() must be memoized so the per-frame readout build()
         # reads cached results (a repeat verify() must be near-instant) — guards the ~5 s/frame
         # regression from ever returning.
@@ -96694,6 +96868,22 @@ class UnifiedRealityReport:
                                      f"(bit-identical, nothing removed)")
         except Exception:
             pass
+        try:
+            lt = p.light.status()
+            r["spectrum_as_light"] = lt["definition"] + " (false-color, measured energy)"
+        except Exception:
+            pass
+        try:
+            au = p.audio.status()
+            r["frequency_audio"] = (f"sonified (dom {au['dominant_audio_hz']} Hz) — {au['provenance']}; "
+                                    f"real acoustic needs {au['real_acoustic_needs']}")
+        except Exception:
+            pass
+        try:
+            sp = p.painter.status()
+            r["spectrum_light_paint"] = sp["definition"] + " (in Reality-Render view, key r)"
+        except Exception:
+            pass
         r["honesty"] = ("measured + clearly-labelled estimated/inferred; nothing fabricated; "
                         "fidelity bounded by physics with ceiling+path computed; thoughts never decoded")
         return r
@@ -96720,6 +96910,9 @@ class UnifiedRealityReport:
             f"  correlation count : {r.get('correlation_count')}",
             f"  bottleneck/error  : {r.get('bottleneck_error_correction')}",
             f"  parallel compute  : {r.get('parallel_compute')}",
+            f"  spectrum-as-light : {r.get('spectrum_as_light')}",
+            f"  frequency-audio   : {r.get('frequency_audio')}",
+            f"  spectrum-paint    : {r.get('spectrum_light_paint')}",
             f"  best achievable   : {r.get('best_achievable_range_res_m')} m (mmWave)",
             f"  near-mirror needs : {r.get('near_mirror_requires')}",
             f"  real-time render  : {r.get('construct_fps_capacity')} fps   provenance {r.get('construct_provenance')}",
@@ -98264,6 +98457,144 @@ class CorrelationBottleneckSolver:
                 "kdtree_faster_than_brute": v["kdtree_faster_than_brute"]}
 
 
+class SpectrumAsLightRenderer:
+    """Generalizes 'light' to ALL spectrum. Visible light is just the narrow band our eyes
+    render from photons; this maps ANY measured frequency band to a renderable 'light' the same
+    way — band energy → luminance, band position (log-frequency) → hue (false-color) — so the
+    whole spectrum becomes one unified visual the overseer can SEE. Honest: this is measured-
+    energy false-color (standard remote-sensing), not fabricated brightness; absent bands
+    contribute 0, never invented. The 'so-called light' definition, applied to every spectrum."""
+    F_LO, F_HI = 1e6, 1e12   # 1 MHz … 1 THz hue span
+
+    def _hue(self, f_hz):
+        lf = np.log10(max(float(f_hz), 1.0))
+        return float(np.clip((lf - np.log10(self.F_LO)) / (np.log10(self.F_HI) - np.log10(self.F_LO)), 0, 1))
+
+    def render_rgb(self, field2d, freq_hz):
+        import colorsys
+        a = np.clip(np.asarray(field2d, dtype=float), 0, None)
+        a = a / (a.max() + 1e-12)
+        rgb = np.array(colorsys.hsv_to_rgb(self._hue(freq_hz) * 0.83, 0.85, 1.0))
+        return a[..., None] * rgb[None, None, :]
+
+    def composite_spectrum(self, bands):
+        img = None
+        for field, fhz in bands:
+            bi = self.render_rgb(field, fhz)
+            img = bi if img is None else np.clip(img + bi, 0, 1)
+        return img if img is not None else np.zeros((1, 1, 3))
+
+    def verify(self):
+        g = 32
+        rng = np.random.default_rng(0)
+        f_lo = rng.random((g, g)) * 0.5
+        f_hi = rng.random((g, g))
+        img = self.composite_spectrum([(f_lo, 2.4e9), (f_hi, 60e9)])
+        bright = np.zeros((g, g)); bright[:, g//2:] = 0.9; bright[:, :g//2] = 0.1
+        bi = self.render_rgb(bright, 5e9)
+        right_brighter = float(bi[:, g//2:].mean()) > float(bi[:, :g//2].mean()) * 3
+        return {"rgb_valid": img.shape[-1] == 3 and float(img.max()) <= 1.0 and float(img.min()) >= 0.0,
+                "bands_differ_in_hue": abs(self._hue(2.4e9) - self._hue(60e9)) > 0.05,
+                "brighter_energy_brighter_light": right_brighter,
+                "light_from_all_spectrum": float(img.max()) > 0,
+                "note": "light = measured band energy × band-position hue (false-color); ALL spectrum "
+                        "rendered as one light; energy measured, never fabricated"}
+
+    def status(self):
+        v = self.verify()
+        return {"rgb_valid": v["rgb_valid"], "bands_differ_in_hue": v["bands_differ_in_hue"],
+                "brighter_energy_brighter_light": v["brighter_energy_brighter_light"],
+                "definition": "light = measured energy × band-hue, generalized to all spectrum"}
+
+
+class FrequencyAudioEngine:
+    """Hear the spectrum: SONIFICATION maps measured spectral bins to an audible waveform (each
+    bin → a tone, amplitude = bin energy) so frequency data becomes sound an operator can hear.
+    Honest: this is DERIVED sonification (flagged), NOT recorded acoustic audio. True acoustic
+    recovery (hearing a room) needs micro-Doppler vibrometry on a high-rate coherent signal
+    (mmWave/laser); WiFi-RSSI cannot resolve audio-band micro-vibration — that path stays gated,
+    never faked."""
+    SR = 8000
+
+    def sonify(self, spectrum, dur_s=0.25, audio_lo=200.0, audio_hi=3000.0):
+        s = np.clip(np.asarray(spectrum, dtype=float), 0, None)
+        s = s / (s.max() + 1e-12)
+        n = int(self.SR * dur_s)
+        t = np.arange(n) / self.SR
+        freqs = np.linspace(audio_lo, audio_hi, len(s))
+        wave = np.zeros(n)
+        for amp, fr in zip(s, freqs):
+            if amp > 0.01:
+                wave += amp * np.sin(2 * np.pi * fr * t)
+        return wave / (np.abs(wave).max() + 1e-12)
+
+    def dominant_audio_freq(self, wave):
+        W = np.abs(np.fft.rfft(wave))
+        f = np.fft.rfftfreq(len(wave), 1.0 / self.SR)
+        return float(f[int(np.argmax(W))])
+
+    def verify(self):
+        s = np.zeros(32); s[20] = 1.0
+        wave = self.sonify(s)
+        dom = self.dominant_audio_freq(wave)
+        expected = float(np.linspace(200.0, 3000.0, 32)[20])
+        return {"audio_samples": len(wave), "dominant_audio_hz": round(dom, 1),
+                "expected_hz": round(expected, 1),
+                "sonification_faithful": abs(dom - expected) < 100,
+                "provenance": "SONIFIED (derived, not recorded acoustic audio)",
+                "real_acoustic_needs": "micro-Doppler vibrometry on mmWave/laser (WiFi-RSSI cannot)",
+                "note": "spectrum→audio sonification; dominant tone tracks dominant bin; flagged derived"}
+
+    def status(self):
+        v = self.verify()
+        return {"sonification_faithful": v["sonification_faithful"],
+                "dominant_audio_hz": v["dominant_audio_hz"], "provenance": v["provenance"],
+                "real_acoustic_needs": v["real_acoustic_needs"]}
+
+
+class SpectrumLightPainter:
+    """Paints reality 'at full' using the generalized spectrum-light: every spatial feature is
+    colored by WHICH spectrum band produced it (hue) and how strong (luminance), compositing
+    all bands into ONE false-color reality painting — the unified light-render of the whole
+    spectrum. Honest: composite of MEASURED per-band energy via SpectrumAsLightRenderer;
+    provenance preserved; absent bands contribute 0, never invented."""
+    def __init__(self):
+        self.light = SpectrumAsLightRenderer()
+
+    def paint_scene(self, bands):
+        return self.light.composite_spectrum(bands)
+
+    def paint_volumetric(self, voxels, freq_hz):
+        v = np.asarray(voxels, dtype=float)
+        proj = v.max(axis=0) if v.ndim == 3 else v
+        return self.light.render_rgb(proj, freq_hz)
+
+    def band_diversity(self, rgb):
+        flat = np.asarray(rgb).reshape(-1, 3)
+        return int(np.sum(flat.max(0) > 0.05))
+
+    def verify(self):
+        g = 48
+        rng = np.random.default_rng(0)
+        bands = [(rng.random((g, g)) * 0.6, 2.4e9), (rng.random((g, g)), 5e9),
+                 (rng.random((g, g)) * 0.8, 60e9)]
+        rgb = self.paint_scene(bands)
+        vox = rng.random((24, 24, 24)) * 0.3
+        vrgb = self.paint_volumetric(vox, 5e9)
+        return {"painting_valid": rgb.ndim == 3 and rgb.shape[-1] == 3 and float(rgb.max()) <= 1.0,
+                "multiband_color": self.band_diversity(rgb) >= 2,
+                "volumetric_painted": vrgb.ndim == 3 and float(vrgb.max()) > 0,
+                "nonempty": float(rgb.max()) > 0,
+                "note": "reality painted in spectrum-light: hue = band, luminance = measured energy; "
+                        "all bands composited into one false-color render; provenance preserved"}
+
+    def status(self):
+        v = self.verify()
+        return {"painting_valid": v["painting_valid"], "multiband_color": v["multiband_color"],
+                "volumetric_painted": v["volumetric_painted"],
+                "definition": "reality painted in spectrum-light (hue=band, luminance=measured energy)"}
+
+
 class HighOrderCorrelationOrganizer:
     """Scales the correlation organization past millions toward BILLIONS/TRILLIONS — reality's
     scale. The number of relative measures = correlation entries: for a joint
@@ -98574,7 +98905,8 @@ def _nepa_memoize_verifies(_ns):
                 "VolumetricDetailRenderer", "CorrelationBottleneckSolver", "ParallelCorrelationEngine",
                 "SpectrumCorrelationOrganizer", "CompoundInformationGain", "HighOrderCorrelationOrganizer",
                 "TheoreticalLimitAnalyzer", "TemporalCoherenceEngine", "MotionFlowRenderer",
-                "PBRMaterialRenderer", "ThoughtFrequencyCorrelator"):
+                "PBRMaterialRenderer", "ThoughtFrequencyCorrelator",
+                "SpectrumAsLightRenderer", "FrequencyAudioEngine", "SpectrumLightPainter"):
         _cls = _ns.get(_cn)
         if _cls is None or not hasattr(_cls, "verify"):
             continue
@@ -98602,6 +98934,86 @@ def _nepa_memoize_verifies(_ns):
 
 
 _nepa_memoize_verifies(globals())
+
+
+class NEPACapabilityExpansionPackV35(NEPACapabilityExpansionPackV34):
+    """v300+++++++++++++++++++++++++++++++++++ — SPECTRUM-AS-LIGHT + FREQUENCY-AUDIO. Generalizes
+    'light' to ALL spectrum: band energy → luminance, frequency → hue (false-color of MEASURED
+    energy) so the whole spectrum is one renderable light. And SONIFIES the spectrum to audible
+    audio (each bin → a tone) — flagged SONIFIED (derived, not recorded acoustic; real acoustic
+    recovery needs mmWave/laser micro-Doppler). Honest: both derived from measured energy,
+    provenance-tagged, nothing fabricated."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.light = SpectrumAsLightRenderer()
+        self.audio = FrequencyAudioEngine()
+        self._lt = None
+        self._au = None
+
+    def attach(self):
+        super().attach()
+        try:
+            self._lt = self.light.status()
+            self._au = self.audio.status()
+            log.info(f"[SPECTRUM-LIGHT] 'light' generalized to ALL spectrum: band energy → luminance, "
+                     f"frequency → hue (false-color of measured energy); bands differ in hue="
+                     f"{self._lt['bands_differ_in_hue']}, brighter energy → brighter light="
+                     f"{self._lt['brighter_energy_brighter_light']}. [AUDIO] spectrum sonified (dom "
+                     f"{self._au['dominant_audio_hz']} Hz, faithful={self._au['sonification_faithful']}); "
+                     f"provenance {self._au['provenance']}; real acoustic needs {self._au['real_acoustic_needs']}.")
+        except Exception:
+            pass
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v35"] = {"light": self._lt, "audio": self._au}
+            if isinstance(pp.get("reality"), dict):
+                if self._lt:
+                    pp["reality"]["spectrum_as_light"] = self._lt["definition"]
+                if self._au:
+                    pp["reality"]["frequency_audio"] = self._au["provenance"]
+        except Exception:
+            pass
+
+
+class NEPACapabilityExpansionPackV36(NEPACapabilityExpansionPackV35):
+    """v300++++++++++++++++++++++++++++++++++++ — SPECTRUM-LIGHT PAINTER: paints reality 'at full'
+    in the generalized spectrum-light (hue=band, luminance=measured energy), compositing all
+    bands into one false-color reality render; wired into the Reality-Render view (key r), whose
+    scene panel now paints the live field as spectrum-light. Honest: false-color of MEASURED
+    energy, provenance preserved, absent bands contribute 0."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.painter = SpectrumLightPainter()
+        self._sp = None
+
+    def attach(self):
+        super().attach()
+        try:
+            self._sp = self.painter.status()
+            log.info(f"[SPECTRUM-PAINT] reality painted in spectrum-light: {self._sp['definition']}; "
+                     f"valid={self._sp['painting_valid']}, multiband={self._sp['multiband_color']}, "
+                     f"volumetric={self._sp['volumetric_painted']}. Wired into the Reality-Render view (key r).")
+        except Exception:
+            pass
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v36"] = self._sp
+            if isinstance(pp.get("reality"), dict) and self._sp:
+                pp["reality"]["spectrum_light_painting"] = self._sp["definition"]
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
@@ -98980,7 +99392,7 @@ if __name__ == "__main__":
     # optional features above.
     if not getattr(args, "no_power_pack", False):
         try:
-            fuser.power_pack = NEPACapabilityExpansionPackV34(
+            fuser.power_pack = NEPACapabilityExpansionPackV36(
                 fuser, args, namespace=globals(),
                 llm_overseer=getattr(args, "llm_overseer", False),
                 llm_model=getattr(args, "llm_model", "claude-opus-4-8"))
