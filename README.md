@@ -363,5 +363,10 @@ This is humanitarian-first software, and the code enforces that operationally:
 
 ---
 
+## 13. FAQ
+
+**Can it really see through walls / underground / through metal?**
+Through drywall and wood within physical skin-depth limits — yes, and that's real. 
+
 *N.E.P.A. — turning the invisible electromagnetic world into visible, honest, actionable
 understanding. Capability chain V1→V50 · 100 self-tests · prime directive: no false data, ever.*
