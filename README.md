@@ -363,31 +363,5 @@ This is humanitarian-first software, and the code enforces that operationally:
 
 ---
 
-## 13. FAQ
-
-**Can it really see through walls / underground / through metal?**
-Through drywall and wood within physical skin-depth limits — yes, and that's real. Through metal or
-thick concrete — **no**, and it tells you so (`PENETRATION-LIMITED`) rather than faking an image.
-
-**Can it read minds or copy consciousness?**
-No. It builds *behavioral/physiological proxies* (resonance twins) from measured signals and is
-hard-coded to never decode thought content. Anyone claiming otherwise is describing something this
-program explicitly refuses to do.
-
-**Is it actually scanning the whole globe / galaxy / universe right now?**
-No single laptop can. It shows **real public planetary and astronomical data**, runs a **honest
-simulation-first** global-mesh architecture, and **flags** the parts that need real orbital hardware,
-a deployed sensor mesh, and datacenter compute. See [section 5](#5-global--galactic--universal-scale--the-truth).
-
-**So what's the point if the full vision is physics-gated?**
-The point is that this is the **maximum honest version** of the vision you can build in software: real
-local multi-instrument sensing, a genuinely navigable RF-reconstructed world, persistent animatable
-digital twins, a working humanitarian threat-awareness overseer, real planetary & astronomical
-context, forensic replay, and a complete, validated, ethics-gated architecture that is *ready to flip
-to live planetary scale the moment real hardware catches up* — with not one fabricated number along
-the way.
-
----
-
 *N.E.P.A. — turning the invisible electromagnetic world into visible, honest, actionable
 understanding. Capability chain V1→V50 · 100 self-tests · prime directive: no false data, ever.*
