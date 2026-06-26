@@ -1210,7 +1210,21 @@ def _bind_window_active(fig, owner):
         widget = fig.canvas.get_tk_widget()        # TkAgg
         top = widget.winfo_toplevel()
         def _set(v):
-            owner._active = bool(v)
+            v = bool(v)
+            if v == getattr(owner, "_active", None):
+                return                              # no change → don't thrash the timer
+            owner._active = v
+            # DEFINITIVE run-forever fix: STOP the animation timer entirely while inactive. With the flag
+            # alone, FuncAnimation still fires and calls canvas.draw_idle() every interval — which keeps
+            # trying to repaint the occluded window ("trying to update but can't" → the crash). Stopping
+            # the event source means ZERO repaint attempts while unfocused/hidden; restart on return.
+            ani = getattr(owner, "_ani", None)
+            src = getattr(ani, "event_source", None) if ani is not None else None
+            if src is not None:
+                try:
+                    (src.start if v else src.stop)()
+                except Exception:
+                    pass
         top.bind("<FocusIn>",  lambda e: _set(True),  add="+")
         top.bind("<FocusOut>", lambda e: _set(False), add="+")
         top.bind("<Map>",      lambda e: _set(True),  add="+")
@@ -1244,6 +1258,59 @@ def _wave_energy_slices(vs, n=5):
     if float(e.max()) <= 0.0:
         return []
     return sorted(int(z) for z in np.argsort(e)[-int(n):])
+
+
+def _decode_jpg_capped(raw, max_edge=1536):
+    """RUN-FOREVER MEMORY FIX: decode a JPEG to a uint8 HxWx3 array with the long edge capped to
+    `max_edge`, WITHOUT ever materialising the full-resolution array.
+
+    Why this exists: GOES full-disk GeoColor / Band-13 .jpg from the NESDIS CDN is served at
+    10848×10848 = 117,679,104 px → ~336 MB as a uint8 RGB array (and PIL raises a
+    DecompressionBombWarning at that size). The geostationary engine holds FOUR of them, so a naive
+    `imread` pins ~1.4 GB resident and spikes ~2.8 GB during each 10-min refresh → on a loaded
+    machine that is the documented whole-system crash when the window is refocused mid-refresh.
+
+    PIL's `draft("RGB", (max_edge, max_edge))` instructs the libjpeg decoder to use native DCT
+    scaling (1/2, 1/4, 1/8) DURING decode, so the giant array is never allocated — we get the real
+    satellite pixels straight at display resolution. NO FALSE DATA: this is a pure resample of the
+    genuine imagery (same picture, fewer pixels), nothing invented. ~336 MB → ~7 MB per image.
+    """
+    import io as _io
+    try:
+        from PIL import Image as _Im
+        _prev = getattr(_Im, "MAX_IMAGE_PIXELS", None)
+        _Im.MAX_IMAGE_PIXELS = None                      # we cap via draft → bomb-guard not needed
+        try:
+            im = _Im.open(_io.BytesIO(raw))
+            try:
+                im.draft("RGB", (int(max_edge), int(max_edge)))   # DCT-scale decode (cheap, no full array)
+            except Exception:
+                pass
+            im = im.convert("RGB")
+            w, h = im.size
+            scale = max(w, h) / float(max_edge)
+            if scale > 1.0:                              # belt-and-suspenders exact cap after draft
+                im = im.resize((max(1, int(round(w / scale))), max(1, int(round(h / scale)))),
+                               _Im.BILINEAR)
+            arr = np.asarray(im, dtype=np.uint8)
+            try: im.close()
+            except Exception: pass
+            return np.ascontiguousarray(arr[..., :3])
+        finally:
+            _Im.MAX_IMAGE_PIXELS = _prev
+    except Exception:
+        # Fallback (PIL missing): full decode then immediate decimate + free. Still bounded RSS.
+        import matplotlib.image as _mi
+        a = _mi.imread(_io.BytesIO(raw), format="jpg")
+        if a.dtype != np.uint8:
+            a = (np.clip(a, 0.0, 1.0) * 255).astype(np.uint8) if float(a.max()) <= 1.0 else a.astype(np.uint8)
+        H, W = a.shape[:2]
+        s = int(np.ceil(max(H, W) / float(max_edge)))
+        if s > 1:
+            a = a[::s, ::s]
+        out = np.ascontiguousarray(a[..., :3])
+        del a
+        return out
 
 
 class World3DViewer:
@@ -1385,42 +1452,74 @@ class World3DViewer:
             # the intensity colour+size already conveys depth, so we drop it for a real per-frame speedup.
             ax.scatter(xs, ys, zs, c=c, cmap='turbo', s=sizes,
                        alpha=0.72, depthshade=False, edgecolors='none')
-        # WAVE-SHAPE CURVES: cross-reference the dot field with a 3D correlation (applied twice for a
-        # smooth wave) to extract the continuous structure the discrete dots SAMPLE, then paint it with
-        # MANY flowing line curvatures — stacked iso-contours at depth slices (the 3D wave's layered
-        # shape) PLUS a smooth "wave spine" tracing the structure's centroid through the volume (the
-        # fluidity / flow we are inside). All from real data — just correlated, never invented.
+        # WAVE-SHAPE CURVES (MULTI-SCALE 3D CORRELATION MATRIX): cross-reference each graphed dot with
+        # a 3D correlation applied at THREE smoothing scales (fine / medium / coarse) to expose the
+        # continuous wave the discrete dots SAMPLE, then paint it with MANY flowing line curvatures:
+        #   (1) dense stacked iso-contours (5 levels) at the most energetic depth slices — the wave's
+        #       layered internal shape;
+        #   (2) THREE orthogonal centroid "spines" (along x, y AND z) — the full 3D fluidity skeleton
+        #       threading the volume we are inside, not just a single axis;
+        #   (3) gradient flow-ribbons at strong voxels — short segments oriented along the local
+        #       correlated-field gradient, depicting the internal wave-flow direction (fluidity).
+        # All from the real measured field — correlated/denoised, never invented (empty stays empty).
         try:
             if vmax > 1e-6 and vg.ndim == 3:
-                vs = _wave_correlate_3d(_wave_correlate_3d(vg))     # 2× 3D correlation → smooth wave field
+                vs1 = _wave_correlate_3d(vg)                        # fine scale
+                vs  = _wave_correlate_3d(vs1)                       # medium (2×) — primary wave field
+                vs3 = _wave_correlate_3d(_wave_correlate_3d(vs))    # coarse (4×) — large-scale flow
                 nx, ny, nz = vs.shape
-                gx = np.arange(nx); gy = np.arange(ny)
-                GX, GY = np.meshgrid(gx, gy, indexing='ij')
+                GX, GY = np.meshgrid(np.arange(nx), np.arange(ny), indexing='ij')
                 import matplotlib.cm as _cm
-                zsl = _wave_energy_slices(vs, n=8)                  # more depth slices = more detail
+                # (1) dense layered iso-contours at the most energetic Z slices
+                zsl = _wave_energy_slices(vs, n=12)                 # 12 slices × 5 levels = far more detail
                 for _i, zi in enumerate(zsl):
-                    sl = vs[:, :, zi]
-                    smax = float(sl.max())
+                    sl = vs[:, :, zi]; smax = float(sl.max())
                     if smax <= 1e-6:
                         continue
-                    col = _cm.turbo(0.15 + 0.7 * (_i / max(1, len(zsl) - 1)))   # depth-coloured curves
-                    ax.contour(GX, GY, sl, levels=[smax * 0.35, smax * 0.6, smax * 0.82],
-                               zdir='z', offset=zi, colors=[col], alpha=0.6, linewidths=0.8)
-                # WAVE SPINE: per-slice intensity-weighted centroid (x,y) vs z → a smooth flowing curve
-                # that depicts the internal wave fluidity threading through the dot field.
-                spine = []
-                tot = float(vs.sum())
-                if tot > 1e-6:
-                    for zi in range(nz):
-                        s = vs[:, :, zi]; w = float(s.sum())
-                        if w > 1e-6:
-                            cx = float((GX * s).sum() / w); cyy = float((GY * s).sum() / w)
-                            spine.append((cx, cyy, zi))
-                if len(spine) >= 3:
-                    sp = np.array(spine)
-                    ax.plot(sp[:, 0], sp[:, 1], sp[:, 2], color='#00ffe0',
-                            lw=2.0, alpha=0.85, solid_capstyle='round')
-                    ax.scatter(sp[:, 0], sp[:, 1], sp[:, 2], c='#aaffff', s=10, alpha=0.6)
+                    col = _cm.turbo(0.12 + 0.76 * (_i / max(1, len(zsl) - 1)))
+                    ax.contour(GX, GY, sl,
+                               levels=[smax * 0.25, smax * 0.42, smax * 0.60, smax * 0.76, smax * 0.90],
+                               zdir='z', offset=zi, colors=[col], alpha=0.55, linewidths=0.7)
+                # (2) THREE orthogonal flow spines — centroid curve along each axis (full 3D fluidity)
+                def _flow_spine(field, axis):
+                    pts = []
+                    for k in range(field.shape[axis]):
+                        sl = np.take(field, k, axis=axis); w = float(sl.sum())
+                        if w <= 1e-6:
+                            continue
+                        ii, jj = np.indices(sl.shape)
+                        ci = float((ii * sl).sum() / w); cj = float((jj * sl).sum() / w)
+                        pts.append((k, ci, cj) if axis == 0 else
+                                   (ci, k, cj) if axis == 1 else (ci, cj, k))
+                    return np.array(pts) if len(pts) >= 3 else None
+                _spine_cols = ('#ff7be0', '#7bff9e', '#00ffe0')
+                for _axn in (0, 1, 2):
+                    sp = _flow_spine(vs3, _axn)
+                    if sp is not None:
+                        ax.plot(sp[:, 0], sp[:, 1], sp[:, 2], color=_spine_cols[_axn],
+                                lw=1.8, alpha=0.85, solid_capstyle='round')
+                        ax.scatter(sp[:, 0], sp[:, 1], sp[:, 2], c=_spine_cols[_axn], s=7, alpha=0.5)
+                # (3) gradient flow-ribbons: one Line3DCollection (single fast artist) of short segments
+                #     along the local field gradient at the strongest voxels → internal wave-flow lines.
+                try:
+                    from mpl_toolkits.mplot3d.art3d import Line3DCollection
+                    gXf, gYf, gZf = np.gradient(vs)
+                    thr2 = 0.45 * float(vs.max())
+                    sx, sy, sz = np.where(vs > thr2)
+                    if len(sx) > 0:
+                        budget2 = 350                              # capped → runs forever, still dense
+                        if len(sx) > budget2:
+                            vv = vs[sx, sy, sz]
+                            keep = np.argpartition(vv, -budget2)[-budget2:]
+                            sx, sy, sz = sx[keep], sy[keep], sz[keep]
+                        gv = np.stack([gXf[sx, sy, sz], gYf[sx, sy, sz], gZf[sx, sy, sz]], axis=1)
+                        gv = gv / (np.linalg.norm(gv, axis=1, keepdims=True) + 1e-9) * 1.6
+                        p0 = np.stack([sx, sy, sz], axis=1).astype(float)
+                        segs = np.stack([p0 - gv * 0.5, p0 + gv * 0.5], axis=1)
+                        ax.add_collection3d(Line3DCollection(segs, colors='#66e0ff',
+                                                             linewidths=0.6, alpha=0.5))
+                except Exception:
+                    pass
         except Exception:
             pass
         # Real mapped nodes (router / LAN host / AP) OR detected blobs, colour by kind
@@ -50859,17 +50958,19 @@ class GOESGeostatEngine:
         _thr.Thread(target=self._loop, daemon=True, name="goes_geo_v154").start()
 
     def _fetch_jpg(self, url: str):
-        import urllib.request, io
-        import matplotlib.image as _mi
+        import urllib.request
         req = urllib.request.Request(url, headers={"User-Agent": "NEPA-v154-GOESGeo"})
         with urllib.request.urlopen(req, timeout=30) as r:
             raw = r.read()
         if raw[:1] == b"<":
             raise ValueError("GOES CDN returned XML instead of JPEG")
-        arr = _mi.imread(io.BytesIO(raw), format="jpg")
+        # RUN-FOREVER: GOES full-disk .jpg is 10848² (≈336 MB as a full array). Decode capped to a
+        # display-sane long edge so we never pin ~1.4 GB across four disks (the whole-system-crash
+        # cause). Same real pixels, resampled — no false data. See _decode_jpg_capped().
+        arr = _decode_jpg_capped(raw, max_edge=1536)
         if arr is None or (hasattr(arr, "max") and arr.max() == 0):
             raise ValueError("GOES image is all-black or empty")
-        return arr   # HxWx3 uint8
+        return arr   # HxWx3 uint8, long edge ≤ 1536
 
     def _loop(self):
         import time as _ti, datetime as _dt
@@ -84691,9 +84792,11 @@ class MultiAgentWirelessBCIFuser:
 
         }
 
-        # STABILITY: a 26×20 figure makes a ~5-megapixel bitmap EVERY frame (huge memory churn that
-        # contributed to the crash). 18×11 is large enough to read and far lighter per repaint.
-        self.fig = plt.figure(figsize=(18, 11))
+        # STABILITY + FIT: a giant figure (a) churns a huge bitmap every frame (memory→crash) and
+        # (b) opens a window WIDER than one monitor, pushing the tab bar off-screen. 15.5×8.7 at dpi 100
+        # ≈ 1550×870 px — fits any single monitor, light to repaint, and the buttons are figure-relative
+        # so they stay fully visible whether the user keeps this size or maximizes onto one screen.
+        self.fig = plt.figure(figsize=(15.5, 8.7), dpi=100)
         self.fig.patch.set_facecolor('#050505')   # Pass 23: fully dark figure background
         # Pass 23: keyboard controls — 'r'=rotate, 's'=save PNG, 'p'=pause, '+'/'-'=zoom threshold
         self._paused: bool = False
@@ -84826,24 +84929,26 @@ class MultiAgentWirelessBCIFuser:
                  ("Info [i]", "info")]
         try:
             _nbtn = len(_tabs)
-            # UI FIX: lay the tab bar out in READABLE MULTIPLE ROWS. Previously 60+ buttons were crammed
-            # into one 0.93-wide strip → each ~1% of the width, so labels overlapped into a smear. Now
-            # each button is a readable width and the bar wraps to as many rows as needed; the main plot
-            # grid is then pushed BELOW the bar (subplots_adjust) so buttons and plots never overlap.
-            # Tab bar: compact readable buttons in wrapped rows, all ABOVE the plot grid (top=0.83).
-            # 18/row × 6 rows holds ~108 tabs; the bar occupies y≈0.855..0.993 → clean gap to the plots.
-            _per_row = 18                                   # ~0.047 of fig width each (readable)
-            _bw = 0.93 / _per_row - 0.004
-            _bh = 0.020
-            _vgap = 0.0075
-            _y_top = 0.992
+            # UI FIX (off-screen): the tab bar wraps to readable rows AND its button width is computed
+            # FROM the available span [_left.._right], so the row ALWAYS fits exactly inside the window —
+            # the rightmost button can never run off the edge regardless of window size/aspect. The plot
+            # grid is locked below the bar (gridspec top=0.83) so they never overlap.
+            _left, _right = 0.028, 0.972                     # figure-relative safe area (margin both sides)
+            _per_row = 18
+            _gap = 0.0035
+            _bw = (_right - _left - (_per_row - 1) * _gap) / _per_row   # exact fit → never off-screen
+            # 108 tabs → 6 rows. Vertical budget: top row must NOT clip past the figure top (y+_bh ≤ ~0.995)
+            # and the bottom row must clear the plot-grid top (0.83). 6*_bh + 5*_vgap must fit in [0.845..0.994].
+            _bh = 0.019
+            _vgap = 0.007
+            _y_top = 0.975                                    # bottom of row 0 → top edge 0.994 (just inside)
             for i, (label, kind) in enumerate(_tabs):
                 _row, _col = divmod(i, _per_row)
-                bx = 0.045 + _col * (_bw + 0.004)
+                bx = _left + _col * (_bw + _gap)
                 by = _y_top - _row * (_bh + _vgap)
                 ax_btn = self.fig.add_axes([bx, by, _bw, _bh])
                 btn = _MplButton(ax_btn, label, color='#11333a', hovercolor='#1f5f6f')
-                btn.label.set_color('#00ffcc'); btn.label.set_fontsize(5.5)
+                btn.label.set_color('#00ffcc'); btn.label.set_fontsize(5.3)
                 btn.on_clicked(lambda _evt, k=kind: self._open_tab(k))
                 self._tab_buttons.append(btn)
         except Exception as _be:
@@ -90156,6 +90261,12 @@ class MultiAgentWirelessBCIFuser:
         self._updating = True
         try:
             self._update_plot_impl(frame)
+            # RUN-FOREVER: the heavy 16-panel + 3D repaint churns large temporary arrays/bitmaps every
+            # frame (TkAgg also rebuilds a PhotoImage). Force a collection periodically so freed buffers
+            # are reclaimed promptly instead of accumulating over minutes → the slow-growth crash.
+            self._upd_gc = getattr(self, "_upd_gc", 0) + 1
+            if self._upd_gc % 120 == 0:
+                import gc as _gc; _gc.collect()
         finally:
             self._updating = False
 
@@ -91035,6 +91146,24 @@ NEPA — REAL-DATA ONLY. No fabricated vitals/pose/BCI. Humanitarian sensing."""
         _interval_ms = max(150, int(1000.0 / max(4, min(8, getattr(self, "target_fps", 6)))))
         self._ani = FuncAnimation(self.fig, self._update_plot, interval=_interval_ms,
                                   blit=False, cache_frame_data=False)
+        # UI FIX (buttons off-screen): DO NOT auto-maximize/zoom — on multi-monitor / high-DPI setups
+        # 'zoomed' spans BOTH monitors (or the figure renders wider than one screen), which pushed the
+        # tab bar off the visible screen. Instead size the window to fit comfortably inside a SINGLE
+        # monitor and place it on-screen; the user can resize/maximize onto one monitor themselves (the
+        # buttons are figure-relative, so they stay visible at any window size). Never span screens.
+        try:
+            _win = getattr(self.fig.canvas.manager, "window", None)
+            if _win is not None and hasattr(_win, "winfo_screenwidth"):
+                _sw = int(_win.winfo_screenwidth()); _sh = int(_win.winfo_screenheight())
+                # If the reported width is very large it's almost certainly two+ monitors joined; cap to
+                # one monitor's worth so we never straddle the seam. Otherwise use ~94% of the screen.
+                _mon_w = min(_sw, 1920) if _sw > 2600 else int(_sw * 0.94)
+                _mon_h = int(min(_sh, 1200) * 0.92) if _sh > 1300 else int(_sh * 0.90)
+                _mon_w = max(900, _mon_w); _mon_h = max(560, _mon_h)
+                try: _win.geometry(f"{_mon_w}x{_mon_h}+24+24")   # fit one screen, on-screen, resizable
+                except Exception: pass
+        except Exception:
+            pass
         try:
             plt.show()
         finally:
