@@ -1075,8 +1075,15 @@ class WorldReconstructionEngine:
         rgb = np.clip(col * 255.0, 0, 255).astype(np.int32)
         verts = np.column_stack([pos[:, 0], pos[:, 1], pos[:, 2],
                                  rgb[:, 0], rgb[:, 1], rgb[:, 2]])
+        # Provenance in-band (Grand-Vision review): the PLY format has no per-point provenance
+        # channel, so this export is MEASURED-DATA-ONLY by design. State that explicitly in the
+        # header comments so a downstream tool/user knows what is — and deliberately is NOT — here:
+        # inferred beyond-horizon rings and behavioral-proxy twin labels are intentionally excluded,
+        # because once written as plain geometry they'd be indistinguishable from measured points.
         header = ("ply\nformat ascii 1.0\n"
                   f"comment N.E.P.A. RF Gaussian-splat world scan — {n} real reconstructed points\n"
+                  "comment PROVENANCE: MEASURED real RF reflectivity splats ONLY. Excludes inferred "
+                  "beyond-horizon rings + behavioral-proxy twin labels (no provenance channel in PLY).\n"
                   f"element vertex {n}\n"
                   "property float x\nproperty float y\nproperty float z\n"
                   "property uchar red\nproperty uchar green\nproperty uchar blue\n"
@@ -3298,6 +3305,42 @@ class DetailTabWindow:
         if fmcw_pts is not None and len(fmcw_pts) > 0:
             fp = np.asarray(fmcw_pts)
             ax2.scatter(fp[:, 0], fp[:, 1], fp[:, 2], c='#ff00ff', s=10, alpha=0.5)
+        # WIRING FIX (prom.md review): V59's beyond-horizon field was computed + honestly flagged
+        # but only ever reached the command-center TEXT panel, never a free-cam/3D view. Draw it
+        # here as faint, confidence-faded ring schematics. Ring index is RELATIVE, not a metric
+        # distance — there is no real bearing/range model for "beyond horizon", so no fake distance
+        # scale is drawn, only the same honest confidence decay already in pp["beyond_horizon_field"].
+        bhf = (snap.get("beyond_horizon_field") or {}) if snap else {}
+        rings = bhf.get("rings") or []
+        if rings and wr is not None:
+            _th = np.linspace(0, 2 * np.pi, 48)
+            for rdict in rings:
+                k = float(rdict.get("ring", 1)); conf = float(rdict.get("confidence", 0.0))
+                rad = res * 0.55 + k * (res * 0.12)
+                ax2.plot(centre[0] + rad * np.cos(_th), centre[1] + rad * np.sin(_th),
+                         np.full_like(_th, centre[2]), color='#ff5555',
+                         lw=0.8, alpha=float(np.clip(conf, 0.03, 0.5)))
+            ax2.text2D(0.02, 0.04, f"red rings = INFERRED·BEYOND-HORIZON ({len(rings)} shown, "
+                       "confidence-faded; ring index relative, NOT a metric distance)",
+                       transform=ax2.transAxes, color='#ff8888', fontsize=6.5)
+        # WIRING FIX (Grand-Vision review): the V53/V64 behavioral-STATE label pipelines
+        # (mind_overlay_labels = simulated person_entities path; real_twin_overlay = real
+        # IntegratedPerceptionChain entity path) were computed + honestly flagged but never
+        # reached any UI view. Place each as a floating English text label at its entity's
+        # position — never thought content, just the same NEURAL-PROXY/PROXY state text already
+        # gated upstream (mind_content is always None at every stage that produced this text).
+        twin_labels = []
+        rto = (snap.get("real_twin_overlay") or {}) if snap else {}
+        if (rto.get("label") or {}).get("text"):
+            twin_labels.append(("REAL·PROXY", rto["label"]))
+        for lab in ((snap.get("mind_overlay_labels") or []) if snap else []):
+            if lab.get("text"):
+                twin_labels.append(("SIMULATED·PROXY", lab))
+        for src, lab in twin_labels:
+            pos = list(lab.get("pos", [0, 0, 0])) + [0.0, 0.0, 0.0]
+            color = '#66ddff' if src.startswith("REAL") else '#aa88ff'
+            ax2.text(pos[0], pos[1], pos[2] + 0.3, f"[{src}] {lab['text']}",
+                     color=color, fontsize=6.5)
         ax2.set_title(f"Body splats ({len(bodies)}) — RF-derived skeletons + FMCW",
                       color='#00ffcc', fontsize=10)
         ax2.tick_params(colors='#666')
@@ -8990,6 +9033,7 @@ class DetailTabWindow:
         nvis = int(snap.get("sky_n_visible") or len(vis))
         ncat = int(snap.get("sky_n_catalog") or 0)
         ndeep = int(snap.get("sky_n_deepsky") or 0)
+        next_v = int(snap.get("sky_n_external") or 0)   # v216: loaded-catalog stars above horizon
         lst  = float(snap.get("sky_lst_deg") or 0.0)
         maxlb = float(snap.get("sky_max_lookback_ly") or 0.0)
         _lbtxt = (f"{maxlb/1e6:.1f} MILLION light-years ago" if maxlb >= 1e6 else f"{maxlb:.0f} light-years ago")
@@ -8997,8 +9041,9 @@ class DetailTabWindow:
         ax_h = fig.add_axes([0.02, 0.945, 0.96, 0.05]); ax_h.axis("off")
         col = "#88ccff" if nvis else "#ffaa44"
         ax_h.text(0.0, 0.62,
-                  f"╔═ OBSERVED SKY (TIER 11 universe envelope) ═╗   {nvis} stars · {ndeep} deep-sky above horizon   "
-                  f"·   LST {lst:.1f}°   ·   farthest visible: {_lbtxt}",
+                  f"╔═ OBSERVED SKY (TIER 11 universe envelope) ═╗   {nvis} stars"
+                  + (f" (incl. {next_v} from loaded catalog ◇)" if next_v else "")
+                  + f" · {ndeep} deep-sky above horizon   ·   LST {lst:.1f}°   ·   farthest visible: {_lbtxt}",
                   color=col, fontsize=10, fontweight="bold", family="monospace",
                   transform=ax_h.transAxes, va="center")
         ax_h.text(0.0, 0.05,
@@ -9014,12 +9059,21 @@ class DetailTabWindow:
         axp.set_yticklabels(["60°", "30°", "horizon"], color="#42637a", fontsize=6)
         axp.tick_params(colors="#42637a", labelsize=6)
         if vis:
-            th = [_np.radians(s["az_deg"]) for s in vis]
-            r = [90 - s["alt_deg"] for s in vis]            # zenith(0)→center
-            mags = [s["mag"] for s in vis]
-            sizes = [max(8, 90 - 26 * (mg + 1.5)) for mg in mags]   # brighter = bigger
-            axp.scatter(th, r, s=sizes, c="#dCEBFF", edgecolors="#88aaff", linewidths=0.4, zorder=5)
-            for s in vis[:14]:
+            # v216: split built-in bright stars from operator-loaded catalog stars so loaded-catalog
+            # provenance is visually distinct (greenish) from the built-in J2000 set (blue-white).
+            _bi = [s for s in vis if not s.get("external")]
+            _ex = [s for s in vis if s.get("external")]
+            def _scat(group, fc, ec):
+                if not group:
+                    return
+                th = [_np.radians(s["az_deg"]) for s in group]
+                r = [90 - s["alt_deg"] for s in group]
+                sizes = [max(6, 90 - 26 * ((s.get("mag") if s.get("mag") is not None else 6.0) + 1.5))
+                         for s in group]
+                axp.scatter(th, r, s=sizes, c=fc, edgecolors=ec, linewidths=0.4, zorder=5)
+            _scat(_bi, "#dCEBFF", "#88aaff")                # built-in J2000 bright stars
+            _scat(_ex, "#bfe8c8", "#66cc88")                # loaded real catalog (CATALOG·EXTERNAL)
+            for s in _bi[:14]:
                 axp.text(_np.radians(s["az_deg"]), 90 - s["alt_deg"], "  " + s["name"],
                          color="#9fc2e8", fontsize=5.6, va="center")
         # v214: Sun/Moon/planets on the same dome (distinct colours)
@@ -9453,12 +9507,36 @@ class DetailTabWindow:
         if rih:
             ts.append(f"  REAL-INFO HORIZON (V63): {str(rih)[:54]}")
             ts.append("    (the MEANINGFUL more: REAL bits via Shannon capacity — bandwidth·MIMO·")
-            ts.append("     multiband·coherent; moves real horizon ~9→~2646 rings, measured-grade)")
+            ts.append("     multiband·coherent, recomputed each frame from THIS session's actual")
+            ts.append("     hardware; sits at ×1 until real diversity/bandwidth hardware is sensed)")
+        # V65/V66/V67 cosmic-scale ceiling (multi-scale + chaining + composed proof): surfaced as a
+        # single honest line — local mapping is real, distant-body recovery is provably 0-bit.
+        _amp = (snap.get("reality") or {}).get("absolute_maximum_sight_proof")
+        _mih = (snap.get("reality") or {}).get("multiscale_info_horizon")
+        if _amp or _mih:
+            _ms = (_mih or {}).get("max_sensed_scale", "local")
+            _zero = (_amp or {}).get("all_axes_agree_galactic_is_zero", True)
+            ts.append(f"  COSMIC CEILING (V65-67): max SENSED scale = {_ms}; galactic recovery = "
+                      f"{'0 bits' if _zero else '?'} on every axis")
+            ts.append("    (multi-scale pyramid real DOWNWARD over measured data; distant-body detail")
+            ts.append("     0-bit & REFUSED; real star catalog is CATALOG·EXTERNAL, never SENSED)")
+        _cat = (snap.get("reality") or {}).get("catalog_external_layer")
+        if _cat:
+            ts.append(f"  STAR CATALOG (V68): {_cat.get('n_stars', 0)} CATALOG·EXTERNAL directions "
+                      f"(0-bit local; --star-catalog <hyg.csv> for full)")
         panel([0.025, 0.52, 0.46, 0.40], "1 — TOTAL SPECTRUM SIGHT + GOAL-4 REACH", ts)
 
         # ── Panel 2: DIGITAL RESONANCE TWINS ──
-        twins = snap.get("person_entities") or snap.get("entities") or []
+        # ATTRIBUTION FIX (prom.md review): this panel's data normally comes from
+        # IntegratedPerceptionChain (real tracked/classified entities), NOT DigitalResonanceTwin —
+        # person_entities is only ever populated in --sim-hardware demo mode (SIMULATED ground
+        # truth). The old footer credited DigitalResonanceTwin unconditionally, which is wired
+        # (save/load/merge work, see verify()) but isn't what feeds this live view. Label the
+        # actual source so the panel never implies persistence/twin-identity it isn't using.
+        _sim_twins = snap.get("person_entities") or []
+        twins = _sim_twins or snap.get("entities") or []
         bs = snap.get("behavioral_states") or []
+        rto = snap.get("real_twin_overlay") or {}
         tl = ["◢ DIGITAL RESONANCE TWINS (measured signatures · PROXY · mind_content=None)"]
         if twins:
             for i, t in enumerate(twins[:6]):
@@ -9468,9 +9546,21 @@ class DetailTabWindow:
             if bs:
                 tl += ["", "  behavioral state (English, NEURAL-PROXY, not thoughts):",
                        f"    {str(bs[0].get('english', '—'))[:58]}"]
+            if _sim_twins:
+                tl += ["", "  (source: SIMULATED scene ground-truth — sim-hardware demo mode only)"]
+            else:
+                tl += ["", "  (source: IntegratedPerceptionChain, real tracked/classified entities)"]
         else:
             tl += ["  AWAITING — no person-entities sensed yet.",
-                   "  (DigitalResonanceTwin V48; save/load/merge; never thoughts.)"]
+                   "  (IntegratedPerceptionChain real-entity fusion; DigitalResonanceTwin",
+                   "   save/load/merge available but unpopulated here; never thoughts.)"]
+        # V64 persistent real-entity binding: shown ONLY when exactly one real person is tracked
+        # (single scene-aggregate vitals channel → honest 1:1 attribution; 0/2+ left unbound). This
+        # IS the DigitalResonanceTwin persistence the panel used to say "isn't fed by this view".
+        if rto.get("twin_id"):
+            _lab = (rto.get("label") or {}).get("text", "—")
+            tl += ["", f"  ◆ PERSISTENT TWIN (V64): {rto['twin_id']} · {rto.get('n_observations', 0)} obs",
+                   f"    {str(_lab)[:56]}  (PROXY·DERIVED, mind_content=None)"]
         # EEG constrained-vocab decode (V54) — the real on-body neural frontier, gated/honest.
         esd = snap.get("eeg_speech_decode") or {}
         if esd:
@@ -9480,9 +9570,17 @@ class DetailTabWindow:
         panel([0.515, 0.52, 0.46, 0.40], "2 — RESONANCE TWINS + EEG DECODE", tl, "#ffd27f")
 
         # ── Panel 3: THREAT / HUMANITARIAN ALERT CENTER ──
-        ti = (snap.get("threat_indicators") or {}).get("indicators") or []
+        _ti_all = snap.get("threat_indicators") or {}
+        ti = _ti_all.get("indicators") or []
         narr = snap.get("threat_narratives") or []
         al = ["◢ THREAT / HUMANITARIAN ALERT CENTER (all UNCONFIRMED · recommend human review)"]
+        # Surface the vitals gate (V48/Grand-Vision): the HR-driven DISTRESS indicator can ONLY
+        # fire on MEASURED vitals — show the operator whether it's even capable of firing here.
+        _vprov = _ti_all.get("vitals_provenance")
+        if _vprov:
+            _hru = _ti_all.get("hr_used_for_distress")
+            al.append(f"  vitals: {_vprov}" + (f" · distress-HR={_hru:.0f}bpm" if _hru else
+                      " · HR-distress inert (no measured vitals → no fabricated alarm)"))
         if ti:
             for ind in ti[:4]:
                 al.append(f"  [{ind.get('severity', '?')}] {ind.get('type', '?')}: {str(ind.get('reason',''))[:42]}")
@@ -9514,7 +9612,8 @@ class DetailTabWindow:
                 hl += ["  (power_pack status unavailable this frame)"]
         else:
             hl += ["  power_pack not attached (run without --no-power-pack)."]
-        hl += ["", "  NL query: press keys or call power_pack.answer_query('any threats?')",
+        hl += ["", "  NL query (over THIS frame's real snapshot): power_pack.answer_query('any threats?')",
+               "    e.g. 'how many people?' · 'show mind state' — answers ONLY measured data, else AWAITING",
                "  ALL DATA REAL + PROVENANCE-FLAGGED · absent = AWAITING, never fabricated."]
         panel([0.515, 0.06, 0.46, 0.40], "4 — HEALTH / POLICY / COLLAB", hl, "#9fd0e0")
 
@@ -43368,6 +43467,33 @@ class ObservedSkyEngine:
         self._lock = _thr.Lock()
         self._last = 0.0
         self._cache: dict = {}
+        self._external: list = []   # v216: operator-loaded real HYG/Gaia catalog (normalized tuples)
+
+    def set_external_catalog(self, stars, max_keep=1500):
+        """v216: ingest the operator-loaded real HYG/Gaia catalog (from StarCatalogExternalLayer) so the
+        SAME honest alt/az visibility transform is applied to thousands of real catalogued stars — not
+        just the 30 built-in bright ones. Stored brightest-first and capped for render budget; each is
+        flagged external=True (loaded-catalog provenance). Real positions only — rows lacking RA/Dec are
+        already dropped upstream, never backfilled. Built-in bright stars are skipped to avoid duplicates.
+        Setting a catalog invalidates the cache so the next compute() reflects it."""
+        norm = []
+        builtin = {s[0].lower() for s in self._STARS}
+        for s in (stars or []):
+            try:
+                nm = str(s.get("name", "star"))
+                if nm.lower() in builtin:
+                    continue
+                ra = float(s["ra_deg"]); dec = float(s["dec_deg"])
+                mag = s.get("mag"); mag = float(mag) if mag is not None else 6.5
+                dist = s.get("dist_ly"); dist = float(dist) if dist is not None else None
+                norm.append((nm, ra, dec, mag, dist))
+            except (KeyError, TypeError, ValueError):
+                continue
+        norm.sort(key=lambda t: t[3])               # brightest (lowest magnitude) first
+        with self._lock:
+            self._external = norm[:int(max_keep)]
+            self._last = 0.0                         # invalidate cache → next compute() reflects it
+        return len(self._external)
 
     @staticmethod
     def _gmst_deg(jd):
@@ -43468,6 +43594,23 @@ class ObservedSkyEngine:
                 "mag": mag, "dist_ly": dist,
                 "seen_as_of_years_ago": dist,   # light-travel time = honest "now" at range
             })
+        # v216: operator-loaded real catalog (HYG/Gaia) through the SAME honest alt/az transform — a
+        # loaded catalog now actually appears on the dome (previously it only changed a text count).
+        n_external_visible = 0
+        for name, ra, dec, mag, dist in self._external:
+            H = _m.radians((lst - ra) % 360.0); decr = _m.radians(dec)
+            s_alt = max(-1.0, min(1.0, _m.sin(decr)*sin_lat + _m.cos(decr)*cos_lat*_m.cos(H)))
+            alt = _m.asin(s_alt); cos_alt = _m.cos(alt)
+            if alt <= 0 or cos_alt < 1e-9:
+                continue   # below horizon → not currently visible (honest; never faked)
+            az = _m.degrees(_m.atan2(-_m.sin(H)*_m.cos(decr)/cos_alt,
+                (_m.sin(decr) - s_alt*sin_lat)/(cos_alt*cos_lat))) % 360.0
+            visible.append({
+                "name": name, "alt_deg": round(_m.degrees(alt), 2), "az_deg": round(az, 1),
+                "mag": mag, "dist_ly": dist,
+                "seen_as_of_years_ago": dist, "external": True,   # loaded-catalog provenance
+            })
+            n_external_visible += 1
         visible.sort(key=lambda s: s["mag"])   # brightest first
         # v214 (TIER 11 extension): Sun/Moon/planets — real geocentric ephemeris through the SAME
         # alt/az transform; light-time in MINUTES (dist_au × 8.317). Below horizon → not shown.
@@ -43507,12 +43650,14 @@ class ObservedSkyEngine:
                 "seen_as_of_years_ago": dist_ly,   # galaxies → millions of years of look-back time
             })
         deepsky.sort(key=lambda s: s["mag"])
-        _star_max = max((s["dist_ly"] for s in visible), default=0)
+        _star_max = max((s["dist_ly"] for s in visible if s.get("dist_ly")), default=0)
         _deep_max = max((s["dist_ly"] for s in deepsky), default=0)
         out = {
             "sky_ok": True,
             "sky_n_visible": len(visible),
             "sky_n_catalog": len(self._STARS),
+            "sky_n_external": n_external_visible,            # v216: loaded-catalog stars above horizon
+            "sky_n_external_loaded": len(self._external),    # total loaded (real HYG/Gaia)
             "sky_visible": visible,
             "sky_solar": solar,                       # v214: Sun/Moon/planets currently up
             "sky_n_solar": len(solar),
@@ -94998,6 +95143,22 @@ class NEPASelfTestSuite:
         except Exception as e:
             self._check("virtual_mesh_orchestrator", False, str(e)[:80])
         try:
+            _hrg = ns["_nepa_threat_hr_gate"]
+            _eng = ns["ThreatDetectionEngine"]()
+            _one = [{"centroid": [5, 5]}]
+            # real measured HR>110 + a subject → distress allowed to fire
+            real_fires = _eng.assess(_one, max_hr=_hrg("real", 145, 1))["n_indicators"] >= 1
+            # SAME high HR but simulated vitals → gate collapses to 70 → NO distress (no fake alarm)
+            sim_inert = _eng.assess(_one, max_hr=_hrg("simulated", 145, 1))["n_indicators"] == 0
+            # SAME high HR but no vitals sensor → gate collapses to 70 → NO distress
+            none_inert = _eng.assess(_one, max_hr=_hrg("none", 145, 1))["n_indicators"] == 0
+            # real HR but empty scene (no subject) → gate collapses to 70 → NO distress
+            empty_inert = _hrg("real", 145, 0) == 70.0
+            self._check("threat_distress_hr_gated_to_measured_only",
+                        real_fires and sim_inert and none_inert and empty_inert)
+        except Exception as e:
+            self._check("threat_distress_hr_gated_to_measured_only", False, str(e)[:80])
+        try:
             thv = ns["ThreatDetectionEngine"]().verify()
             self._check("threat_indicators_honest_no_false_alarm",
                         thv["nominal_zero_alarms"] and thv["distress_detected"]
@@ -95418,6 +95579,77 @@ class NEPASelfTestSuite:
                         and rh["coherent_is_logarithmic"] and rh["flagged_real_not_assumed"])
         except Exception as e:
             self._check("real_information_horizon_shannon", False, str(e)[:80])
+        try:
+            tb = ns["RealEntityTwinBinder"]().verify()
+            self._check("real_entity_twin_binder_honest_attribution",
+                        tb["no_entity_not_bound"] and tb["single_entity_bound"]
+                        and tb["two_entities_not_bound"] and tb["persists_identity"]
+                        and tb["observation_count_grows"] and tb["mind_content_none"]
+                        and tb["flagged_proxy"])
+        except Exception as e:
+            self._check("real_entity_twin_binder_honest_attribution", False, str(e)[:80])
+        try:
+            mh = ns["MultiScaleInformationHorizon"]().verify_galactic()
+            self._check("multiscale_galactic_is_zero_bit_refused",
+                        mh["pyramid_energy_conserved"] and mh["empty_stays_empty"]
+                        and mh["local_has_real_bits"] and mh["galactic_is_zero_bits"]
+                        and mh["information_decays_monotonically"]
+                        and mh["galactic_flagged_not_recoverable"]
+                        and mh["finite_information_retention"])
+        except Exception as e:
+            self._check("multiscale_galactic_is_zero_bit_refused", False, str(e)[:80])
+        try:
+            dc = ns["DecoherenceChainingCeilingProof"]().verify_decoherence_max()
+            self._check("decoherence_chaining_cannot_create_info",
+                        dc["local_has_real_bits"] and dc["chaining_never_increases_info"]
+                        and dc["chained_bounded_by_measurement"] and dc["mars_is_zero_bits"]
+                        and dc["galactic_is_zero_bits"] and dc["ladder_monotonic_decay"]
+                        and dc["catalog_never_promoted_to_sensed"]
+                        and dc["catalog_stars_zero_bits_from_rf"])
+        except Exception as e:
+            self._check("decoherence_chaining_cannot_create_info", False, str(e)[:80])
+        try:
+            am = ns["AbsoluteMaximumSightProofEngine"]().verify_absolute_max()
+            self._check("absolute_max_four_ceilings_converge_to_zero",
+                        am["v62_info_horizon_finite_and_lever_independent"]
+                        and am["v63_shannon_bounded_finite"]
+                        and am["v65_multiscale_galactic_zero"]
+                        and am["v66_chaining_cannot_create_info"]
+                        and am["all_axes_agree_galactic_is_zero"]
+                        and am["local_bound_real_and_finite"]
+                        and am["galactic_zero_for_any_anchor_count"])
+        except Exception as e:
+            self._check("absolute_max_four_ceilings_converge_to_zero", False, str(e)[:80])
+        try:
+            sc = ns["StarCatalogExternalLayer"]().verify()
+            self._check("star_catalog_external_real_never_sensed",
+                        sc["sample_non_empty"] and sc["all_catalog_external"]
+                        and sc["never_promoted_to_sensed"] and sc["all_zero_local_bits"]
+                        and sc["geometry_unit_and_exact"]
+                        and sc["hyg_ingest_parses_real_rows_only"])
+        except Exception as e:
+            self._check("star_catalog_external_real_never_sensed", False, str(e)[:80])
+        try:
+            # v216: an operator-loaded real catalog must actually flow into the ObservedSky dome through
+            # the SAME honest alt/az transform — a star above the horizon appears (flagged external),
+            # a built-in duplicate is dropped, and the built-in catalog count is unchanged. (Observer at
+            # lat 80°, a dec +85° star is circumpolar → always visible regardless of clock, so this is
+            # deterministic.)
+            _ose = ns["ObservedSkyEngine"]()
+            _nset = _ose.set_external_catalog([
+                {"name": "ExtCircumpolar", "ra_deg": 120.0, "dec_deg": 85.0, "mag": 5.0, "dist_ly": 100.0},
+                {"name": "Sirius", "ra_deg": 101.287, "dec_deg": -16.716, "mag": -1.46, "dist_ly": 8.6},
+            ])
+            _out = _ose.compute(80.0, 0.0, ts=1.0e9)
+            _vis = _out.get("sky_visible") or []
+            _ext_vis = [s for s in _vis if s.get("external")]
+            self._check("observed_sky_loaded_catalog_visible",
+                        _nset == 1                                      # Sirius dup of built-in dropped
+                        and any(s["name"] == "ExtCircumpolar" for s in _ext_vis)  # circumpolar → visible
+                        and _out.get("sky_n_external") == len(_ext_vis)
+                        and _out.get("sky_n_catalog") == len(ns["ObservedSkyEngine"]._STARS))
+        except Exception as e:
+            self._check("observed_sky_loaded_catalog_visible", False, str(e)[:80])
         try:
             # 3D wave-shape correlation (the dot-grid wave-curve overlay math): a 1-2-1 separable
             # correlation must (a) smooth/denoise, (b) preserve total energy, (c) keep empty space
@@ -100604,11 +100836,28 @@ class GlobalInstrumentOrchestrator:
                 "live_instruments": sum(1 for i in self.instruments.values() if i["provenance"] == "LIVE")}
 
 
+def _nepa_threat_hr_gate(vitals_mode, hr, n_objects):
+    """Honesty-critical gate (Grand-Vision review): decide what HR the humanitarian DISTRESS
+    indicator is allowed to see. A distress alert may ONLY be driven by a genuinely MEASURED heart
+    rate with a real subject present. A synthesized/estimated HR (vitals_mode != "real") or an
+    empty scene must collapse to the neutral 70.0 bpm so it can never trip a distress alarm — a
+    fabricated humanitarian alert is exactly the no-false-data violation the prime directive forbids.
+    Returns the HR value safe to feed ThreatDetectionEngine.assess(max_hr=...)."""
+    try:
+        if str(vitals_mode) == "real" and hr is not None and int(n_objects) >= 1:
+            return float(hr)
+    except Exception:
+        pass
+    return 70.0
+
+
 class ThreatDetectionEngine:
     """plan2 Phase-5 — humanitarian threat/victimization detection from the perceptual scene +
     motion + vitals. Honest pattern indicators (anomalous grouping, isolation+rapid-HR distress,
     rapid convergence) — recommend-only, evidence-cited, 0 false alarms on a nominal scene, never
-    a fabricated accusation. Detects INDICATORS, not crimes; flagged INDICATOR · UNCONFIRMED."""
+    a fabricated accusation. Detects INDICATORS, not crimes; flagged INDICATOR · UNCONFIRMED.
+    The live HR fed to the distress indicator is gated by _nepa_threat_hr_gate so only MEASURED
+    vitals with a real subject can raise a distress alarm — never a synthesized/estimated number."""
     def assess(self, objects, motion_fraction=0.0, max_hr=70.0):
         indicators = []
         n = len(objects)
@@ -102568,7 +102817,19 @@ class NEPACapabilityExpansionPackV48(NEPACapabilityExpansionPackV47):
             self.forensic.record({"objects": psc.get("n_objects", 0)})
             objs = psc.get("objects") or []
             mf = float((pp.get("motion_flow") or {}).get("moving_fraction", 0.0) or 0.0)
-            ta = self.threat.assess(objs, motion_fraction=mf, max_hr=70.0)
+            # WIRING FIX (Grand-Vision review): threat.assess() was always called with a hardcoded
+            # max_hr=70.0 stub, so the DISTRESS_ISOLATION welfare indicator (needs HR>110) could NEVER
+            # fire on real data even though measured HR sits in pp["heart_rate_bpm"]. Feed the REAL HR
+            # in — but ONLY when vitals are genuinely MEASURED (vitals_mode=="real") AND a real subject
+            # is in the scene. A synthesized/estimated HR must NEVER trip a humanitarian distress alert
+            # (that would be a fabricated alarm), so in simulated/none modes the HR-based indicator
+            # stays inert and the result is stamped with the vitals provenance.
+            _vm = str(pp.get("vitals_mode") or "none")
+            _real_hr = _nepa_threat_hr_gate(_vm, pp.get("heart_rate_bpm"), len(objs))
+            ta = self.threat.assess(objs, motion_fraction=mf, max_hr=_real_hr)
+            ta["vitals_provenance"] = ("MEASURED" if _vm == "real" else
+                                       "SIMULATED" if _vm == "simulated" else "NO-VITALS-SENSOR")
+            ta["hr_used_for_distress"] = (_real_hr if _real_hr != 70.0 else None)
             pp["threat_indicators"] = ta
             blk = pp.get("power_pack")
             if isinstance(blk, dict):
@@ -104540,6 +104801,83 @@ class PersistentWorldStateManager:
         return {"saves_versions": v["saves_versions"], "loads_back": v["loads_back"], "backend": self.backend}
 
 
+class RealEntityTwinBinder:
+    """Grand-Vision review — binds the EXISTING DigitalResonanceTwin + LifeFormAnimator + V53
+    narrative pipeline (NeuralSignatureExtractor/NeuralSignalDecoder/MindContentRenderer) onto the
+    REAL tracked-entity stream (IntegratedPerceptionChain's pp['entities']), not only the SIMULATED
+    person_entities path V53 already covers. Nothing here is new fabrication — every component is
+    pre-existing and already self-tested; this class only supplies the missing live wiring.
+
+    Honest attribution rule: this hardware publishes ONE scene-aggregate vitals reading per frame
+    (no per-entity vitals separation hardware — see PersistentMultiChannelIntake._PLACEHOLDERS
+    ['per_entity_vitals'], which states plainly that per-entity separation needs real multi-antenna
+    CSI this machine doesn't have). A twin is only bound when EXACTLY ONE real 'human'-class entity
+    is tracked this frame; with 0 or 2+ such entities, binding is skipped — pairing scene-aggregate
+    vitals to one person among several would imply a separation that was never measured."""
+    def __init__(self):
+        self.twins = {}
+
+    def bind(self, entities, hr=None, br=None, movement_score=0.0, animator=None,
+             extractor=None, decoder=None, renderer=None, provenance=None, t=None):
+        animator = animator or LifeFormAnimator()
+        extractor = extractor or NeuralSignatureExtractor()
+        decoder = decoder or NeuralSignalDecoder()
+        renderer = renderer or MindContentRenderer()
+        provenance = provenance or MindReadingProvenanceTracker()
+        humans = [e for e in (entities or [])
+                  if isinstance(e, dict) and str(e.get("class", "")).lower() == "human"]
+        if len(humans) != 1:
+            return {"bound": False, "n_human_entities": len(humans),
+                    "reason": "no single real person to honestly attribute scene-aggregate "
+                              "vitals to (0 or 2+ tracked)"}
+        ent = humans[0]
+        key = str(ent.get("id", "real-0"))
+        twin = self.twins.get(key)
+        if twin is None:
+            twin = DigitalResonanceTwin(f"real-{key}")
+            self.twins[key] = twin
+        vel = list(ent.get("velocity", [0.0, 0.0]) or [0.0, 0.0])
+        gait = [float(np.hypot(vel[0], vel[1] if len(vel) > 1 else 0.0))]
+        twin.update(hr=hr, br=br, gait=gait)
+        pose = animator.pose(twin=twin, track={"vel": vel}, t=t if t is not None else time.time())
+        emb = extractor.extract({"hr": hr, "br": br, "motion": movement_score})
+        state = decoder.decode_state(emb["embedding"])
+        txt = renderer.render_text(state, {"hr": hr, "br": br})
+        label = provenance.stamp({"entity": key, "pos": ent.get("position", [0, 0, 0]),
+                                  "text": txt["english"], "mind_content": None,
+                                  "provenance": txt["provenance"]})
+        return {"bound": True, "twin_id": twin.id, "n_observations": len(twin.history),
+                "label": label, "pose": pose,
+                "provenance": "PROXY · DERIVED (single real tracked person, scene-aggregate "
+                              "vitals; NOT per-entity-separated, NOT thoughts)"}
+
+    def verify(self):
+        b = RealEntityTwinBinder()
+        none_case = b.bind([])
+        one = [{"id": "t1", "class": "human", "position": [1, 2, 0], "velocity": [0.5, 0.2]}]
+        r1 = b.bind(one, hr=95, br=18, movement_score=0.4, t=0.0)
+        r2 = b.bind(one, hr=97, br=19, movement_score=0.4, t=0.3)
+        two = one + [{"id": "t2", "class": "human", "position": [4, 4, 0], "velocity": [0, 0]}]
+        r_two = b.bind(two, hr=95, br=18)
+        return {"no_entity_not_bound": none_case["bound"] is False,
+                "single_entity_bound": r1["bound"] is True,
+                "two_entities_not_bound": r_two["bound"] is False,
+                "persists_identity": r1["twin_id"] == r2["twin_id"],
+                "observation_count_grows": r2["n_observations"] > r1["n_observations"],
+                "mind_content_none": r1["label"]["mind_content"] is None,
+                "flagged_proxy": "PROXY" in r1["provenance"],
+                "note": "binds the real tracked-entity stream to a persistent DigitalResonanceTwin "
+                        "+ pose + English state label ONLY when exactly one real person is "
+                        "tracked (honest single-channel-vitals attribution); 0 or 2+ entities are "
+                        "correctly left unbound, never guessed"}
+
+    def status(self):
+        v = self.verify()
+        return {"single_entity_bound": v["single_entity_bound"],
+                "two_entities_not_bound": v["two_entities_not_bound"],
+                "persists_identity": v["persists_identity"]}
+
+
 class NEPACapabilityExpansionPackV53(NEPACapabilityExpansionPackV52):
     """v300+++++++++++++++++++++++++++++++++++++++++++++++++++++++ — Plan3.md NAMED-CLASS closure:
     builds every remaining class Plan3 names as a "Software Addition Needed" (lines 18-21, 90-94, 134,
@@ -106238,27 +106576,715 @@ class NEPACapabilityExpansionPackV63(NEPACapabilityExpansionPackV62):
     def attach(self):
         super().attach()
         try:
-            r = self.real_horizon.rate()
-            self._v63 = {"real_info_horizon": self.real_horizon.status(), "rating": r["rating"]}
-            log.info(f"[GOAL-4] plan4 V63 attached (REAL information horizon): REAL recoverable information "
-                     f"×{r['real_info_multiplier_x']:.0f} (measured-grade, Shannon-bounded) via {r['levers']['bands']} "
-                     f"bands · {r['levers']['mimo_streams']} MIMO · {r['levers']['bandwidth_x']}× bandwidth · "
-                     f"{r['levers']['coherent_integration_M']}-fold coherent integration → real info horizon "
-                     f"~{r['v62_real_horizon_rings']:.0f} → ~{r['new_real_horizon_rings']:.0f} rings. This moves "
-                     f"the number that ACTUALLY matters (what you SEE in bits), distinct from V62's assumed "
-                     f"billions; bounded by channel capacity, never faked.")
+            self._v63 = None
+            log.info("[GOAL-4] plan4 V63 attached (REAL information horizon): RealInformationHorizonMaximizer "
+                     "rates the REAL Shannon channel-capacity gain (bands · MIMO · bandwidth · coherent-"
+                     "integration) from THIS frame's actual hardware signals, recomputed every frame in "
+                     "on_frame() — never a cached hypothetical best-case. On this machine's default single-"
+                     "antenna/single-band WiFi NIC the honest multiplier sits near ×1 (no MIMO/multiband "
+                     "hardware connected); it rises only as real diversity/bandwidth comes online (see "
+                     "[Capability] tab).")
         except Exception:
             pass
 
     def on_frame(self, pp):
         super().on_frame(pp)
         try:
+            # HONESTY FIX (prom.md review): rate() previously ran ONCE at attach() with hardcoded
+            # hypothetical levers (8 bands / 4 MIMO streams / 4x bandwidth / 256-fold coherent
+            # integration) yet the result was labeled "REAL"/"measured-grade" in the UI — the exact
+            # false-REAL-claim pattern the reality gate forbids. Source every lever from THIS frame's
+            # already-published real signals instead, recomputed fresh each frame:
+            fdiv = pp.get("freq_diversity") or {}
+            n_bands = max(1, int(fdiv.get("n_bands_active") or 1))      # real measured band diversity (max 3)
+            bw_mhz = float(pp.get("mpath_bw_mhz") or 20.0)              # real configured/detected CSI bandwidth
+            bandwidth_factor = max(1.0, bw_mhz / 20.0)                  # vs 20 MHz HT20 baseline
+            mimo_streams = 1                                           # single antenna on this hardware class:
+                                                                        # no spatial-multiplexing aperture exists
+                                                                        # (same fact DoAVerifier gates bearing on)
+            coherent_M = 1                                             # no live multi-frame coherent
+                                                                        # accumulation feeds this metric yet
+            r = self.real_horizon.rate(bands=n_bands, mimo_streams=mimo_streams,
+                                        bandwidth_factor=bandwidth_factor, coherent_M=coherent_M)
+            self._v63 = {"real_info_horizon": {"real_info_multiplier_x": r["real_info_multiplier_x"],
+                                                "new_real_horizon_rings": r["new_real_horizon_rings"],
+                                                "shannon_bounded_finite": bool(np.isfinite(r["total_capacity_bits"]))},
+                         "rating": r["rating"],
+                         "levers_real": {"bands": n_bands, "mimo_streams": mimo_streams,
+                                         "bandwidth_factor": round(bandwidth_factor, 2),
+                                         "coherent_M": coherent_M}}
             blk = pp.get("power_pack")
             if isinstance(blk, dict):
                 blk["v63"] = self._v63
             if isinstance(pp.get("reality"), dict) and self._v63:
                 pp["reality"]["grand_vision_v63"] = self._v63
                 pp["reality"]["real_info_horizon_rating"] = self._v63.get("rating")
+        except Exception:
+            pass
+
+
+class NEPACapabilityExpansionPackV64(NEPACapabilityExpansionPackV63):
+    """Grand-Vision review — wires DigitalResonanceTwin persistence + animation + the existing V53
+    narrative pipeline onto the REAL entity stream via RealEntityTwinBinder, so 'Digital Resonance
+    Twins' covers real (non-simulated) hardware too, not only the simulated person_entities path
+    V53 handles. No new fabrication: every component bound here (DigitalResonanceTwin,
+    LifeFormAnimator, NeuralSignatureExtractor/Decoder/Renderer) already existed and was already
+    self-tested; this class only supplies the missing live wiring."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.twin_binder = RealEntityTwinBinder()
+        self._v64 = None
+
+    def attach(self):
+        super().attach()
+        try:
+            log.info("[GRAND-VISION] V64 attached: real-entity twin binding online. "
+                     "DigitalResonanceTwin + LifeFormAnimator + the V53 narrative pipeline now "
+                     "also bind to pp['entities'] (the real IntegratedPerceptionChain stream) "
+                     "when exactly one real person is tracked, pairing this hardware's single "
+                     "scene-aggregate vitals channel honestly with that one entity. With 0 or 2+ "
+                     "real people tracked, no twin update happens — no guessed attribution.")
+        except Exception:
+            pass
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            r = self.twin_binder.bind(
+                pp.get("entities") or [], hr=pp.get("heart_rate_bpm"), br=pp.get("breathing_rate"),
+                movement_score=pp.get("movement_score", 0.0))
+            self._v64 = r
+            if r.get("bound"):
+                pp["real_twin_overlay"] = {k: v for k, v in r.items() if k != "bound"}
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v64"] = self._v64
+            if isinstance(pp.get("reality"), dict) and self._v64:
+                pp["reality"]["grand_vision_v64"] = self._v64
+        except Exception:
+            pass
+
+
+class MultiScaleInformationHorizon:
+    """Grand-Vision review — the HONEST answer to the 'planetary → galactic mapping' ask. It treats
+    multi-scale mapping as exactly what physics allows and refuses exactly what it forbids, using the
+    SAME data-processing inequality that V62/V63 already use to cap real information.
+
+    Two directions, two honest verdicts:
+      • DOWNWARD/INWARD (local high-res voxels → regional → planetary aggregation): a real, lossless
+        multi-resolution pyramid OVER ALREADY-MEASURED data. Coarser levels are mean-pooled summaries
+        of real voxels — energy-preserving, empty-stays-empty, nothing invented. This is the genuine
+        'MultiScaleCorrelationMatrixEngine' core.
+      • OUTWARD (recover detail about bodies this instrument never sensed — other planets, stars, the
+        galaxy — from local RF correlation): bounded by mutual information. A 2.4/5 GHz NIC receives
+        NO signal causally modulated by Gaia stars or a planetary crust 4e16 m away, so the coupling
+        α→0 and recoverable information I = B·log2(1 + α²·SNR) → 0 BITS. By the data-processing
+        inequality you cannot recover information a measurement does not contain. 'Galactic voxels'
+        extrapolated this way are 0-bit fabrication wearing a flag — the system populates NONE.
+
+    Three honest provenances on the scale ladder — never blurred:
+      SENSED            — this instrument's own measurements (α≈1, real recoverable bits).
+      CATALOG·EXTERNAL  — real data from a DIFFERENT real instrument/survey (LEO TLEs, DEM, a star
+                          catalog): honest to DISPLAY as ingested external truth, but it is NOT sensed
+                          by this RF and is never relabeled as locally recovered.
+      EXTRAPOLATED·0-BIT — detail about unsensed distant bodies inferred from local RF: PROVEN 0 bits,
+                          REFUSED. Not rendered, not stored, not flagged-and-shown — simply absent.
+
+    This is the galactic-scale twin of RealInformationHorizonMaximizer: it states the ceiling with a
+    proof and holds the line, rather than fabricating cosmos from a router."""
+
+    def pyramid_aggregate(self, voxels, levels=3):
+        """HONEST downward composition: build a multi-resolution pyramid by mean-pooling REAL measured
+        voxels. Returns one summary per level with its conserved total energy. No fabrication: a level
+        is only a coarser SUMMARY of measured data; empty input yields empty levels."""
+        v = np.asarray(voxels, dtype=float)
+        out = [{"level": 0, "shape": list(v.shape), "total_energy": float(v.sum()),
+                "provenance": "SENSED (real measured voxels, level 0)"}]
+        cur = v
+        for L in range(1, int(levels) + 1):
+            if cur.ndim != 3 or min(cur.shape) < 2:
+                break
+            nx, ny, nz = (s - s % 2 for s in cur.shape)
+            if min(nx, ny, nz) < 2:
+                break
+            block = cur[:nx, :ny, :nz].reshape(nx // 2, 2, ny // 2, 2, nz // 2, 2)
+            cur = block.mean(axis=(1, 3, 5)) * 8.0    # mean-pool but conserve summed energy (×2³)
+            out.append({"level": L, "shape": list(cur.shape), "total_energy": float(cur.sum()),
+                        "provenance": f"SENSED·AGGREGATED (level {L} mean-pool summary of measured data)"})
+        return out
+
+    def recoverable_bits(self, coupling_alpha, snr_db=20.0, bandwidth_norm=1.0):
+        """Data-processing-inequality bound: information recoverable about a target that modulates the
+        received signal with coupling α is I = B·log2(1 + α²·SNR). α→0 ⇒ I→0 (no causal signal path,
+        no recovery). Same α=0 ⇒ Fisher 0 ⇒ CRLB ∞ argument the thought-content proof already uses."""
+        snr = 10.0 ** (float(snr_db) / 10.0)
+        a = float(np.clip(coupling_alpha, 0.0, 1.0))
+        return float(bandwidth_norm) * float(np.log2(1.0 + (a * a) * snr))
+
+    # Honest coupling of THIS instrument's RF to a target at a given scale. Local scene: real. Anything
+    # beyond the instrument's actual signal path: zero — there is no 2.4 GHz channel from Mars/Gaia.
+    SCALE_COUPLING = {"local": 1.0, "regional": 0.30, "planetary_sensed": 0.0,
+                      "interplanetary": 0.0, "galactic": 0.0}
+
+    def scale_horizon(self, snr_db=20.0):
+        """Per-scale recoverable-information ladder with honest provenance. SENSED where this instrument
+        has a real signal path; everything past it is 0-bit and marked NOT-RECOVERABLE (display of such
+        scales must come from CATALOG·EXTERNAL ingest, never from local-RF 'inference')."""
+        ladder = []
+        for scale, alpha in self.SCALE_COUPLING.items():
+            bits = self.recoverable_bits(alpha, snr_db=snr_db)
+            if bits > 1e-6:
+                prov = "SENSED (real recoverable bits from this instrument)"
+            else:
+                prov = ("EXTRAPOLATED·0-BIT · NOT-RECOVERABLE from local RF (data-processing inequality: "
+                        "no signal path → 0 bits; display only via CATALOG·EXTERNAL ingest, never inferred)")
+            ladder.append({"scale": scale, "coupling_alpha": alpha,
+                           "recoverable_bits": round(bits, 4), "provenance": prov})
+        return {"ladder": ladder,
+                "max_sensed_scale": next((l["scale"] for l in reversed(ladder)
+                                          if l["recoverable_bits"] > 1e-6), "none"),
+                "galactic_recoverable_bits": ladder[-1]["recoverable_bits"],
+                "note": "real recoverable information about a body requires a real signal path to it; "
+                        "local RF has none beyond its own scene, so distant-body detail is 0-bit and "
+                        "is REFUSED — not fabricated under a flag."}
+
+    def verify_galactic(self):
+        # downward pyramid: energy-preserving over real data; empty stays empty
+        rng = np.random.default_rng(0)
+        vg = rng.random((8, 8, 8))
+        pyr = self.pyramid_aggregate(vg, levels=3)
+        energy_conserved = all(abs(lvl["total_energy"] - pyr[0]["total_energy"]) < 1e-6 for lvl in pyr)
+        empty_pyr = self.pyramid_aggregate(np.zeros((8, 8, 8)), levels=3)
+        empty_stays_empty = all(lvl["total_energy"] == 0.0 for lvl in empty_pyr)
+        # outward ceiling: monotonic decay to exactly 0 at galactic scale
+        sh = self.scale_horizon()
+        local_bits = sh["ladder"][0]["recoverable_bits"]
+        galactic_bits = sh["galactic_recoverable_bits"]
+        bits_seq = [l["recoverable_bits"] for l in sh["ladder"]]
+        monotonic = all(bits_seq[i] >= bits_seq[i + 1] - 1e-9 for i in range(len(bits_seq) - 1))
+        galactic_flagged = "0-BIT" in sh["ladder"][-1]["provenance"]
+        return {"pyramid_energy_conserved": energy_conserved,
+                "empty_stays_empty": empty_stays_empty,
+                "local_has_real_bits": local_bits > 1.0,
+                "galactic_is_zero_bits": galactic_bits == 0.0,
+                "information_decays_monotonically": monotonic,
+                "galactic_flagged_not_recoverable": galactic_flagged,
+                "finite_information_retention": np.isfinite(local_bits) and np.isfinite(galactic_bits),
+                "note": "multi-scale mapping is a real lossless pyramid DOWNWARD over measured data; "
+                        "OUTWARD recovery of unsensed distant-body detail from local RF is PROVEN 0-bit "
+                        "(data-processing inequality) and REFUSED — galactic voxels are absent, not faked."}
+
+    def verify(self):
+        return self.verify_galactic()
+
+    def status(self):
+        v = self.verify_galactic()
+        sh = self.scale_horizon()
+        return {"max_sensed_scale": sh["max_sensed_scale"],
+                "galactic_is_zero_bits": v["galactic_is_zero_bits"],
+                "pyramid_energy_conserved": v["pyramid_energy_conserved"]}
+
+
+class NEPACapabilityExpansionPackV65(NEPACapabilityExpansionPackV64):
+    """Grand-Vision review — multi-scale (planetary → galactic) information horizon, done honestly.
+    Adds MultiScaleInformationHorizon: a real lossless pyramid over measured local voxels (downward
+    composition) plus a data-processing-inequality proof that recovering detail about unsensed distant
+    bodies from local RF is exactly 0 bits — so the requested 'galactic voxels' are REFUSED, not
+    fabricated under an INFERRED flag. Real external surveys (LEO TLEs already ingested; star catalogs
+    if added) remain displayable as CATALOG·EXTERNAL, never relabeled as locally recovered. The honest
+    ceiling for cosmic scale, mirroring V62/V63's Shannon ceiling for vision range."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.multiscale = MultiScaleInformationHorizon()
+        self._v65 = None
+
+    def attach(self):
+        super().attach()
+        try:
+            self._v65 = self.multiscale.status()
+            log.info("[GRAND-VISION] V65 attached (multi-scale information horizon): multi-resolution "
+                     "mapping is a REAL lossless pyramid downward over measured voxels; recovering "
+                     "detail about unsensed planets/stars/the galaxy from local RF is PROVEN 0-bit by "
+                     "the data-processing inequality and is REFUSED — never fabricated under a flag. "
+                     "Real external surveys (LEO TLEs, star catalogs) stay CATALOG·EXTERNAL, never "
+                     "relabeled as locally sensed. The honest cosmic-scale ceiling.")
+        except Exception:
+            pass
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            sh = self.multiscale.scale_horizon()
+            self._v65 = {"max_sensed_scale": sh["max_sensed_scale"],
+                         "galactic_recoverable_bits": sh["galactic_recoverable_bits"],
+                         "scale_ladder": sh["ladder"]}
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v65"] = self._v65
+            if isinstance(pp.get("reality"), dict):
+                pp["reality"]["multiscale_info_horizon"] = self._v65
+        except Exception:
+            pass
+
+
+class DecoherenceChainingCeilingProof:
+    """Grand-Vision review — the honest answer to 'extend sight PAST decoherence to the absolute
+    maximum by recursive correlation chaining'. The premise is physically backwards, and this class
+    proves it numerically rather than implementing a fabrication.
+
+    What V65 proved STATICALLY (per-scale recoverable bits → 0 for unsensed bodies), this proves
+    DYNAMICALLY: applying any number of correlation / reverse-engineering / 'residual inverse
+    scattering' passes to a measurement CANNOT raise its mutual information with the source. That is
+    the data-processing inequality: for the Markov chain  S → M → C  (C is any deterministic
+    post-processing of measurement M),  I(S;C) ≤ I(S;M).  Correlation chaining is post-processing of
+    M, so it can only preserve or destroy information, never create it. 'Overcoming decoherence' to
+    recover detail that decohered out of the channel is therefore impossible — sharpening recovers
+    information IN the channel; it cannot conjure information the channel never carried (the same
+    α=0 → Fisher 0 → CRLB ∞ argument the thought-content proof already uses).
+
+    It also makes the CATALOG·EXTERNAL tier concrete: a few REAL catalogued bright-star positions
+    (public J2000 values) that may be DISPLAYED as external astronomical truth but are PROVABLY never
+    'sensed' by this RF and never promoted to SENSED provenance."""
+
+    # Real, public J2000 catalogue values (RA°, Dec°, distance ly) — external truth, NOT sensed here.
+    CATALOG_STARS = [
+        {"name": "Sirius",     "ra_deg": 101.287, "dec_deg": -16.716, "dist_ly": 8.6},
+        {"name": "Vega",       "ra_deg": 279.234, "dec_deg":  38.784, "dist_ly": 25.0},
+        {"name": "Polaris",    "ra_deg":  37.954, "dec_deg":  89.264, "dist_ly": 433.0},
+        {"name": "Betelgeuse", "ra_deg":  88.793, "dec_deg":   7.407, "dist_ly": 642.0},
+        {"name": "Proxima",    "ra_deg": 217.429, "dec_deg": -62.679, "dist_ly": 4.24},
+    ]
+
+    @staticmethod
+    def _correlation_pass(x):
+        """One deterministic 'correlation/reverse-engineering' pass over a measurement vector ONLY
+        (no fresh access to the source). A smooth pointwise map — representative of any post-processing.
+        By construction it is a function of x alone, so S → M → pass(M) is a Markov chain."""
+        return np.tanh(0.9 * x)
+
+    def chained_recoverable_bits(self, alpha, snr0_db=20.0, passes=5, n=40000, seed=0):
+        """Empirically recover bits about source S from measurement M = α·S + noise, and from M after
+        `passes` correlation passes. Uses the linear-Gaussian MMSE↔MI identity I = ½·log2(varS/MSE).
+        For unsensed bodies α is exactly 0 (no signal path) → analytic 0 bits, short-circuited."""
+        a = float(np.clip(alpha, 0.0, 1.0))
+        if a == 0.0:
+            return {"bits_measurement": 0.0, "bits_chained": 0.0, "alpha": 0.0,
+                    "chaining_increased_info": False}
+        rng = np.random.default_rng(seed)
+        snr0 = 10.0 ** (float(snr0_db) / 10.0)
+        sigma_n = 1.0 / np.sqrt(max(snr0, 1e-12))     # base-channel noise so α=1 ⇒ SNR=snr0
+        S = rng.standard_normal(n)
+        M = a * S + rng.standard_normal(n) * sigma_n
+
+        def lin_bits(X):
+            vx = float(np.var(X))
+            if vx < 1e-15:
+                return 0.0                              # X carries nothing about S
+            b = float(np.cov(S, X)[0, 1] / vx)          # best linear estimator of S from X
+            mse = float(np.var(S - b * X))
+            return 0.5 * np.log2(float(np.var(S)) / max(mse, 1e-12))
+
+        C = M.copy()
+        for _ in range(int(passes)):
+            C = self._correlation_pass(C)
+        bm, bc = lin_bits(M), lin_bits(C)
+        return {"bits_measurement": round(bm, 4), "bits_chained": round(bc, 4), "alpha": a,
+                "chaining_increased_info": bool(bc > bm + 1e-6)}
+
+    def catalog_external_layer(self):
+        """The CATALOG·EXTERNAL tier, concretely: real catalogued star positions for display, every
+        one stamped CATALOG·EXTERNAL and explicitly NOT sensed by this instrument."""
+        layer = [{**s, "recoverable_bits_from_local_rf": 0.0,
+                  "provenance": "CATALOG·EXTERNAL (public J2000 survey value; displayed, NOT sensed by this RF)"}
+                 for s in self.CATALOG_STARS]
+        return {"n_stars": len(layer), "stars": layer,
+                "any_promoted_to_sensed": any("SENSED" in s["provenance"].split("·")[0] for s in layer)}
+
+    def verify_decoherence_max(self):
+        # coupled scales: chaining must NOT increase recoverable info (data-processing inequality)
+        local = self.chained_recoverable_bits(alpha=1.0)
+        regional = self.chained_recoverable_bits(alpha=0.3)
+        mars = self.chained_recoverable_bits(alpha=0.0)        # no RF path from Mars to a WiFi NIC
+        galactic = self.chained_recoverable_bits(alpha=0.0)    # nor from the galaxy
+        cat = self.catalog_external_layer()
+        ladder = [local["bits_measurement"], regional["bits_measurement"],
+                  mars["bits_measurement"], galactic["bits_measurement"]]
+        return {"local_has_real_bits": local["bits_measurement"] > 1.0,
+                "chaining_never_increases_info": not (local["chaining_increased_info"]
+                                                      or regional["chaining_increased_info"]),
+                "chained_bounded_by_measurement":
+                    local["bits_chained"] <= local["bits_measurement"] + 1e-6
+                    and regional["bits_chained"] <= regional["bits_measurement"] + 1e-6,
+                "mars_is_zero_bits": mars["bits_measurement"] == 0.0,
+                "galactic_is_zero_bits": galactic["bits_measurement"] == 0.0,
+                "ladder_monotonic_decay": all(ladder[i] >= ladder[i + 1] - 1e-9
+                                              for i in range(len(ladder) - 1)),
+                "catalog_never_promoted_to_sensed": cat["any_promoted_to_sensed"] is False,
+                "catalog_stars_zero_bits_from_rf": all(s["recoverable_bits_from_local_rf"] == 0.0
+                                                       for s in cat["stars"]),
+                "note": "data-processing inequality, demonstrated: correlation chaining over a measurement "
+                        "cannot raise its mutual information with the source — 'overcoming decoherence' to "
+                        "recover lost detail is impossible. Unsensed bodies (Mars, galaxy) are 0-bit and "
+                        "REFUSED; real star catalogue positions are CATALOG·EXTERNAL, never SENSED."}
+
+    def verify(self):
+        return self.verify_decoherence_max()
+
+    def status(self):
+        v = self.verify_decoherence_max()
+        return {"chaining_never_increases_info": v["chaining_never_increases_info"],
+                "galactic_is_zero_bits": v["galactic_is_zero_bits"],
+                "catalog_never_promoted_to_sensed": v["catalog_never_promoted_to_sensed"]}
+
+
+class NEPACapabilityExpansionPackV66(NEPACapabilityExpansionPackV65):
+    """Grand-Vision review — 'past decoherence to the absolute maximum', done honestly. Adds
+    DecoherenceChainingCeilingProof: a numerical data-processing-inequality demonstration that recursive
+    correlation / residual-inverse-scattering chaining over a measurement CANNOT create information the
+    channel never carried (so 'overcoming decoherence' to recover unsensed distant detail is impossible),
+    plus a concrete CATALOG·EXTERNAL star layer that is displayed but never promoted to SENSED. Where the
+    round asked for InterplanetaryRelayModeler / UniversalSpectrumPenetration / multi-anchor phase
+    recovery of galactic detail, the honest deliverable is the PROOF those gains are 0-bit outward — and
+    the refusal to fabricate them — not a capability that implies otherwise."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.decoh_proof = DecoherenceChainingCeilingProof()
+        self._v66 = None
+
+    def attach(self):
+        super().attach()
+        try:
+            self._v66 = self.decoh_proof.status()
+            log.info("[GRAND-VISION] V66 attached (decoherence-chaining ceiling proof): correlation "
+                     "chaining over a measurement provably cannot raise its mutual information with the "
+                     "source (data-processing inequality) — 'overcoming decoherence' to recover unsensed "
+                     "distant detail is impossible, not merely hard. Galactic/interplanetary recovery from "
+                     "local RF stays 0-bit and REFUSED; real star-catalogue positions are CATALOG·EXTERNAL, "
+                     "displayed but never promoted to SENSED.")
+        except Exception:
+            pass
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            if isinstance(pp.get("reality"), dict) and self._v66:
+                pp["reality"]["decoherence_chaining_ceiling"] = self._v66
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v66"] = self._v66
+        except Exception:
+            pass
+
+
+class AbsoluteMaximumSightProofEngine:
+    """Grand-Vision review — the single END-TO-END ceiling proof the round asks for. It does NOT
+    re-derive anything (that would duplicate V62/V63/V65/V66); it COMPOSES the four independent
+    ceilings already proven and asserts they are mutually CONSISTENT, collapsing to one statement:
+
+        Along EVERY 'see more' axis — rendered extent (V62), Shannon capacity levers (V63),
+        scale hierarchy (V65), and recursive correlation chaining (V66) — the REAL recoverable
+        information about a body this instrument never sensed (a planet, a star, the galaxy) is
+        the SAME value: 0 bits. The four proofs do not contradict; they converge on the horizon.
+
+    The honest 'absolute maximum' is therefore not a bigger number — it is this convergence plus a
+    parametric bound (max_recoverable_bits) that returns the finite local Shannon ceiling and an
+    exactly-zero galactic ceiling for ANY SNR / bandwidth / anchor count. More anchors raise the
+    LOCAL bound (independent SENSED channels) but leave the galactic bound at 0 — extra looks are
+    post-processing w.r.t. an unsensed body, and by the data-processing inequality post-processing
+    of zero-mutual-information measurements is still zero."""
+
+    def __init__(self):
+        self.v62 = AbsoluteMaxVisionCeiling()
+        self.v63 = RealInformationHorizonMaximizer()
+        self.v65 = MultiScaleInformationHorizon()
+        self.v66 = DecoherenceChainingCeilingProof()
+
+    def max_recoverable_bits(self, snr_db=20.0, bandwidth_norm=1.0, anchor_count=1, scale="local"):
+        """Unified parametric ceiling. local: finite Shannon capacity (≤ the available channels —
+        more real anchors add independent SENSED channels, still finite). interplanetary/galactic:
+        exactly 0 bits regardless of SNR/bandwidth/anchors — no signal path, DPI(0)=0."""
+        snr = 10.0 ** (float(snr_db) / 10.0)
+        cap = float(bandwidth_norm) * float(np.log2(1.0 + snr))
+        if str(scale) in ("interplanetary", "galactic", "planetary_unsensed"):
+            return 0.0
+        # local: independent real anchors contribute independent channel capacities (bounded, finite)
+        return cap * float(max(1, int(anchor_count)))
+
+    def verify_absolute_max(self, snr_db=20.0):
+        ac = self.v62.verify()
+        rh = self.v63.verify()
+        ms = self.v65.verify_galactic()
+        dc = self.v66.verify_decoherence_max()
+        # the unifying numerical statement across all four axes
+        local_bits = self.max_recoverable_bits(snr_db=snr_db, scale="local")
+        galactic_axes = {
+            "v65_multiscale": ms["galactic_is_zero_bits"],
+            "v66_chaining":   dc["galactic_is_zero_bits"],
+            "param_bound":    self.max_recoverable_bits(snr_db=snr_db, scale="galactic") == 0.0,
+        }
+        anchor_invariant = all(self.max_recoverable_bits(snr_db=snr_db, anchor_count=a,
+                                                         scale="galactic") == 0.0
+                               for a in (1, 10, 1000))
+        return {
+            "v62_info_horizon_finite_and_lever_independent":
+                ac["info_horizon_finite"] and ac["info_horizon_independent_of_levers"]
+                and ac["proof_cites_data_processing"],
+            "v63_shannon_bounded_finite": rh["shannon_bounded_finite"],
+            "v65_multiscale_galactic_zero": ms["galactic_is_zero_bits"]
+                and ms["information_decays_monotonically"],
+            "v66_chaining_cannot_create_info": dc["chaining_never_increases_info"]
+                and dc["galactic_is_zero_bits"],
+            "all_axes_agree_galactic_is_zero": all(galactic_axes.values()),
+            "local_bound_real_and_finite": local_bits > 0.0 and np.isfinite(local_bits),
+            "galactic_zero_for_any_anchor_count": anchor_invariant,
+            "galactic_axes": galactic_axes,
+            "note": "four independent ceilings (rendered extent / Shannon levers / scale hierarchy / "
+                    "correlation chaining) are mutually consistent and converge: real recoverable "
+                    "information about an unsensed body is 0 bits on every axis, for any SNR/BW/anchor "
+                    "count. The absolute maximum is the horizon itself — proven, not a bigger number."}
+
+    def verify(self):
+        return self.verify_absolute_max()
+
+    def status(self):
+        v = self.verify_absolute_max()
+        return {"all_axes_agree_galactic_is_zero": v["all_axes_agree_galactic_is_zero"],
+                "galactic_zero_for_any_anchor_count": v["galactic_zero_for_any_anchor_count"],
+                "local_bound_real_and_finite": v["local_bound_real_and_finite"]}
+
+
+class NEPACapabilityExpansionPackV67(NEPACapabilityExpansionPackV66):
+    """Grand-Vision review — the single end-to-end ceiling proof (AbsoluteMaximumSightProofEngine).
+    Composes V62/V63/V65/V66 into one consistency assertion: along every 'see more' axis the REAL
+    recoverable information about an unsensed body converges to the SAME 0 bits, for any SNR/BW/anchor
+    count. NON-DUPLICATIVE: it re-runs the existing proofs and checks they agree — it does not rebuild
+    them. The round's other asks (InfiniteChainingDecoherenceOracle, CosmicEndToEndProofSuite, the
+    'extreme detail levers') are already covered by V65/V66 + existing local super-resolution and are
+    deliberately not re-implemented (the no-duplication rule)."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.absmax_proof = AbsoluteMaximumSightProofEngine()
+        self._v67 = None
+
+    def attach(self):
+        super().attach()
+        try:
+            self._v67 = self.absmax_proof.status()
+            log.info("[GRAND-VISION] V67 attached (absolute-maximum sight proof): the four ceilings "
+                     "(V62 extent · V63 Shannon · V65 scale · V66 chaining) are proven mutually "
+                     "consistent — REAL recoverable info about any unsensed body converges to 0 bits "
+                     "on every axis, for any SNR/bandwidth/anchor count. The absolute maximum is the "
+                     "information horizon itself. No proof classes duplicated; the rest of the cosmic "
+                     "ask is already covered or is honestly 0-bit and refused.")
+        except Exception:
+            pass
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            if isinstance(pp.get("reality"), dict) and self._v67:
+                pp["reality"]["absolute_maximum_sight_proof"] = self._v67
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v67"] = self._v67
+        except Exception:
+            pass
+
+
+class StarCatalogExternalLayer:
+    """Grand-Vision review — the ONE genuine forward step (named by the round itself): the real
+    CATALOG·EXTERNAL layer. It ingests ACTUAL public astronomical catalog data (standard HYG / Gaia
+    CSV) for DISPLAY, and converts each star's catalogued RA/Dec into a real 3D sky-direction unit
+    vector. This is the honest cosmic content: real external survey truth, never sensed by this RF.
+
+    Every entry is stamped CATALOG·EXTERNAL with recoverable_bits_from_local_rf = 0.0 and is NEVER
+    promoted to SENSED — the three-tier ladder (SENSED / CATALOG·EXTERNAL / 0-BIT) enforced as data,
+    not just asserted in a proof. The full catalog comes from a real HYG/Gaia file the operator loads
+    (load_hyg_csv); the small embedded BRIGHT_STAR_SAMPLE is verified almanac data so the layer is
+    non-empty out of the box. No star position is invented; rows without real RA/Dec are skipped."""
+
+    # Verified J2000 almanac values (RA°, Dec°, distance ly) — a small REAL sample; the authoritative
+    # full catalog is loaded from an actual HYG/Gaia CSV via load_hyg_csv().
+    BRIGHT_STAR_SAMPLE = [
+        {"name": "Sirius",     "ra_deg": 101.287, "dec_deg": -16.716, "dist_ly": 8.60},
+        {"name": "Vega",       "ra_deg": 279.234, "dec_deg":  38.784, "dist_ly": 25.0},
+        {"name": "Arcturus",   "ra_deg": 213.915, "dec_deg":  19.182, "dist_ly": 36.7},
+        {"name": "Procyon",    "ra_deg": 114.825, "dec_deg":   5.225, "dist_ly": 11.46},
+        {"name": "Altair",     "ra_deg": 297.696, "dec_deg":   8.868, "dist_ly": 16.7},
+        {"name": "Betelgeuse", "ra_deg":  88.793, "dec_deg":   7.407, "dist_ly": 642.0},
+        {"name": "Rigel",      "ra_deg":  78.634, "dec_deg":  -8.202, "dist_ly": 860.0},
+        {"name": "Aldebaran",  "ra_deg":  68.980, "dec_deg":  16.509, "dist_ly": 65.3},
+        {"name": "Polaris",    "ra_deg":  37.954, "dec_deg":  89.264, "dist_ly": 433.0},
+        {"name": "Proxima",    "ra_deg": 217.429, "dec_deg": -62.679, "dist_ly": 4.24},
+    ]
+    PROV = "CATALOG·EXTERNAL (public survey value; displayed, NOT sensed by this RF, 0 local bits)"
+
+    @staticmethod
+    def radec_to_unit_vector(ra_deg, dec_deg):
+        """Real spherical→cartesian on the unit celestial sphere (equatorial frame). Honest geometry,
+        not a sensed position: it is the catalogued DIRECTION to the star, unit length."""
+        ra = np.radians(float(ra_deg)); dec = np.radians(float(dec_deg))
+        return [float(np.cos(dec) * np.cos(ra)), float(np.cos(dec) * np.sin(ra)), float(np.sin(dec))]
+
+    def _entry(self, name, ra_deg, dec_deg, dist_ly=None, mag=None):
+        return {"name": str(name), "ra_deg": float(ra_deg), "dec_deg": float(dec_deg),
+                "dist_ly": (float(dist_ly) if dist_ly is not None else None),
+                "mag": (float(mag) if mag is not None else None),
+                "unit_vector": self.radec_to_unit_vector(ra_deg, dec_deg),
+                "recoverable_bits_from_local_rf": 0.0, "provenance": self.PROV}
+
+    def parse_hyg_row(self, row):
+        """Parse one standard HYG/Gaia CSV row (dict from csv.DictReader). HYG stores ra in HOURS and
+        dist in PARSECS; convert to degrees / light-years. Returns an entry or None if no real RA/Dec
+        (never fabricated). Tolerant of column-name variants."""
+        try:
+            ra_h = row.get("ra") if "ra" in row else row.get("RA")
+            dec_d = row.get("dec") if "dec" in row else row.get("DEC")
+            if ra_h in (None, "") or dec_d in (None, ""):
+                return None
+            ra_deg = float(ra_h) * 15.0                     # hours → degrees
+            dec_deg = float(dec_d)
+            dist_pc = row.get("dist") or row.get("Distance")
+            dist_ly = (float(dist_pc) * 3.261563) if dist_pc not in (None, "") else None
+            mag_v = row.get("mag") or row.get("Mag") or row.get("vmag")
+            mag = float(mag_v) if mag_v not in (None, "") else None
+            name = (row.get("proper") or row.get("bf") or row.get("hip")
+                    or row.get("id") or "star").strip() or "star"
+            return self._entry(name, ra_deg, dec_deg, dist_ly, mag)
+        except (ValueError, TypeError):
+            return None
+
+    def load_hyg_csv(self, path, max_stars=5000):
+        """Ingest a real HYG/Gaia catalog CSV the operator supplies. Returns the count loaded; rows
+        without real RA/Dec are skipped, never backfilled. This is the path to the authoritative
+        full catalog — the embedded sample is only a fallback."""
+        import csv
+        loaded = []
+        try:
+            with open(path, newline="") as f:
+                for row in csv.DictReader(f):
+                    e = self.parse_hyg_row(row)
+                    if e is not None:
+                        loaded.append(e)
+                    if len(loaded) >= int(max_stars):
+                        break
+        except Exception as ex:
+            log.debug(f"[STAR-CATALOG] load skipped: {ex}")
+            return {"loaded": 0, "source": "none", "error": str(ex)[:60]}
+        return {"loaded": len(loaded), "source": path, "stars": loaded}
+
+    def external_layer(self, loaded=None):
+        """The CATALOG·EXTERNAL display layer: loaded real catalog if provided, else the verified
+        embedded sample. Every entry 0-bit from local RF and never SENSED."""
+        stars = loaded if loaded else [self._entry(**s) for s in self.BRIGHT_STAR_SAMPLE]
+        return {"n_stars": len(stars), "stars": stars,
+                "tier": "CATALOG·EXTERNAL",
+                "any_promoted_to_sensed": any("SENSED" == s["provenance"].split("·")[0].strip()
+                                              for s in stars),
+                "all_zero_local_bits": all(s["recoverable_bits_from_local_rf"] == 0.0 for s in stars)}
+
+    def verify(self):
+        lay = self.external_layer()
+        # geometry: known directions are exact + unit length
+        vx = self.radec_to_unit_vector(0.0, 0.0)
+        vy = self.radec_to_unit_vector(90.0, 0.0)
+        vz = self.radec_to_unit_vector(0.0, 90.0)
+        unit_ok = all(abs(np.linalg.norm(v) - 1.0) < 1e-9 for v in (vx, vy, vz))
+        dirs_ok = (abs(vx[0] - 1) < 1e-9 and abs(vy[1] - 1) < 1e-9 and abs(vz[2] - 1) < 1e-9)
+        # ingest: a synthetic HYG row parses correctly (ra hours→deg, dist pc→ly); empty row skipped
+        good = self.parse_hyg_row({"proper": "TestStar", "ra": "6.0", "dec": "-16.7", "dist": "2.64"})
+        empty = self.parse_hyg_row({"proper": "NoCoords", "ra": "", "dec": ""})
+        ingest_ok = (good is not None and abs(good["ra_deg"] - 90.0) < 1e-6
+                     and abs(good["dist_ly"] - 2.64 * 3.261563) < 1e-3 and empty is None)
+        return {"sample_non_empty": lay["n_stars"] >= 5,
+                "all_catalog_external": all("CATALOG·EXTERNAL" in s["provenance"] for s in lay["stars"]),
+                "never_promoted_to_sensed": lay["any_promoted_to_sensed"] is False,
+                "all_zero_local_bits": lay["all_zero_local_bits"],
+                "geometry_unit_and_exact": unit_ok and dirs_ok,
+                "hyg_ingest_parses_real_rows_only": ingest_ok,
+                "note": "real CATALOG·EXTERNAL star layer: ingests an actual HYG/Gaia CSV (ra hours→deg, "
+                        "dist pc→ly), converts RA/Dec to real sky-direction unit vectors, flags every "
+                        "entry 0-bit/never-SENSED; rows without real coordinates are skipped, not faked."}
+
+    def status(self):
+        v = self.verify()
+        lay = self.external_layer()
+        return {"n_sample_stars": lay["n_stars"], "tier": "CATALOG·EXTERNAL",
+                "never_promoted_to_sensed": v["never_promoted_to_sensed"],
+                "hyg_ingest_ok": v["hyg_ingest_parses_real_rows_only"]}
+
+
+class NEPACapabilityExpansionPackV68(NEPACapabilityExpansionPackV67):
+    """Grand-Vision review — the one genuine forward step, not another proof. Adds StarCatalogExternalLayer:
+    a REAL catalog-ingest layer (standard HYG/Gaia CSV) that displays actual catalogued star directions
+    as CATALOG·EXTERNAL, 0-bit from local RF, never promoted to SENSED. The round's other V68 asks
+    (ErrorCorrectedDecoherenceCorrelator, CosmicFarSightMaximizer, ContinuousFartherVerificationEngine,
+    MultiMatrixCrossReferenceVerifier) are DELIBERATELY NOT built: they duplicate V66's chaining proof,
+    V67's parametric bound, and the existing ParallelRefinedSensingEngine / SuperResolutionRangeImager /
+    ReconstructionTuner local 'see-farther' machinery — and the no-duplication rule forbids re-skinning
+    them. This is the honest content the document itself names as the remaining real work."""
+    def __init__(self, fuser, args=None, namespace=None, llm_overseer=False,
+                 llm_model="claude-opus-4-8"):
+        super().__init__(fuser, args=args, namespace=namespace,
+                         llm_overseer=llm_overseer, llm_model=llm_model)
+        self.star_catalog = StarCatalogExternalLayer()
+        self._loaded_stars = None
+        self._v68 = None
+        try:
+            path = getattr(args, "star_catalog", None) if args else None
+            if path:
+                r = self.star_catalog.load_hyg_csv(path)
+                if r.get("loaded"):
+                    self._loaded_stars = r["stars"]
+                    log.info(f"[STAR-CATALOG] loaded {r['loaded']} real stars from {path} (CATALOG·EXTERNAL)")
+        except Exception:
+            pass
+
+    def attach(self):
+        super().attach()
+        # v216: a loaded real HYG/Gaia catalog now actually feeds the ObservedSky dome (same honest
+        # alt/az visibility transform), instead of only changing a text count. CATALOG·EXTERNAL stays
+        # 0-bit / never SENSED — this only DISPLAYS real survey positions, it does not sense them.
+        try:
+            _osky = getattr(getattr(self, "fuser", None), "observed_sky", None)
+            if self._loaded_stars and _osky is not None:
+                _n = _osky.set_external_catalog(self._loaded_stars)
+                log.info(f"[STAR-CATALOG] {_n} loaded real stars wired into the ObservedSky dome "
+                         "(real alt/az visibility, CATALOG·EXTERNAL provenance, 0-bit from local RF).")
+        except Exception:
+            pass
+        try:
+            self._v68 = self.star_catalog.status()
+            n = len(self._loaded_stars) if self._loaded_stars else self._v68.get("n_sample_stars", 0)
+            log.info(f"[GRAND-VISION] V68 attached (real CATALOG·EXTERNAL star layer): {n} star "
+                     "directions available for display — actual HYG/Gaia catalogue values, converted to "
+                     "real sky-direction unit vectors, every one 0-bit from local RF and NEVER promoted "
+                     "to SENSED. Load the full authoritative catalog with --star-catalog <hyg.csv>. The "
+                     "duplicative V68 proof classes were declined (no-duplication rule).")
+        except Exception:
+            pass
+
+    def on_frame(self, pp):
+        super().on_frame(pp)
+        try:
+            lay = self.star_catalog.external_layer(loaded=self._loaded_stars)
+            self._v68 = {"n_stars": lay["n_stars"], "tier": lay["tier"],
+                         "any_promoted_to_sensed": lay["any_promoted_to_sensed"]}
+            # publish a light list for display (capped) — directions only, CATALOG·EXTERNAL
+            pp["catalog_external_stars"] = lay["stars"][:64]
+            blk = pp.get("power_pack")
+            if isinstance(blk, dict):
+                blk["v68"] = self._v68
+            if isinstance(pp.get("reality"), dict):
+                pp["reality"]["catalog_external_layer"] = self._v68
         except Exception:
             pass
 
@@ -106379,6 +107405,9 @@ if __name__ == "__main__":
     parser.add_argument('--virtual-mesh-size', type=int, default=None, metavar='N',
                         help='v300+++++++++ (plan2 V48): simulate a virtual mesh of N instruments '
                              '(VIRTUAL-MESH flagged) for distributed-behavior testing.')
+    parser.add_argument('--star-catalog', default=None, metavar='HYG.CSV',
+                        help='V68: load a real HYG/Gaia star-catalog CSV for CATALOG·EXTERNAL display '
+                             '(actual catalogued sky directions; 0-bit from local RF, never SENSED).')
     parser.add_argument('--estimate-gain', action='store_true',
                         help='v300+++++++++ (plan2 V48): print the HONEST cumulative improvement estimate '
                              '(percent increase) + amplification recommendations and exit.')
@@ -106819,7 +107848,7 @@ if __name__ == "__main__":
     # optional features above.
     if not getattr(args, "no_power_pack", False):
         try:
-            fuser.power_pack = NEPACapabilityExpansionPackV63(
+            fuser.power_pack = NEPACapabilityExpansionPackV68(
                 fuser, args, namespace=globals(),
                 llm_overseer=getattr(args, "llm_overseer", False),
                 llm_model=getattr(args, "llm_model", "claude-opus-4-8"))
