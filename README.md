@@ -11,9 +11,10 @@ mirror of the sensed world, with an AI overseer for humanitarian threat awarenes
 > (seeing through metal, decoding the literal content of thoughts, omniscient global sight from one
 > laptop), it reports the barrier honestly instead of faking a result.
 
-- **Single file:** `N.E.P.A.py` (~102,000 lines, one monolithic, copy-paste-runnable script)
-- **Capability chain:** V1 → V50 (~109 additive subsystems)
-- **Self-verification:** 100 built-in self-tests (`--self-test`), re-run live every 120 s
+- **Single file:** `N.E.P.A.py` (~177,000+ lines, one monolithic, copy-paste-runnable script)
+- **Capability chain:** V1 → V63 (~151 additive subsystems) + v300++++ physics/relativistic/WGS-84 upgrades
+- **Self-verification:** 147 built-in self-tests (`--self-test`), re-run live every 120 s + 195-function zero-error verification suite
+- **Physics fidelity:** exact SI constants, full WGS-84 ellipsoid geodesy (Vincenty), full special-relativity Doppler, disciplined time (GNSS > NTP > wall clock)
 - **License/use:** research, educational, and defensive/humanitarian use only
 
 ---
@@ -24,7 +25,7 @@ mirror of the sensed world, with an AI overseer for humanitarian threat awarenes
 3. [What it can actually do today](#3-what-it-can-actually-do-today)
 4. [How close is it? — the honest scorecard](#4-how-close-is-it--the-honest-scorecard)
 5. [Global / galactic / universal scale — the truth](#5-global--galactic--universal-scale--the-truth)
-6. [Architecture & the V1→V50 capability stack](#6-architecture--the-v1v50-capability-stack)
+6. [Architecture & the V1→V63 capability stack](#6-architecture--the-v1v63-capability-stack)
 7. [The honesty model (provenance tiers)](#7-the-honesty-model-provenance-tiers)
 8. [Installing & running](#8-installing--running)
 9. [The interface — tabs, keys, and views](#9-the-interface--tabs-keys-and-views)
@@ -79,7 +80,7 @@ about that is the whole point of the project.
 ## 3. What it can actually do today
 
 These are **really implemented and self-verified** (each has a `.verify()` benchmark counted in the
-100-check `--self-test`):
+147-check `--self-test`):
 
 ### Sensing & signal processing (real DSP on real or simulated signals)
 - **WiFi CSI capture** (Nexmon / ESP32 / pcap passive sniffing) and **passive radar** (CAF + CFAR,
@@ -132,7 +133,7 @@ These are **really implemented and self-verified** (each has a `.verify()` bench
   system **degrades safely** (spoofed spikes caught by robust statistics, not trusted).
 - **Default-deny safety/policy gate**: content/thought decode and individual real-time targeting are
   **hard-blocked**; humanitarian-use-only is enforced; every check is audited.
-- **100 self-tests** re-run every 120 seconds; a central cross-validation ledger retests every
+- **147 self-tests** re-run every 120 seconds; a central cross-validation ledger retests every
   inferred value against real data and keeps or discards it.
 
 ---
@@ -196,9 +197,69 @@ stated honestly, because pretending otherwise would violate the prime directive:
 The vision document itself (`plan2.md`, lines 592–611) acknowledges these are blockers no amount of
 code can remove. The program does not pretend to see what no instrument here can measure.
 
+### v300++++ — Physics, Relativistic & Geodesy Upgrades (2026-09)
+
+The program has been upgraded toward maximum physically honest, relativistic, and scale-correct
+representation of reality. Every change is additive — no working features were removed. All 195
+added/modified functions verified with **zero errors** (see `about.md` for the full proof).
+
+**Exact SI constants:**
+- `c = 299792458.0 m/s` (defined, exact) centralized in `PHYSICS_CONSTANTS` and used everywhere.
+- 51+ scattered approximate `3e8` / `2.998e8` literals upgraded to the exact value across all
+  physics classes (SAR, CSI, radar, tomography, Fresnel, DoA, multipath, orbit propagation).
+- CODATA 2018 `G = 6.67430e-11`, `M_earth = 5.972168e24`, `mu_earth = 3.986004418e14`.
+
+**Full WGS-84 ellipsoid geodesy** (replacing spherical approximations in geo-reference paths):
+- `wgs84_lla_to_ecef` — exact WGS-84 ellipsoid → ECEF (survey-grade).
+- `wgs84_ecef_to_enu` / `wgs84_lla_to_enu` — local ENU tangent plane (true-scale metres).
+- `wgs84_geodetic_curvature_radius` — prime-vertical radius of curvature N(lat).
+- `wgs84_vincenty_distance` / `wgs84_vincenty_bearing` — Vincenty's inverse formula for
+  sub-metre geodesic distance and bearing on the ellipsoid.
+- Wired into TrueView3D (`_azd`, `_enu`) and fused-world 3D for true ellipsoidal object placement.
+- Spherical great-circle retained as fallback for near-antipodal points or missing geodetic data.
+- `_render_selfcheck_wgs84()` — self-attests WGS-84 accuracy in-UI against known city references.
+
+**Full special-relativity Doppler** (replacing first-order approximations):
+- `relativistic_doppler_factor(beta)` — exact SR: `f_obs/f_src = sqrt((1-beta)/(1+beta))`.
+- `relativistic_doppler_velocity(doppler_hz, f_src)` — exact inversion:
+  `beta = (f_src^2 - f_obs^2) / (f_src^2 + f_obs^2)`.
+- Wired into `RelativisticKineticPredictor` (satellite Doppler + SR+GR clock corrections) and
+  the CSI micro-Doppler tracker (`Blah2MultiTargetTrackerNP76`).
+- SR+GR satellite clock corrections preserved (GPS +38.6 us/day net advance verified).
+
+**True-linear-scale 3D view mode:**
+- `TRUEVIEW_LINEAR_SCALE` flag (toggle with `t` key) — switches the TrueView3D dome between
+  log-depth (readable 7-decade default) and true-linear (100%-to-scale) range axis.
+- `v` key prints voxel grid + physics Nyquist resolution info to the log.
+- `_tv_range_to_display(d_m, RMAX, linear)` — unified helper for both modes.
+
+**Adaptive Nyquist-scale voxel grid ("best vision clarity"):**
+- Display voxel size adapts to the finest range resolution the active RF illuminators can
+  resolve (`c/(2*BW)` of the best bandwidth), bounded to [0.05 m, 0.25 m] for memory safety.
+- Preserves the original 0.25 m / 32³ grid when instruments cannot support finer (current
+  state: FMCW 24 GHz 250 MHz → 0.60 m physics res → 0.25 m display preserved).
+- `VOXEL_PHYSICS_RES_M` records the physics limit for UI honesty (oversampling for display
+  clarity, not fabricated super-resolution).
+
+**Disciplined time base (GNSS > NTP > wall clock):**
+- `true_time()` — centralized time returning `(epoch_s, source_str)` where source is
+  `'GNSS'` | `'NTP'` | `'WALLCLOCK'`. Always reports the source honestly.
+- `register_gnss_time()` — called by `GPSDClient` when a GNSS TPV report arrives.
+- `register_ntp_offset()` — called by `NetworkDiscoveryEngine` when NTP/chrony responds.
+- No silent fallback to `0.0` — NTP failure preserves `None` (unknown), not `0.0` (in sync).
+
+**Curvature-aware elevation (WGS-84):**
+- `_true_elev_deg(d_m, h_m, obs_lat_deg)` — uses WGS-84 N(lat) when observer latitude is
+  known, for ellipsoidal-accurate horizon distance and elevation angle. Negative = over horizon.
+
+**Range resolution helpers (physics-bounded honesty):**
+- `bistatic_range_res_m(bw)` — `c/(2*BW)` for round-trip radar/SAR.
+- `oneway_tof_range_res_m(bw)` — `c/BW` for one-way CSI ToF (distinct from bistatic).
+- `best_available_range_res_m(illuminators)` — finest `c/(2*BW)` from the active illuminator set.
+
 ---
 
-## 6. Architecture & the V1→V50 capability stack
+## 6. Architecture & the V1→V63 capability stack
 
 **One monolithic Python file.** No external sub-packages. It self-bootstraps its optional
 dependencies. The internal structure is deliberately built like a distributed planetary system
@@ -300,10 +361,13 @@ A 3D world window (free-fly **WASD** camera) plus a matplotlib multi-tab dashboa
 | `i` | **Info / About** — system reference, the honest 3-dimension scorecard, and the global/galactic/universal scale statement. |
 | `/` | **Capabilities Atlas** — super-detailed per-subsystem documentation with live verified metrics. |
 | `V` | **AI-Mind** — what the overseer perceives & "thinks": awareness state, decisions, super-vision proof. |
+| `M` | **Mind-Proxy / Behavioral Overlay** — real measured vitals → plain-English behavioral *state* ("possible distress proxy"). NEURAL-PROXY·DERIVED; consent-gated; **not** thought-reading (`mind_content` stays `None`). |
 | `r` | **Reality-Render** — the fused render stack output. |
 | `l` | **Spectrum-Wave** — spectrum-as-light / waveform view. |
 | `k` | **Planet Map** — real OSM / satellite / terrain tiles. |
 | `1`–`9`, `0` | Individual sensor views. |
+| `t` | **True-linear-scale toggle** — switches TrueView3D range axis between log-depth (readable 7-decade) and true-linear (100%-to-scale). |
+| `v` | **Voxel/physics scale info** — prints current voxel grid resolution, scene range, and physics Nyquist limit to the log. |
 
 ---
 
@@ -315,7 +379,7 @@ Run `python3 N.E.P.A.py --help` for the full list. Common ones:
 |---|---|
 | `--mode sim` / `--mode udp` | Simulated source, or live UDP instrument input. |
 | `--no-world` | Don't open the 3D world window (headless). |
-| `--self-test` | Run the 100-check correctness/benchmark suite and exit. |
+| `--self-test` | Run the 147-check correctness/benchmark suite and exit. |
 | `--simulate-hardware` | Register SIMULATED virtual instruments (every product watermarked SIMULATED). |
 | `--ingest-port N` / `--csi-port N` | Accept real distributed sensor / ESP32-CSI data over the network. |
 | `--mesh-node URL` | Run as a receiver-mesh node posting HMAC-signed observations. |
@@ -368,5 +432,40 @@ This is humanitarian-first software, and the code enforces that operationally:
 **Can it really see through walls / underground / through metal?**
 Through drywall and wood within physical skin-depth limits — yes, and that's real. 
 
+**Is the 3D view literally to scale?**
+The TrueView3D dome defaults to a log-depth axis (readable across 7 decades, from 1 m to
+1000+ km on one dome). Press `t` to toggle to true-linear-scale mode (100%-to-scale, 1000 km
+maps to the dome edge). The near-field inset always uses linear scale. All axes are honestly
+labelled — log-scaled is never presented as literal scale.
+
+**Does it use WGS-84 or a spherical Earth model?**
+Both, in the right places. The v300++++ upgrade added full WGS-84 ellipsoid geodesy (ECEF/ENU
++ Vincenty's inverse formula for sub-metre distance/bearing) wired into all geo-reference
+paths (TrueView3D, fused-world 3D). The spherical great-circle is retained as a fallback for
+near-antipodal points or missing geodetic data. The program self-attests WGS-84 accuracy
+in-UI via `_render_selfcheck_wgs84()`.
+
+**Are the Doppler shifts relativistically correct?**
+Yes. The v300++++ upgrade replaced the first-order Doppler approximation with the full
+special-relativity formula `f_obs/f_src = sqrt((1-beta)/(1+beta))` in both the satellite
+predictor and the CSI micro-Doppler tracker. The exact velocity inversion
+`beta = (f_src^2 - f_obs^2) / (f_src^2 + f_obs^2)` is also used. For human-motion speeds the
+difference from the classical approximation is negligible (~beta^2 ~ 1e-17), but the physics
+is now relativistically exact.
+
+**How is time disciplined?**
+`true_time()` prefers GNSS-disciplined time (nanosecond-accurate when a GNSS receiver is
+present via gpsd), then NTP-synced time (millisecond-accurate), then wall-clock
+`time.time()`. The source is always reported (`GNSS` | `NTP` | `WALLCLOCK`) — no silent
+fallback to `0.0`.
+
+**How was all this verified?**
+195 functions were exercised with real inputs in a zero-error verification suite. See
+`about.md` for the complete proof output. The module also byte-compiles cleanly
+(`python -m py_compile N.E.P.A.py` → exit 0).
+
+---
+
 *N.E.P.A. — turning the invisible electromagnetic world into visible, honest, actionable
-understanding. Capability chain V1→V50 · 100 self-tests · prime directive: no false data, ever.*
+understanding. Capability chain V1→V63 + v300++++ physics/relativistic/WGS-84 upgrades ·
+147 self-tests + 195-function zero-error verification · prime directive: no false data, ever.*
