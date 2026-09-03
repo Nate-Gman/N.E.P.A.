@@ -87,6 +87,23 @@ import subprocess as _sp
 import sys as _sys
 import os as _os
 
+# Keep optional numerical enrichments from spawning a full BLAS/OpenMP team each.
+# Parallelism is managed explicitly below; preventing nested thread teams avoids
+# CPU oversubscription that otherwise stalls the latency-critical fusion thread.
+for _thread_env in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                    "NUMEXPR_NUM_THREADS"):
+    _os.environ.setdefault(_thread_env, "1")
+
+# Windows shells and redirected IDE terminals frequently default to CP1252.  The
+# program's status messages contain Unicode, so configure replacement-safe UTF-8
+# before the bootstrap prints anything.  This directly prevents launch-time
+# UnicodeEncodeError without hiding the underlying message.
+for _console_stream in (_sys.stdout, _sys.stderr):
+    try:
+        _console_stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
 
 def _nepa_bootstrap_deps():
     """Install missing third-party packages (skip already-installed)."""
@@ -117,10 +134,20 @@ def _nepa_bootstrap_deps():
     ("pytesseract", "pytesseract", False),
     ]
     missing = []
+    missing_optional = []
+    install_optional = _os.environ.get("NEPA_INSTALL_OPTIONAL", "").strip().lower() in (
+        "1", "true", "yes", "on")
     for import_name, pip_name, required in deps:
         if _importlib.util.find_spec(import_name) is None:
-            missing.append((import_name, pip_name, required))
+            if required or install_optional:
+                missing.append((import_name, pip_name, required))
+            else:
+                missing_optional.append(pip_name)
     if not missing:
+        if missing_optional:
+            print("[BOOT] Optional packages unavailable (features will degrade cleanly): "
+                  + ", ".join(missing_optional))
+            print("[BOOT] Set NEPA_INSTALL_OPTIONAL=1 once to install them automatically.")
         return
     print("=" * 72)
     print("  N.E.P.A. auto-installer — installing missing packages "
@@ -166,21 +193,28 @@ def _select_matplotlib_backend():
     # If user has already set one, respect it
     if _os_backend.environ.get("MPLBACKEND"):
         return
-    # Try to detect a working display
-    _display = _os_backend.environ.get("DISPLAY", "") or _os_backend.environ.get("WAYLAND_DISPLAY", "")
-    if _display:
-        # A display exists — try Qt5, then Tk, then fallback
-        try:
-            import importlib as _il
-            if _il.util.find_spec("PyQt5") or _il.util.find_spec("PySide2"):
-                _os_backend.environ.setdefault("MPLBACKEND", "Qt5Agg")
-                return
-        except Exception:
-            pass
+    # Windows and macOS do not use DISPLAY/Wayland variables for their native
+    # desktops.  Treating a missing DISPLAY as headless forced every normal
+    # Windows IDE launch onto Agg, which cannot open the fallback UI.
+    _native_desktop = _sys.platform.startswith("win") or _sys.platform == "darwin"
+    _display = (_os_backend.environ.get("DISPLAY", "") or
+                _os_backend.environ.get("WAYLAND_DISPLAY", ""))
+    if _native_desktop or _display:
+        # Prefer the stdlib Tk backend when available.  It is the most reliable
+        # option across the Microsoft Store and python.org Windows builds.
         try:
             import importlib as _il
             if _il.util.find_spec("tkinter"):
                 _os_backend.environ.setdefault("MPLBACKEND", "TkAgg")
+                return
+        except Exception:
+            pass
+        # Modern matplotlib uses QtAgg for both Qt 5 and Qt 6 bindings.
+        try:
+            import importlib as _il
+            if any(_il.util.find_spec(name) for name in
+                   ("PyQt6", "PySide6", "PyQt5", "PySide2")):
+                _os_backend.environ.setdefault("MPLBACKEND", "QtAgg")
                 return
         except Exception:
             pass
@@ -199,6 +233,15 @@ import argparse
 import sys
 import logging
 import os
+
+# Fix Windows console encoding — Unicode chars (→, ↓, ∏, ·) crash cp1252.
+# Some IDE streams cannot be reconfigured, so keep startup resilient there.
+for _nepa_stream in (sys.stdout, sys.stderr):
+    if _nepa_stream and hasattr(_nepa_stream, 'reconfigure'):
+        try:
+            _nepa_stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, OSError, ValueError):
+            pass
 import subprocess
 import pickle
 from collections import deque
@@ -273,9 +316,23 @@ logging.basicConfig(
     level=_NEPA_LVL,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler(sys.stdout),
-              logging.FileHandler('nepa_session.log', mode='a')]
+              # FileHandler otherwise inherits CP1252 on Windows.  That was the
+              # actual source of the repeated UnicodeEncodeError tracebacks.
+              logging.FileHandler(f'nepa_session_{os.getpid()}.log', mode='a',
+                                  encoding='utf-8', errors='backslashreplace')],
+    force=True,
 )
 log = logging.getLogger("NEPA")
+
+
+class _NEPAOptionalDriverFilter(logging.Filter):
+    """Hide one expected Scapy fallback notice without masking real warnings."""
+
+    def filter(self, record):
+        return "No libpcap provider available" not in record.getMessage()
+
+
+logging.getLogger("scapy.runtime").addFilter(_NEPAOptionalDriverFilter())
 
 # ====================== CONFIG ======================
 DEFAULT_SUBCARRIERS = 64
@@ -285,6 +342,12 @@ UDP_PORTS_MIMO = [12345, 12346, 12347]   # List 1.1: multi-node MIMO ports
 BUFFER_SIZE = 4096
 HISTORY_LEN = 300
 VOXEL_RES = 32
+# Tracking has no configured numerical ceiling. Python integers provide arbitrary-size
+# logical IDs/counts; the real limit is the evidence delivered by sensors and the
+# resources of the distributed deployment. Rendering is a separate level-of-detail
+# concern and must never reject or delete tracks.
+TRACK_CAPACITY = None
+TRACK_RENDER_DETAIL_BUDGET = 256
 CAL_DURATION_S = 15                        # List 1.4: calibration window (s)
 NUM_AGENTS = max(1, min(6, mp.cpu_count() - 1))  # List 1.11: CPU-capped
 # Bands: 0=2.4GHz-A 1=2.4GHz-B 2=5GHz-A 3=5GHz-B 4=BCI 5=PSYCH
@@ -757,7 +820,10 @@ try:
         'axes.spines.right': False,
         'axes.linewidth':   0.6,
         'font.size':        8,
-        'font.family':      ['DejaVu Sans', 'Arial', 'Helvetica'],
+        # DejaVu Sans ships with matplotlib on every platform.  Listing fonts
+        # that are absent on a stock Windows install caused a findfont warning
+        # for nearly every label during launch and buried real diagnostics.
+        'font.family':      ['DejaVu Sans'],
     })
 except Exception:
     pass
@@ -2182,7 +2248,17 @@ class World3DViewer:
             self._pv_plotter.add_text("WASD/mouse fly-through — GPU voxel world",
                                       font_size=10, color="cyan")
         _refresh()
-        self._pv_plotter.add_callback(lambda *_: _refresh(), interval=200)
+        # Plotter.add_callback was removed from current PyVista releases.
+        # add_timer_event is the supported equivalent (callback receives step).
+        if hasattr(self._pv_plotter, "add_timer_event"):
+            self._pv_plotter.add_timer_event(max_steps=2_147_483_647,
+                                             duration=200,
+                                             callback=lambda *_: _refresh())
+        elif hasattr(self._pv_plotter, "add_callback"):
+            # Compatibility with older PyVista/PyVistaQt versions.
+            self._pv_plotter.add_callback(lambda *_: _refresh(), interval=200)
+        else:
+            raise RuntimeError("installed PyVista has no supported timer callback API")
         self._pv_plotter.show(interactive_update=True)
         log.info("[WORLD] PyVista GPU 3D world open")
 
@@ -5365,7 +5441,9 @@ class DetailTabWindow:
         _grid_top = 0.90
         if persons:
             _grid_top = 0.63
-            np_show = persons[:4]
+            # Rendering detail is viewport-limited; ``len(persons)`` remains the full
+            # tracked total and no track is rejected by this presentation budget.
+            np_show = persons[:TRACK_RENDER_DETAIL_BUDGET]
             pw = 0.92 / max(1, len(np_show))
             for pi, pe in enumerate(np_show):
                 axp = fig.add_axes([0.04 + pi * pw, 0.66, pw * 0.94, 0.26])
@@ -20058,7 +20136,7 @@ class DetailTabWindow:
 
         # Panel 4: Gaussian body splat point cloud (birds-eye)
         ax4 = fig.add_subplot(2, 3, 4); ax4.set_facecolor(NEPA_THEME['panel'])
-        for person in persons[:4]:
+        for person in persons[:TRACK_RENDER_DETAIL_BUDGET]:
             spl = np.asarray(person.get("splat", []), dtype=np.float32)
             if len(spl) > 0:
                 ax4.scatter(spl[:, 0], spl[:, 1], s=2,
@@ -20733,7 +20811,9 @@ class SemanticStateEngine:
         snp = world_snapshot or {}
 
         # ── blob geometry
-        blobs   = snp.get("blobs", [])
+        # Scene ``blobs`` may be routers/APs. Only the separately provenance-gated
+        # person stream is valid for occupancy semantics when that key is present.
+        blobs = snp.get("person_blobs", snp.get("blobs", []))
         n_blobs = len(blobs)
         # motion velocity from the fuser (m/frame proxy via Doppler or voxel centroid shift)
         motion_vel = float(pp.get("motion_velocity", 0.0))
@@ -20934,7 +21014,7 @@ _WEB_HTML = (
     "fetch('/status').then(r=>r.json()).then(d=>{"
     "document.getElementById('status').textContent="
     "'node='+(d.city||'?')+' ('+d.lat+','+d.lon+') | carriers='+d.carriers+"
-    "' presence='+d.presence+' motion='+(d.motion*100).toFixed(0)+'% | persons='+d.person_count+"
+    "' presence='+d.presence+' motion='+(d.motion*100).toFixed(0)+'% | '+d.signature_count_display+"
     "' threat='+d.threat.toFixed(2)+' state='+d.overseer_state;"
     "}).catch(()=>{});"
     "fetch('/semantic').then(r=>r.json()).then(d=>{"
@@ -20942,7 +21022,7 @@ _WEB_HTML = (
     "}).catch(()=>{});"
     "}"
     "function refreshPlanet(){document.getElementById('planet').src='/planet.png?t='+Date.now();}"
-    "setInterval(refresh,250);setInterval(refreshPlanet,3000);setInterval(refreshTab,1500);refresh();"
+    "setInterval(refresh,50);setInterval(refreshPlanet,1000);setInterval(refreshTab,250);refresh();"
     "</script></body></html>"
 )
 
@@ -21276,6 +21356,19 @@ class WebViewerServer:
                     _pmst = pm.status() if pm is not None else {}
                     d = {
                         "person_count":   int(pp.get("person_count", 0)),
+                        "person_count_min": int(pp.get("person_count_min", 0)),
+                        "person_count_status": str(pp.get("person_count_status", "UNRESOLVED")),
+                        "person_count_display": str(pp.get(
+                            "person_count_display", "PERSON COUNT UNAVAILABLE")),
+                        "person_count_is_total": bool(pp.get("person_count_is_total", False)),
+                        "signature_count": int(pp.get("signature_count", 0)),
+                        "signature_count_min": int(pp.get("signature_count_min", 0)),
+                        "signature_counts_by_class": dict(pp.get("signature_counts_by_class", {})),
+                        "signature_count_status": str(pp.get("signature_count_status", "UNRESOLVED")),
+                        "signature_count_display": str(pp.get(
+                            "signature_count_display", "SIGNATURE COUNT UNAVAILABLE")),
+                        "signature_count_is_total": bool(pp.get("signature_count_is_total", False)),
+                        "track_capacity": pp.get("track_capacity"),
                         "threat":         float(pp.get("threat_score", 0.0)),
                         "overseer_state": str(pp.get("overseer_state", "DORMANT")),
                         "splat_count":    int(pp.get("recon_splat_count", 0)),
@@ -21291,7 +21384,7 @@ class WebViewerServer:
                         "remote_carriers": int(pp.get("remote_carrier_count", 0)),
                         "remote_nodes":    int(pp.get("remote_node_count", 0)),
                         "network_movers":  int(pp.get("network_movers", 0)),
-                        "presence": ("Y" if pp.get("rssi_presence") else "n"),
+                        "presence": ("Y" if pp.get("presence_detected") else "n"),
                         "motion":   float(pp.get("rssi_motion", 0.0)),
                     }
                     self._send(200, "application/json", _j.dumps(d).encode())
@@ -21311,9 +21404,22 @@ class WebViewerServer:
                     pm = getattr(srv.fuser, "planet_map", None)
                     _pmst = pm.status() if pm is not None else {}
                     self._send(200, "application/json", _j.dumps({
-                        "presence":        bool(pp.get("rssi_presence", False)),
+                        "presence":        bool(pp.get("presence_detected", False)),
                         "motion":          round(float(pp.get("rssi_motion", 0.0)), 3),
                         "person_count":    int(pp.get("person_count", 0)),
+                        "person_count_min": int(pp.get("person_count_min", 0)),
+                        "person_count_status": str(pp.get("person_count_status", "UNRESOLVED")),
+                        "person_count_display": str(pp.get(
+                            "person_count_display", "PERSON COUNT UNAVAILABLE")),
+                        "person_count_is_total": bool(pp.get("person_count_is_total", False)),
+                        "signature_count": int(pp.get("signature_count", 0)),
+                        "signature_count_min": int(pp.get("signature_count_min", 0)),
+                        "signature_counts_by_class": dict(pp.get("signature_counts_by_class", {})),
+                        "signature_count_status": str(pp.get("signature_count_status", "UNRESOLVED")),
+                        "signature_count_display": str(pp.get(
+                            "signature_count_display", "SIGNATURE COUNT UNAVAILABLE")),
+                        "signature_count_is_total": bool(pp.get("signature_count_is_total", False)),
+                        "track_capacity": pp.get("track_capacity"),
                         "semantic_state":  str(pp.get("semantic_state", "ROOM_EMPTY")),
                         "carriers":        int(pp.get("combined_carrier_count", 0)),
                         "remote_nodes":    int(pp.get("remote_node_count", 0)),
@@ -21433,7 +21539,9 @@ class WebViewerServer:
                                 + b"\r\n\r\n")
                         self.wfile.write(hdr + data + b"\r\n")
                         self.wfile.flush()
-                        _t.sleep(0.10)
+                        _fps = max(1.0, min(60.0, float(
+                            getattr(srv.fuser, "target_fps", 20))))
+                        _t.sleep(1.0 / _fps)
                 except Exception:
                     pass
 
@@ -21888,11 +21996,14 @@ class WiFi3DFusionEngine:
     CHANNELS_5G  = [36, 40, 44, 48, 149, 153, 157, 161]
 
     def __init__(self, window_seconds: float = 2.0, movement_threshold: float = 0.008,
-                 debounce_s: float = 1.0, max_persons: int = 6):
+                 debounce_s: float = 1.0, max_persons=None):
         self._win_sec   = window_seconds
         self._mv_thr    = movement_threshold
         self._debounce  = debounce_s
-        self._max_pers  = max_persons
+        # ``max_persons`` is retained only for call compatibility. Admission is
+        # intentionally uncapped: sensor evidence, not a software constant, decides
+        # how many tracks exist. Rendering/serialization apply independent paging.
+        self._max_pers  = None
         # Per-channel amplitude history buffer: channel_id → deque of (ts, amp_vec)
         self._chan_bufs: dict = {}
         self._last_trigger = 0.0
@@ -21910,7 +22021,7 @@ class WiFi3DFusionEngine:
         self._pt_history: deque = deque(maxlen=8)   # up to 8 frames
         log.info(f"[W3D] WiFi3DFusionEngine init — "
                  f"win={window_seconds:.1f}s thr={movement_threshold:.4f} "
-                 f"max_persons={max_persons}")
+                 "track_capacity=unbounded")
 
     # ── movement detector (from realtime_detector.py MovementDetector.update) ─
     def _movement_score(self, channel: int, ts: float,
@@ -22002,27 +22113,62 @@ class WiFi3DFusionEngine:
 
     # ── person tracker ────────────────────────────────────────────────────────
     def _assign_person(self, blob_centroid: np.ndarray,
-                        blob_extent: float) -> int:
-        """Assign blob to nearest existing person or create new."""
+                        blob_extent: float,
+                        unavailable_pids=None, track_meta=None):
+        """Assign one evidence blob to one track, or create a new logical track.
+
+        ``unavailable_pids`` contains tracks already matched in this frame.  The old
+        nearest-neighbour loop allowed every nearby blob to collapse onto the same PID,
+        so seven simultaneous detections could be reported as one person.
+        """
+        unavailable_pids = set(unavailable_pids or ())
+        track_meta = dict(track_meta or {})
         best_pid, best_dist = None, 9999.0
-        for pid, info in self._persons.items():
+        association_gate = 1.5 / max(M_PER_VOXEL, 1e-9)
+        buckets = getattr(self, "_frame_track_buckets", None)
+        if buckets is None:
+            candidate_pids = self._persons.keys()
+        else:
+            from itertools import product as _product
+            key = tuple(int(math.floor(float(v) / association_gate))
+                        for v in blob_centroid[:3])
+            candidate_pids = []
+            for delta in _product((-1, 0, 1), repeat=len(key)):
+                candidate_pids.extend(buckets.get(
+                    tuple(key[i] + delta[i] for i in range(len(key))), ()))
+        for pid in candidate_pids:
+            if pid in unavailable_pids:
+                continue
+            info = self._persons.get(pid)
+            if info is None:
+                continue
             d = float(np.linalg.norm(blob_centroid - info["pos"]))
             if d < best_dist:
                 best_dist, best_pid = d, pid
-        # If nearest > 1.5 m away → new person
-        if best_pid is None or best_dist > 1.5:
+        # Blob coordinates are voxels; convert the 1.5 m association gate to voxels.
+        if best_pid is None or best_dist > association_gate:
             pid = self._next_pid
             self._next_pid += 1
             self._persons[pid] = {
                 "pos":       blob_centroid.copy(),
                 "vel":       np.zeros(3),
                 "traj":      deque(maxlen=60),
-                "skeleton":  self._canonical_skeleton(blob_centroid, 1.75),
+                "skeleton":  (self._canonical_skeleton(blob_centroid, 1.75)
+                              if str(track_meta.get("entity_class")) in ("person", "human")
+                              else np.empty((0, 3), dtype=np.float32)),
                 "color":     self.PERSON_COLORS[pid % len(self.PERSON_COLORS)],
                 "last_seen": self._frame_t,
                 "height_m":  1.75,
                 "extent":    blob_extent,
+                "entity_class": str(track_meta.get("entity_class") or "unknown_signature"),
+                "class_confidence": float(track_meta.get("class_confidence") or 0.0),
+                "provenance": str(track_meta.get("provenance") or "UNCLASSIFIED-SENSOR"),
+                "source_signature_id": track_meta.get("source_signature_id"),
             }
+            if buckets is not None:
+                key = tuple(int(math.floor(float(v) / association_gate))
+                            for v in blob_centroid[:3])
+                buckets.setdefault(key, []).append(pid)
             return pid
         # Update existing
         p   = self._persons[best_pid]
@@ -22031,6 +22177,15 @@ class WiFi3DFusionEngine:
         p["pos"]       = 0.6 * p["pos"] + 0.4 * blob_centroid
         p["last_seen"] = self._frame_t
         p["traj"].append(blob_centroid.copy())
+        new_conf = float(track_meta.get("class_confidence") or 0.0)
+        if new_conf >= float(p.get("class_confidence", 0.0)):
+            p["entity_class"] = str(track_meta.get("entity_class") or
+                                    p.get("entity_class", "unknown_signature"))
+            p["class_confidence"] = new_conf
+        if track_meta.get("provenance"):
+            p["provenance"] = str(track_meta["provenance"])
+        if track_meta.get("source_signature_id") is not None:
+            p["source_signature_id"] = track_meta["source_signature_id"]
         return best_pid
 
     def _prune_lost_persons(self, max_age_s: float = 8.0):
@@ -22095,6 +22250,13 @@ class WiFi3DFusionEngine:
         # np.asarray(...,float32) raise "float() argument must be... not 'tuple'") previously
         # aborted the WHOLE frame's person tracking via the outer except → the recurring
         # "[W3D] update error". Now one bad blob is coerced or skipped; the rest still track.
+        matched_this_frame = set()
+        _association_gate = 1.5 / max(M_PER_VOXEL, 1e-9)
+        self._frame_track_buckets = {}
+        for _pid, _info in self._persons.items():
+            _key = tuple(int(math.floor(float(v) / _association_gate))
+                         for v in _info["pos"][:3])
+            self._frame_track_buckets.setdefault(_key, []).append(_pid)
         for blob in (blobs or []):
             try:
                 _craw = blob.get("centroid", [12, 12, 12])
@@ -22115,11 +22277,23 @@ class WiFi3DFusionEngine:
                     ext = float(_ea) if _ea.ndim == 0 else float(np.mean(np.abs(_ea)))
                 except Exception:
                     ext = 3.0
-                pid  = self._assign_person(cent, ext)
+                _entity_class = str(blob.get("entity_class", blob.get("class", "person")))
+                _class_conf = float(blob.get("class_confidence", blob.get("class_conf", 0.0)) or 0.0)
+                _provenance = str(blob.get("provenance", "BODY-SENSOR-SPATIAL-TRACK"))
+                pid = self._assign_person(
+                    cent, ext, matched_this_frame,
+                    {"entity_class": _entity_class,
+                     "class_confidence": _class_conf,
+                     "provenance": _provenance,
+                     "source_signature_id": blob.get("signature_id")})
+                if pid is None:
+                    continue
+                matched_this_frame.add(pid)
                 # P4T-lite skeleton estimate
-                self._persons[pid]["skeleton"] = self._p4t_lite_skeleton(
-                    list(self._pt_history), cent,
-                    height_m=self._persons[pid].get("height_m", 1.75))
+                if _entity_class in ("person", "human"):
+                    self._persons[pid]["skeleton"] = self._p4t_lite_skeleton(
+                        list(self._pt_history), cent,
+                        height_m=self._persons[pid].get("height_m", 1.75))
             except Exception as _be:
                 self._blob_skip_count = getattr(self, "_blob_skip_count", 0) + 1
                 if self._blob_skip_count <= 3:
@@ -22128,22 +22302,54 @@ class WiFi3DFusionEngine:
         self._prune_lost_persons()
 
         # 5. Build output
-        persons_out = []
+        tracks_out = []
         for pid, p in self._persons.items():
-            persons_out.append({
+            # Keep tracks internally for eight seconds to survive brief occlusion, but
+            # only publish tracks supported within the last two seconds as occupants.
+            if self._frame_t - p["last_seen"] > self._win_sec:
+                continue
+            _is_person = p.get("entity_class") in ("person", "human")
+            _track = {
                 "pid":      pid,
+                "track_id": pid,
+                "signature_id": (p.get("source_signature_id")
+                                 if p.get("source_signature_id") is not None
+                                 else f"signature_{pid}"),
+                "entity_class": p.get("entity_class", "unknown_signature"),
+                "class_confidence": float(p.get("class_confidence", 0.0)),
+                "provenance": p.get("provenance", "UNCLASSIFIED-SENSOR"),
                 "pos":      p["pos"].tolist(),
                 "vel":      p["vel"].tolist(),
                 "color":    p["color"],
-                "skeleton": p["skeleton"].tolist(),
+                # Never put a human-shaped proxy on an animal or an unclassified
+                # signature. Those tracks retain only measured centroid/trajectory.
+                "skeleton": p["skeleton"].tolist() if _is_person else [],
                 "traj":     [t.tolist() for t in list(p["traj"])[-10:]],
-                "splat":    self.gaussian_body_splat(p["skeleton"],
-                                                     n_per_joint=40).tolist(),
-            })
+                "splat":    (self.gaussian_body_splat(
+                    p["skeleton"], n_per_joint=40).tolist() if _is_person else []),
+                "geometry_model": "HUMAN-PROXY" if _is_person else "CENTROID-ONLY",
+            }
+            tracks_out.append(_track)
+
+        persons_out = [t for t in tracks_out
+                       if t.get("entity_class") in ("person", "human")]
+        animal_out = [t for t in tracks_out
+                      if t.get("entity_class") in ("animal", "pet", "wildlife")]
+        unknown_out = [t for t in tracks_out
+                       if t not in persons_out and t not in animal_out]
 
         return {
             "persons":        persons_out,
+            "animals":        animal_out,
+            "unknown_signatures": unknown_out,
+            "tracks":         tracks_out,
             "person_count":   len(persons_out),
+            "animal_count":   len(animal_out),
+            "unknown_signature_count": len(unknown_out),
+            "track_count":    len(tracks_out),
+            "current_detections": len(matched_this_frame),
+            "count_saturated": False,
+            "track_capacity": None,
             "movement_score": mv_score,
             "movement_event": event,
             "channel_stats":  dict(self._channel_stats),
@@ -27383,7 +27589,7 @@ class Pass45SensorFusion:
             w3d_persons = pp.get("w3d_persons", [])
             if w3d_persons:
                 pts_frame = []
-                for person in w3d_persons[:4]:
+                for person in w3d_persons[:TRACK_RENDER_DETAIL_BUDGET]:
                     traj = person.get("trajectory", [[0,0,0]])
                     for pt in traj[-8:]:
                         if len(pt) >= 3:
@@ -31236,7 +31442,8 @@ class CyclostationaryDetectorNP77:
             "cyclo_gamma": gamma,
             "cyclo_decision": decision,
             "cyclo_signal_class": self._signal_class,
-            "cyclo_snr_est": float(10 * np.log10(T_stat / max(gamma, 1e-12))),
+            "cyclo_snr_est": float(10 * np.log10(
+                max(float(T_stat), 1e-12) / max(float(gamma), 1e-12))),
             "cyclo_scf_peak": float(np.max(scf)),
         }
 
@@ -51842,7 +52049,7 @@ class GOESGeostatEngine:
                     self._g18c  = g18c
                     self._g16ir = g16ir
                     self._g18ir = g18ir
-                    self._date  = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%MZ")
+                    self._date = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
                     self._ok    = ok
                     self._last  = _ti.time()
                 if ok:
@@ -52196,7 +52403,7 @@ class GlobalAtmosphericStateEngine:
                         self._n_storms   = len(storms)
                         self._temp_mean  = round(sum(temps)/len(temps), 1) if temps else 0.0
                         self._wind_max   = round(max(winds), 1) if winds else 0.0
-                        self._date       = _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%MZ")
+                        self._date = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
                         self._ok         = ok
                         self._last       = _ti.time()
                     rain_n  = sum(1 for g in grid if g["code"] in self._RAIN_CODES)
@@ -67858,8 +68065,24 @@ class Pass55SensorFusion:
 
         # mmWave synthetic frame → point cloud
         try:
-            synth = self.mmwave_proc.synth_frame()
-            pc = self.mmwave_proc.process(synth)  # (128, 6)
+            # Never fabricate an absent sensor frame in live operation.  Synthetic
+            # mmWave input remains available only in explicitly labelled simulation.
+            _mmwave_frame = None
+            _mmwave_source = "NO-SENSOR"
+            if isinstance(extra, dict):
+                _mmwave_frame = extra.get("mmwave_frame")
+                _mmwave_source = str(extra.get("mmwave_source", "REAL-SENSOR"))
+            elif extra is not None:
+                _mmwave_frame = extra
+                _mmwave_source = "REAL-SENSOR"
+            _simulated = str(psych_profile.get("vitals_mode", "")).lower() == "simulated"
+            if _mmwave_frame is None and _simulated:
+                _mmwave_frame = self.mmwave_proc.synth_frame()
+                _mmwave_source = "SIMULATED"
+            if _mmwave_frame is None:
+                raise LookupError("no mmWave sensor frame")
+            pc = self.mmwave_proc.process(_mmwave_frame)  # (128, 6)
+            pp['p55_mmwave_source'] = _mmwave_source
             pp['p55_mmwave_n_pts'] = int(pc.shape[0])
             pp['p55_mmwave_range_mean'] = float(np.linalg.norm(pc[:, :3], axis=-1).mean())
             pp['p55_mmwave_doppler_mean'] = float(pc[:, 3].mean())
@@ -67909,6 +68132,7 @@ class Pass55SensorFusion:
             pp['p55_p4t_centroid_z'] = float(skel_pts[:, 2].mean())
 
         except Exception as _e55:
+            pp['p55_mmwave_source'] = 'NO-SENSOR'
             pp['p55_mmwave_n_pts'] = 0
             pp['p55_mmwave_range_mean'] = 0.0
             pp['p55_mmwave_doppler_mean'] = 0.0
@@ -70386,8 +70610,9 @@ class SyntheticPersonTracker:
         [0.40, 1.00, 0.90],
     ], dtype=np.float32)
 
-    def __init__(self, max_persons: int = 6, trail_len: int = 60):
-        self.max_persons = max_persons
+    def __init__(self, max_persons=None, trail_len: int = 60):
+        # Compatibility argument only; the synthetic ID space is not capped.
+        self.max_persons = None
         self.trail_len = trail_len
         self._persons = {}  # pid → {root, trail, t_phase}
 
@@ -70927,7 +71152,7 @@ class Pass52SensorFusion:
         # Movement detector
         self.movement_detector = MovementDetectorFusion(win_seconds=2.0, threshold=0.08)
         # Person tracker
-        self.person_tracker = SyntheticPersonTracker(max_persons=6, trail_len=60)
+        self.person_tracker = SyntheticPersonTracker(max_persons=None, trail_len=60)
         # HyperView pipeline
         self.hyper_view = HyperViewCSIPipeline()
         # Calibration model
@@ -70969,7 +71194,9 @@ class Pass52SensorFusion:
         # vitals_mode in real/simulated — v110). With no body sensor, force to 0 so
         # the Lissajous synthetic skeleton does not appear in the motion tab.
         _w3d_cnt = int(psych_profile.get('w3d_person_count', 0))
-        n_persons = max(0, min(_w3d_cnt, 6))
+        # This component only materializes skeleton geometry for the current viewport;
+        # it does not cap the logical tracker or the reported count.
+        n_persons = max(0, min(_w3d_cnt, TRACK_RENDER_DETAIL_BUDGET))
         skel_list = []
         for pid in range(n_persons):
             person_state = self.person_tracker.update(pid, t=self._t,
@@ -78860,7 +79087,8 @@ def marching_cubes_surface(grid, iso=0.3):
         return verts, None
 
 
-def detect_voxel_blobs(grid, rel_thresh=0.45, min_voxels=6, max_blobs=4):
+def detect_voxel_blobs(grid, rel_thresh=0.45, min_voxels=6,
+                       max_blobs=None):
     """Pass 24: Connected-component person/object detection in the 3D voxel grid.
 
     Thresholds the grid at rel_thresh × max, labels connected components, and returns
@@ -78899,7 +79127,9 @@ def detect_voxel_blobs(grid, rel_thresh=0.45, min_voxels=6, max_blobs=4):
                 "range_m": range_m,
             })
         blobs.sort(key=lambda b: -b["voxels"])
-        return blobs[:max_blobs]
+        if max_blobs is None:
+            return blobs
+        return blobs[:max(0, int(max_blobs))]
     except Exception:
         # Fallback: single global centroid blob
         coords = np.argwhere(mask)
@@ -78913,6 +79143,150 @@ def detect_voxel_blobs(grid, rel_thresh=0.45, min_voxels=6, max_blobs=4):
             "extent": tuple(int(e) for e in (coords.max(axis=0) - coords.min(axis=0) + 1)),
             "range_m": round(float(c[1]) / max(1, grid.shape[1]) * 8.0, 1),
         }]
+
+
+def resolve_person_count(vitals_mode, tracked_count=0, presence=False,
+                         simulated_truth_count=0, rf_component_count=0,
+                         saturated=False):
+    """Build an honest occupancy readout from person-specific evidence.
+
+    A resolved RF track is a defensible lower bound, not proof that no additional
+    people are occluded or inseparable.  ICA/eigen components are deliberately kept
+    as supporting signal evidence: one person can create several multipath components,
+    while several nearby people can collapse into one, so components are never relabeled
+    as people.  Explicit simulation truth is exact only inside the simulated scene.
+    """
+    mode = str(vitals_mode or "none").lower()
+    tracked = max(0, int(tracked_count or 0))
+    truth = max(0, int(simulated_truth_count or 0))
+    components = max(0, int(rf_component_count or 0))
+    evidence = {"resolved_tracks": tracked, "rf_components": components}
+
+    if mode == "simulated":
+        count = truth if truth > 0 else tracked
+        source = "SIMULATED-GROUND-TRUTH" if truth > 0 else "SIMULATED-RF-TRACKS"
+        return {
+            "num_persons": count,
+            "person_count": count,
+            "presence_detected": bool(count > 0),
+            "person_count_min": count,
+            "person_count_status": "SIMULATED",
+            "person_count_provenance": source,
+            "person_count_is_total": bool(truth > 0),
+            "person_count_resolvable": bool(count > 0),
+            "person_count_saturated": bool(saturated),
+            "person_count_evidence": evidence,
+            "person_count_display": (f"{count} SIMULATED persons — not live occupancy"
+                                     if count else "SIMULATED scene — no persons"),
+        }
+
+    if mode == "real" and tracked > 0:
+        qualifier = ">=" if saturated else "≥"
+        return {
+            "num_persons": tracked,
+            "person_count": tracked,
+            "presence_detected": True,
+            "person_count_min": tracked,
+            "person_count_status": "RESOLVED-TRACKS",
+            "person_count_provenance": "REAL-RF-SPATIAL-TRACKS",
+            "person_count_is_total": False,
+            "person_count_resolvable": True,
+            "person_count_saturated": bool(saturated),
+            "person_count_evidence": evidence,
+            "person_count_display": (f"{qualifier}{tracked} person tracks resolved; "
+                                     "room total may be higher"),
+        }
+
+    if presence:
+        display = "PRESENCE DETECTED — exact person count unresolved"
+        status = "PRESENCE-ONLY"
+    elif mode == "real":
+        display = "NO PERSON TRACK RESOLVED — room total unknown"
+        status = "NO-RESOLVED-TRACK"
+    else:
+        display = "PERSON COUNT UNAVAILABLE — connect CSI/mmWave/receiver array"
+        status = "NO-BODY-SENSOR"
+    return {
+        "num_persons": 0,
+        "person_count": 0,
+        "presence_detected": bool(presence),
+        "person_count_min": 0,
+        "person_count_status": status,
+        "person_count_provenance": "UNRESOLVED",
+        "person_count_is_total": False,
+        "person_count_resolvable": False,
+        "person_count_saturated": False,
+        "person_count_evidence": evidence,
+        "person_count_display": display,
+    }
+
+
+def resolve_signature_counts(vitals_mode, tracks=None, presence=False,
+                             aggregate_counts=None, aggregate_provenance=None):
+    """Summarize every evidence-backed entity/signature track without a count cap.
+
+    Local frames pass individual ``tracks``. Federated/global deployments may pass
+    arbitrary-size integer ``aggregate_counts`` from provenance-bearing spatial
+    shards, avoiding the impossible requirement to materialize trillions of Python
+    objects in one process. Aggregate claims without provenance are rejected.
+    Classification is kept separate from detection: an ambiguous return remains an
+    ``unknown_signature`` and is never silently promoted to a person or animal.
+    """
+    mode = str(vitals_mode or "none").lower()
+    classes = {"human": 0, "animal": 0, "unknown_signature": 0, "other": 0}
+
+    if aggregate_counts is not None and aggregate_provenance:
+        source_counts = dict(aggregate_counts or {})
+        source = str(aggregate_provenance)
+        aggregation = "FEDERATED-AGGREGATE"
+    else:
+        source_counts = {}
+        for track in (tracks or []):
+            cls = str(track.get("entity_class", "unknown_signature")).lower()
+            source_counts[cls] = source_counts.get(cls, 0) + 1
+        source = "SIMULATED-TRACKS" if mode == "simulated" else "SENSOR-TRACKS"
+        aggregation = "INDIVIDUAL-TRACKS"
+
+    for cls, raw_count in source_counts.items():
+        count = max(0, int(raw_count or 0))
+        name = str(cls).lower()
+        if name in ("person", "human"):
+            classes["human"] += count
+        elif name in ("animal", "pet", "wildlife"):
+            classes["animal"] += count
+        elif name in ("unknown", "unknown_signature", "unclassified"):
+            classes["unknown_signature"] += count
+        else:
+            classes["other"] += count
+
+    total = sum(classes.values())
+    if total:
+        prefix = "" if mode == "simulated" else "≥"
+        suffix = "simulated signatures — not live" if mode == "simulated" else \
+                 "resolved signatures; total may be higher"
+        display = (f"{prefix}{total} {suffix} "
+                   f"(human={classes['human']}, animal={classes['animal']}, "
+                   f"unknown={classes['unknown_signature']}, other={classes['other']})")
+        status = "SIMULATED" if mode == "simulated" else "RESOLVED-TRACKS"
+    elif presence:
+        display = "SIGNATURE PRESENCE DETECTED — count and class unresolved"
+        status = "PRESENCE-ONLY"
+    else:
+        display = "SIGNATURE COUNT UNAVAILABLE — no resolvable sensor tracks"
+        status = "NO-RESOLVED-TRACK" if mode == "real" else "NO-BODY-SENSOR"
+
+    return {
+        "signature_count": total,
+        "signature_count_min": total,
+        "signature_counts_by_class": classes,
+        "signature_count_status": status,
+        "signature_count_display": display,
+        "signature_count_is_total": bool(mode == "simulated" and total > 0),
+        "signature_count_provenance": source if total else "UNRESOLVED",
+        "signature_aggregation": aggregation,
+        "track_capacity": None,
+        "track_capacity_display": "UNBOUNDED-LOGICAL",
+    }
 
 
 def poincare_rqa(rr_intervals):
@@ -81430,9 +81804,15 @@ class WirelessBCIEngine:
         multi_channel: (n_channels, n_samples). Returns separated sources or input."""
         try:
             from sklearn.decomposition import FastICA
-            X = np.asarray(multi_channel, dtype=np.float64)
+            X0 = np.asarray(multi_channel)
+            # Use the measurable CSI amplitude instead of silently discarding the
+            # imaginary component. Tiny windows cannot support meaningful ICA.
+            X = (np.abs(X0).astype(np.float64) if np.iscomplexobj(X0)
+                 else X0.astype(np.float64))
             if X.ndim != 2 or X.shape[0] < 2:
                 return X
+            if X.shape[1] < max(16, X.shape[0] * 4):
+                return X - X.mean(axis=1, keepdims=True)
             with _warnings.catch_warnings():
                 _warnings.simplefilter("ignore")
                 Xn = (X - X.mean(axis=1, keepdims=True))
@@ -82003,6 +82383,7 @@ class RouterCSICapture:
         self._method_used: str = "sim"
         self._lock = threading.Lock()
         self._frame_count: int = 0
+        self._slow_probe_running: bool = False
         self._nexmon_ok: bool = False
         self._ssh_client = None
         self._proc_wireless_path = "/proc/net/wireless"
@@ -82713,9 +83094,8 @@ class RouterCSICapture:
         if self._read_esp32_packet():
             return self._last_csi.copy()
         # Pass 25: SDR real capture (RTL-SDR/HackRF) — tunable multi-band incl. cell
-        if self._sdr_available and self._frame_count % 5 == 0:
-            if self._read_sdr_iq():
-                return self._last_csi.copy()
+        if self._frame_count % 10 == 0:
+            self._schedule_slow_probe(include_ssh=(self._frame_count % 50 == 0))
         # Real RSSI methods — ordered fastest→slowest
         if self._read_proc_net_wireless():
             # Pass 19: blend single-AP RSSI-CSI with multi-AP synthetic CSI
@@ -82728,20 +83108,36 @@ class RouterCSICapture:
                 self._last_csi = blended.astype(np.complex64)
                 self._method_used = "proc_wireless+multi_ap"
             return self._last_csi.copy()
-        if self._frame_count % 10 == 0:
-            if self._read_ioctl_stats():
-                return self._last_csi.copy()
-            if self._read_iw_station():
-                return self._last_csi.copy()
-        if self._frame_count % 50 == 0:
-            if self._try_ssh_csi():
-                return self._last_csi.copy()
         # Pass 19: multi-AP synthesis even in pure-fallback mode
         with self._lock:
             multi_csi = self._synthesise_multi_ap_csi()
             self._last_csi = multi_csi
             self._method_used = "multi_ap_synth"
         return self._last_csi.copy()
+
+    def _schedule_slow_probe(self, include_ssh=False):
+        """Refresh subprocess/SDR sources without ever blocking live acquisition."""
+        with self._lock:
+            if self._slow_probe_running:
+                return
+            self._slow_probe_running = True
+
+        def _probe():
+            try:
+                if self._sdr_available and self._read_sdr_iq():
+                    return
+                if self._read_ioctl_stats():
+                    return
+                if self._read_iw_station():
+                    return
+                if include_ssh:
+                    self._try_ssh_csi()
+            finally:
+                with self._lock:
+                    self._slow_probe_running = False
+
+        threading.Thread(target=_probe, daemon=True,
+                         name="nepa-router-slow-probe").start()
 
     def load_dat_file(self, path: str) -> bool:
         """Pass 37: Load a CSIKit-format .dat file (IWL5300 or Atheros CSI Tool).
@@ -83765,7 +84161,7 @@ class SurveillanceEngine:
             "alerts": list(alerts),
             "hr": round(psych_profile.get("heart_rate_bpm", 72), 1),
             "br": round(psych_profile.get("breath_rate_bpm", 16), 1),
-            "num_persons": psych_profile.get("num_persons", 1),
+            "num_persons": psych_profile.get("num_persons", 0),
             "ns_label": psych_profile.get("ns_intent_label", "UNKNOWN"),
             "burst": psych_profile.get("ns_is_thought_burst", False),
             # Pass 20 additions
@@ -83981,7 +84377,7 @@ import json
 import hashlib
 import copy
 import functools
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import OrderedDict, deque, defaultdict, Counter
 import numpy as np
 import signal
@@ -84020,8 +84416,15 @@ HAS_MEMORY_SYSTEM = True
 HAS_SELF_MODEL = True
 
 # --- Optional dependencies with graceful fallbacks ---
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 try:
-    import pygame
+    # Pygame 2.6 still imports pkg_resources internally; setuptools marks that
+    # compatibility API deprecated.  It is third-party noise, not a NEPA fault.
+    with _warnings.catch_warnings():
+        _warnings.filterwarnings(
+            "ignore", message="pkg_resources is deprecated as an API.*",
+            category=UserWarning, module=r"pygame\.pkgdata")
+        import pygame
     HAS_PYGAME = True
 except ImportError:
     print("WARNING: pygame not installed. Virtual world visualization disabled. pip install pygame")
@@ -84090,7 +84493,8 @@ try:
     import AIEG as _AIEG
     _HAS_AIEG = True
 except Exception as _e:
-    print(f"WARNING: AIEG reference module not importable ({_e}). Engineering chat routing disabled.")
+    log.info(f"[AIEG] Optional reference module unavailable ({_e}); "
+             "engineering chat routing disabled.")
     _AIEG = None
     _HAS_AIEG = False
 
@@ -111175,7 +111579,8 @@ def _record_baseline():
     except Exception:
         size = 0
     return {
-        'timestamp': datetime.utcnow().isoformat() if 'datetime' in globals() else str(time.time()),
+        'timestamp': (datetime.now(timezone.utc).isoformat()
+                      if 'datetime' in globals() else str(time.time())),
         'source_size_bytes': size,
         'source_size_mb': round(size / (1024.0 * 1024.0), 4),
         'acceleration_enabled': True,
@@ -153150,8 +153555,8 @@ class MultiAgentWirelessBCIFuser:
         self.q_optimizer = QThresholdOptimizer()        # List 2.11
         self.hop_channel = 0                            # List 2.3 dynamic freq hopping
         self.domain_adapted = False                     # List 2.12 zero-shot adaptation
-        self.num_persons = 1                            # List 2.1 ICA person count
-        self._person_ranges = [3.0]                     # Pass 24: per-person detected ranges (m)
+        self.num_persons = 0                            # resolved tracks only; never default to one
+        self._person_ranges = []                        # populated only by supported range peaks
         self._detected_blobs = []                       # Pass 24: connected-component blobs
         self.amp_matrix = deque(maxlen=DEFAULT_SUBCARRIERS)  # buffer for ICA/EMD/GNN (real)
         self.csi_matrix = deque(maxlen=DEFAULT_SUBCARRIERS)  # complex CSI history for phase handlers
@@ -153382,8 +153787,24 @@ class MultiAgentWirelessBCIFuser:
             "distance_m": 3.0,
             # List 2 fields
             "person_id": "person_1",
-            "num_persons": 1,
-            "person_ranges": [3.0],   # Pass 24: per-person detected ranges (m)
+            "num_persons": 0,
+            "person_count": 0,
+            "person_count_min": 0,
+            "person_count_status": "NO-BODY-SENSOR",
+            "person_count_display": "PERSON COUNT UNAVAILABLE — awaiting body sensor",
+            "person_count_is_total": False,
+            "person_count_provenance": "UNRESOLVED",
+            "signature_count": 0,
+            "signature_count_min": 0,
+            "signature_counts_by_class": {"human": 0, "animal": 0,
+                                            "unknown_signature": 0, "other": 0},
+            "signature_count_status": "NO-BODY-SENSOR",
+            "signature_count_display": "SIGNATURE COUNT UNAVAILABLE — awaiting sensor tracks",
+            "signature_count_is_total": False,
+            "signature_count_provenance": "UNRESOLVED",
+            "track_capacity": None,
+            "track_capacity_display": "UNBOUNDED-LOGICAL",
+            "person_ranges": [],      # Pass 24: supported per-person range tracks (m)
             "consistency": 1.0,
             "anomaly_alerts": [],
             # Pass 25: ground-truth accuracy + RF illuminator + self-tuner
@@ -154550,13 +154971,19 @@ class MultiAgentWirelessBCIFuser:
         pp["multilat_fixes"]     = fixes
         pp["multilat_fix_count"] = len(fixes)
 
-        # Live snapshot for the 3-D world viewers — REAL nodes + per-instrument + fused
+        # Live snapshot for the 3-D world viewers — REAL nodes + per-instrument + fused.
+        # Network nodes remain scene objects, never person candidates.  Person blobs come
+        # only from a live body-capable reconstruction and are carried separately.
         _pp_ref = self.psych_profile
+        _person_blobs = (detect_voxel_blobs(
+            self.voxel_grid, rel_thresh=0.45)
+            if self.vitals_mode == "real" else [])
         self._world_snapshot = {
             "voxel": self.voxel_grid,
             "fused_voxel": fused,
             "blobs": [{"centroid": n["vox"], "range_m": n["range_m"],
                        "kind": n["kind"]} for n in nodes],
+            "person_blobs": _person_blobs,
             "ground_truth": [],
             "accuracy": None,
             "real_nodes": nodes,
@@ -154580,21 +155007,26 @@ class MultiAgentWirelessBCIFuser:
         # snapshot the 3D viewers consume.
         try:
             wr = self.world_recon
-            _blobs = self._world_snapshot["blobs"]
+            _blobs = self._world_snapshot["person_blobs"]
             # v209 PERF: nerf_train_step is a CONTINUAL learner ("the longer it runs the sharper")
             # — training every ~1 Hz frame was the #2 hotspot for zero benefit over training every
             # 3rd frame (same accumulated gradient steps/min within minutes, just paced). Throttle.
             self._nerf_train_tick = getattr(self, "_nerf_train_tick", 0) + 1
-            if self._nerf_train_tick % 3 == 0:
-                wr.nerf_train_step(self.voxel_grid)
-            wr.update_splats(fused if fused is not None else self.voxel_grid)
+            _world_train = self._nerf_train_tick % 3 == 0
             # Pass 91: only mesh bodies when a real body-sensing channel exists. RF nodes
             # (routers/APs/hosts) are NOT people — meshing them fabricated bodies.
-            bodies = wr.body_mesh(_blobs) if self.vitals_mode in ("real", "simulated") else []
-            surface = wr.reconstruct_surface(fused if fused is not None else self.voxel_grid)
-            self._world_snapshot["bodies"] = bodies
-            self._world_snapshot["surface"] = surface
-            self._world_snapshot["recon_status"] = wr.status()
+            _world_args = (wr, self.voxel_grid,
+                           fused if fused is not None else self.voxel_grid,
+                           _blobs, self.vitals_mode in ("real", "simulated"),
+                           _world_train)
+            _world_sched = getattr(self, "_realtime_scheduler", None)
+            if _world_sched is not None:
+                _world_result = _world_sched.submit(
+                    "world-reconstruction", compute_world_reconstruction, *_world_args)
+            else:
+                _world_result = compute_world_reconstruction(*_world_args)
+            if isinstance(_world_result, dict):
+                self._world_snapshot.update(_world_result)
         except Exception as _we:
             log.debug(f"[WORLD] reconstruction skipped: {_we}")
 
@@ -154752,26 +155184,27 @@ class MultiAgentWirelessBCIFuser:
             else:
                 self._mb_range_spec = 0.88 * self._mb_range_spec + 0.12 * band_spec
             fused = self._mb_range_spec / (self._mb_range_spec.max() + 1e-12)
-            # CLEAN on the FUSED spectrum: pick peaks, suppress a neighbourhood, repeat.
-            # Cap detections at 3 and require a strong relative peak so spurious near-field
-            # ripples are rejected (count fidelity then tracks the true target number).
-            # Cap at 2 — CLEAN's strength threshold trims to the real count; the GT scene
-            # holds 2 people, and ICA tends to over-count, so 2 keeps count fidelity honest.
-            max_blobs = 2
+            # CLEAN on the FUSED spectrum: pick every supported peak, suppress its
+            # neighbourhood, and repeat.  This used to be hard-coded to the two-person
+            # validation scene, silently making larger real rooms impossible to represent.
             work = fused.copy()
             detections = []   # (range_m, strength)
             guard = 5        # candidate bins to suppress around each pick (≈0.4 m)
-            for _it in range(max_blobs):
+            _noise_floor = float(np.median(fused))
+            _noise_mad = float(1.4826 * np.median(np.abs(fused - _noise_floor)))
+            _min_prominence = max(0.08, 3.0 * _noise_mad)
+            # A frame contains a finite number of range bins. Iterate until evidence
+            # is exhausted; there is no configured entity-count ceiling.
+            for _it in range(len(work)):
                 pk = int(np.argmax(work))
                 strength = float(work[pk])
-                if strength < 0.38 and detections:
+                if (strength < 0.38 or
+                        (strength - _noise_floor) < _min_prominence):
                     break
                 detections.append((float(cand_ranges[pk]), strength))
                 lo, hi = max(0, pk - guard), min(len(work), pk + guard + 1)
                 work[lo:hi] = 0.0          # suppress this target's neighbourhood
-            if not detections:
-                detections = [(float(self.estimated_distance_m), 1.0)]
-            smax = max(s for _, s in detections) + 1e-9
+            smax = max((s for _, s in detections), default=1.0) + 1e-9
             aoa_deg = float(self.psych_profile.get("beam_peak_deg", 0.0))
             t_now = time.time()
             peak_idxs = detections   # name kept for downstream _person_ranges
@@ -154799,16 +155232,17 @@ class MultiAgentWirelessBCIFuser:
             rf_max = float(range_focus.max())
             if rf_max > 1e-6:
                 range_focus /= rf_max
-            # Pass 25: blend weight self-tuned toward maximum reconstruction accuracy
-            _tp = getattr(self, "recon_tuner", None)
-            _blend = float(_tp.params["blend"]) if _tp else 0.70
-            grid = np.clip((1.0 - _blend) * grid + _blend * range_focus, 0, 1)
+                # Pass 25: blend only when a statistically supported peak exists.  The
+                # previous forced one-target fallback created a phantom person from noise.
+                _tp = getattr(self, "recon_tuner", None)
+                _blend = float(_tp.params["blend"]) if _tp else 0.70
+                grid = np.clip((1.0 - _blend) * grid + _blend * range_focus, 0, 1)
             # Surface the detected per-person ranges (from CLEAN deconvolution)
             self._person_ranges = [round(float(np.clip(r, 0.3, SCENE_RANGE_M - 0.3)), 1)
                                    for r, _ in detections]
         except Exception as _rge:
             log.debug(f"[VOXEL] range-gated DAS fallback: {_rge}")
-            self._person_ranges = [round(float(self.estimated_distance_m), 1)]
+            self._person_ranges = []
 
         # List 1.5: ISTA sparse super-resolution blended with back-projection
         gflat = grid.ravel().astype(np.float64)
@@ -154840,9 +155274,12 @@ class MultiAgentWirelessBCIFuser:
             sparse_flat = gflat   # warmup before the first worker result — raw grid (honest, not faked)
         sparse_grid = (0.45 * grid + 0.55 * sparse_flat.reshape(grid.shape).astype(np.float32))
 
-        # Biophysical pulse modulation — cardiac-rate micro-expansion in torso region
-        pulse = 0.35 * np.sin(2 * np.pi * 1.2 * time.time())
-        sparse_grid[VOXEL_RES//4:3*VOXEL_RES//4, :, VOXEL_RES//3:] += pulse * 0.8
+        # Biophysical pulse modulation belongs only to explicit simulation.  Adding a
+        # synthetic torso pulse to a live reconstruction manufactured one large body blob
+        # and made multi-person counting collapse to one.
+        if self.sim_validate or self.demo_only or self.sim_hardware:
+            pulse = 0.35 * np.sin(2 * np.pi * 1.2 * time.time())
+            sparse_grid[VOXEL_RES//4:3*VOXEL_RES//4, :, VOXEL_RES//3:] += pulse * 0.8
         # Pass 18: slower temporal smoothing so fast events register better (0.55 was 0.6)
         self.voxel_grid = np.clip(self.voxel_grid * 0.55 + sparse_grid * 0.45, 0, 1)
 
@@ -155302,23 +155739,19 @@ class MultiAgentWirelessBCIFuser:
                                                 np.abs(diffused) * 0.3)
             except Exception:
                 pass
-            # List 2.1: ICA person count — Pass 91 GATED on real body-sensing hardware.
-            # ICA source-separation only yields a genuine person count from a real complex
-            # channel response (CSI / mmWave). On RSSI-only capture the amp matrix is
-            # RSSI-synth noise, so counting "sources" fabricated up to 4 phantom people
-            # (the "filler nonsense body position"). We therefore only count persons when
-            # vitals_mode == 'real' (genuine CSI/radar) or 'simulated' (clearly-labelled
-            # demo). Otherwise the honest count is 0; presence is reported separately from
-            # the REAL device-free RSSI signal (rssi_presence) without claiming a count.
+            # ICA separates RF components, not people. One person can create several
+            # multipath components and several people can share one component, so expose
+            # this only as supporting evidence and never turn it into a head count.
             if self.vitals_mode in ("real", "simulated"):
                 try:
                     amp_mat_clipped = np.clip(amp_mat, -1e4, 1e4)
-                    sources = ica_separate(amp_mat_clipped, max_sources=4)
+                    sources = ica_separate(amp_mat_clipped, max_sources=8)
                     active = sum(1 for s in sources if np.std(s) > 0.05)
-                    self.num_persons = max(1, min(4, active))
+                    pp["rf_independent_component_count"] = int(active)
                 except Exception:
-                    self.num_persons = 1
+                    pp["rf_independent_component_count"] = 0
             else:
+                pp["rf_independent_component_count"] = 0
                 self.num_persons = 0
 
         # List 2.8: cross-modal consistency → down-weight low-confidence readings
@@ -155363,7 +155796,7 @@ class MultiAgentWirelessBCIFuser:
         pp["person_id"] = pid
         pp["num_persons"] = self.num_persons
         # Pass 24: per-person detected ranges from range-gated DAS
-        pp["person_ranges"] = list(getattr(self, "_person_ranges", [self.estimated_distance_m]))
+        pp["person_ranges"] = list(getattr(self, "_person_ranges", []))
 
         # ── Pass 91: HONEST PRESENCE + REAL PER-EMITTER LINK ENTITIES ─────────
         # Every detectable transmitter (router/AP) is a real entity on its own RF link to
@@ -157251,7 +157684,7 @@ class MultiAgentWirelessBCIFuser:
         try:
             if self.sim_validate and hasattr(self, "gt_scene") and self.gt_scene is not None:
                 _thr = float(self.recon_tuner.params.get("thresh", 0.45))
-                _blobs = detect_voxel_blobs(self.voxel_grid, rel_thresh=_thr, max_blobs=4)
+                _blobs = detect_voxel_blobs(self.voxel_grid, rel_thresh=_thr)
                 _truth = self.gt_scene.current_truth(getattr(self, "_sim_t", 0.0))
                 _acc = self.recon_accuracy.score(
                     _blobs, _truth,
@@ -157276,17 +157709,47 @@ class MultiAgentWirelessBCIFuser:
                 self._world_snapshot = {
                     "voxel": self.voxel_grid,
                     "blobs": _blobs,
+                    "person_blobs": _blobs,
                     "ground_truth": pp["ground_truth"],
                     "accuracy": _acc["overall"],
+                    "body_sensing": True,
+                    "vitals_mode": "simulated",
                 }
         except Exception as _accerr:
             log.debug(f"[ACCURACY] scoring skip: {_accerr}")
+
+        # Explicit demo/sim-hardware runs use known synthetic targets.  Surface every
+        # simulated target and label it as such; do not scan or count the physical room.
+        if (self.demo_only or self.sim_hardware) and not self.sim_validate:
+            _truth = self.gt_scene.current_truth(getattr(self, "_sim_t", 0.0))
+            _sim_blobs = [{"centroid": tg["vox"], "range_m": tg["range_m"],
+                           "extent": (3, 3, 7), "kind": "simulated-person"}
+                          for tg in _truth]
+            pp["ground_truth"] = [{"id": tg["id"], "vox": tg["vox"],
+                                    "range_m": tg["range_m"], "hr": tg["hr"],
+                                    "br": tg["br"]} for tg in _truth]
+            pp["gt_target_count"] = len(_truth)
+            pp["person_entities"] = [
+                {"id": tg["id"], "x": tg["x"], "y": tg["y"], "z": tg["z"],
+                 "hr": tg["hr"], "br": tg["br"], "gait_hz": tg.get("gait_hz", 0.0),
+                 "range_m": tg["range_m"], "provenance": "SIMULATED"}
+                for tg in _truth]
+            self._world_snapshot = {
+                "voxel": self.voxel_grid,
+                "fused_voxel": self.voxel_grid,
+                "blobs": _sim_blobs,
+                "person_blobs": _sim_blobs,
+                "ground_truth": pp["ground_truth"],
+                "accuracy": None,
+                "body_sensing": True,
+                "vitals_mode": "simulated",
+            }
 
         # ── Pass 26: REAL-DATA MAPPING — map EVERY measured data point spatially ──
         # In default (real-data) mode there is no ground truth; instead we surface and
         # spatially place every genuine measurement: the connected router, all ARP LAN
         # hosts, all scanned APs, the live RSSI/method, and per-subcarrier real CSI.
-        if not self.sim_validate:
+        if not (self.sim_validate or self.demo_only or self.sim_hardware):
             try:
                 self._map_real_data(pp)
             except Exception as _rmerr:
@@ -157879,7 +158342,7 @@ class MultiAgentWirelessBCIFuser:
                 self.network_locator.log_surveillance_event("detection", {
                     "score": round(pp.get("overall_mind_reading_score", 0), 1),
                     "bci_state": pp.get("bci_state", "calm"),
-                    "num_persons": pp.get("num_persons", 1),
+                    "num_persons": pp.get("num_persons", 0),
                 })
         except Exception:
             pass
@@ -157912,7 +158375,7 @@ class MultiAgentWirelessBCIFuser:
             # body-sensing channel so no fabricated persons or alerts can appear.
             try:
                 _body_sensing = self.vitals_mode in ("real", "simulated")
-                _blobs = (detect_voxel_blobs(self.voxel_grid, rel_thresh=0.45, max_blobs=4)
+                _blobs = (detect_voxel_blobs(self.voxel_grid, rel_thresh=0.45)
                           if _body_sensing else [])
                 prox_alerts = (self.surveillance.multi_person_proximity_alert(_blobs, proximity_m=1.5)
                                if _body_sensing else [])
@@ -158045,7 +158508,16 @@ class MultiAgentWirelessBCIFuser:
                     _cur_pts = np.argwhere(_vg > 0.12).astype(np.float32)
                     _prev_pts = getattr(self, "_icp_prev_pts", None)
                     if _prev_pts is not None and len(_cur_pts) >= 3 and len(_prev_pts) >= 3:
-                        _xfm = self.world_recon.icp_register(_cur_pts, _prev_pts, iters=10)
+                        _icp_sched = getattr(self, "_realtime_scheduler", None)
+                        if _icp_sched is not None:
+                            _xfm = _icp_sched.submit("world-icp",
+                                                     self.world_recon.icp_register,
+                                                     _cur_pts, _prev_pts, iters=10)
+                        else:
+                            _xfm = self.world_recon.icp_register(
+                                _cur_pts, _prev_pts, iters=10)
+                        if _xfm is None:
+                            raise LookupError("ICP result pending")
                         pp["recon_icp_transform"] = _xfm.tolist()
                         _det = float(np.linalg.det(_xfm[:3, :3]))
                         pp["recon_icp_converged"] = bool(0.5 < _det < 2.0)
@@ -158055,7 +158527,13 @@ class MultiAgentWirelessBCIFuser:
                 # v191: 'scan to graphics programs' — auto-export the RF reconstruction to a
                 # standard PLY point cloud on a throttle (real points only; any 3D tool opens it).
                 try:
-                    self.world_recon.maybe_export_ply(min_interval_s=30.0)
+                    _ply_sched = getattr(self, "_realtime_scheduler", None)
+                    if _ply_sched is not None:
+                        _ply_sched.submit("world-ply-export",
+                                          self.world_recon.maybe_export_ply,
+                                          min_interval_s=30.0)
+                    else:
+                        self.world_recon.maybe_export_ply(min_interval_s=30.0)
                 except Exception:
                     pass
                 pp["recon_ply_path"]   = getattr(self.world_recon, "_last_ply_path", "") or ""
@@ -158068,7 +158546,7 @@ class MultiAgentWirelessBCIFuser:
             _w3d = self.wifi3d.update(
                 csi_complex=self._last_raw_csi if hasattr(self, "_last_raw_csi") else np.zeros(64, dtype=np.complex64),
                 voxel_grid=self.voxel_grid,
-                blobs=self._world_snapshot.get("blobs", []),
+                blobs=(self._world_snapshot or {}).get("person_blobs", []),
                 timestamp=time.time(),
                 channel=1,
             )
@@ -158082,9 +158560,40 @@ class MultiAgentWirelessBCIFuser:
             # nonsense" the user sees in the Motion tab). Gate persons on a real body channel.
             _bs_w3d = self.vitals_mode in ("real", "simulated")
             self.psych_profile["w3d_person_count"] = int(_w3d["person_count"]) if _bs_w3d else 0
-            self.psych_profile["w3d_persons"]      = (_w3d["persons"][:4] if _bs_w3d else [])
+            self.psych_profile["w3d_persons"]      = (_w3d["persons"] if _bs_w3d else [])
+            self.psych_profile["w3d_tracks"]       = (_w3d["tracks"] if _bs_w3d else [])
+            self.psych_profile["w3d_track_count"]  = int(_w3d["track_count"]) if _bs_w3d else 0
+            self.psych_profile["w3d_animal_count"] = int(_w3d["animal_count"]) if _bs_w3d else 0
+            self.psych_profile["w3d_unknown_signature_count"] = (
+                int(_w3d["unknown_signature_count"]) if _bs_w3d else 0)
+            _count_result = resolve_person_count(
+                self.vitals_mode,
+                tracked_count=(_w3d["person_count"] if _bs_w3d else 0),
+                presence=(bool(pp.get("rssi_presence", False)) or
+                          bool(_w3d["person_count"] if _bs_w3d else 0)),
+                simulated_truth_count=(int(pp.get("gt_target_count", 0))
+                                       if self.vitals_mode == "simulated" else 0),
+                rf_component_count=int(pp.get("rf_independent_component_count", 0)),
+                saturated=bool(_w3d.get("count_saturated", False)),
+            )
+            pp.update(_count_result)
+            pp.update(resolve_signature_counts(
+                self.vitals_mode,
+                tracks=(_w3d["tracks"] if _bs_w3d else []),
+                presence=(bool(pp.get("rssi_presence", False)) or
+                          bool(_w3d["track_count"] if _bs_w3d else 0))))
+            self.num_persons = int(_count_result["person_count"])
         except Exception as _w3e:
             log.debug(f"[W3D] update error: {_w3e}")
+            _count_result = resolve_person_count(
+                self.vitals_mode, tracked_count=0,
+                presence=bool(pp.get("rssi_presence", False)),
+                rf_component_count=int(pp.get("rf_independent_component_count", 0)))
+            pp.update(_count_result)
+            pp.update(resolve_signature_counts(
+                self.vitals_mode, tracks=[],
+                presence=bool(pp.get("rssi_presence", False))))
+            self.num_persons = 0
 
         # Pass 38: CSIDataProcessor quality fusion + AdaptiveChannelManager + CSIPersonDetector
         try:
@@ -160057,13 +160566,14 @@ class MultiAgentWirelessBCIFuser:
         # RouterCSICapture tries Nexmon UDP → /proc/net/wireless → ioctl → iw → RSSI-synth.
         # Blend weight: 0.35 real + 0.65 sim/udp so the existing pipeline is not disrupted.
         try:
-            real_csi = self.router_csi.capture()   # shape (DEFAULT_SUBCARRIERS,) complex64
+            # The capture loop already supplied the freshest selected frame.  Reusing it
+            # avoids a second device/subprocess read and never blends different instants.
+            real_csi = np.atleast_1d(csi_raw).ravel()[:DEFAULT_SUBCARRIERS]
             # Pass 25: when a real capture method is active (Nexmon/proc/iw) blend it in for
             # genuine sensing. In pure SIMULATION the incoming csi_raw is the GROUND-TRUTH
             # scene return — blending the router's RSSI-synth (its own phantom target) would
             # corrupt the clean delay phase the matched filter needs, so we keep sim CSI pure.
-            _real_active = (hasattr(self.router_csi, "is_real_capture")
-                            and self.router_csi.is_real_capture())
+            _real_active = False
             if _real_active:
                 csi_flat = np.atleast_1d(csi_raw).ravel()
                 n = min(len(csi_flat), len(real_csi), DEFAULT_SUBCARRIERS)
@@ -160084,9 +160594,17 @@ class MultiAgentWirelessBCIFuser:
         try:
             self._img_render_tick = getattr(self, "_img_render_tick", 0) + 1
             if self._img_render_tick % 3 == 0 or not self._last_render:
-                self._last_render = self.img_renderer.render(
-                    np.atleast_1d(csi_raw).ravel()[:DEFAULT_SUBCARRIERS],
-                    self.voxel_grid)
+                _render_args = (np.atleast_1d(csi_raw).ravel()[:DEFAULT_SUBCARRIERS],
+                                self.voxel_grid)
+                _render_sched = getattr(self, "_realtime_scheduler", None)
+                if _render_sched is not None:
+                    _rendered = _render_sched.submit("display-render",
+                                                     self.img_renderer.render,
+                                                     *_render_args)
+                    if _rendered:
+                        self._last_render = _rendered
+                else:
+                    self._last_render = self.img_renderer.render(*_render_args)
         except Exception:
             pass
 
@@ -160117,7 +160635,15 @@ class MultiAgentWirelessBCIFuser:
         _pp_pack = getattr(self, "power_pack", None)
         if _pp_pack is not None:
             try:
-                _pp_pack.on_frame(self.psych_profile)
+                _sched = getattr(self, "_realtime_scheduler", None)
+                _adapter = getattr(self, "_power_pack_adapter", None)
+                if _sched is not None and _adapter is not None:
+                    _delta = _sched.submit("power-pack", _adapter,
+                                           self.psych_profile.copy())
+                    if isinstance(_delta, dict):
+                        self.psych_profile.update(_delta)
+                else:
+                    _pp_pack.on_frame(self.psych_profile)
             except Exception as _ppe:
                 log.debug(f"[POWERPACK] frame tick skipped: {_ppe}")
 
@@ -160161,7 +160687,13 @@ class MultiAgentWirelessBCIFuser:
                      "stay NO-SENSOR until real CSI/SDR/mmWave hardware is attached — nothing "
                      "is fabricated.")
         log.info("[ADAPT] Running 8s zero-shot domain-calibration dance …")  # List 2.12
-        t = 0
+        t = 0.0
+        _loop_started = time.perf_counter()
+        _next_capture = _loop_started
+        _capture_period = 1.0 / max(1.0, float(getattr(self, "target_fps", 60)))
+        _last_result_seq = -1
+        _capture_count = 0
+        _capture_rate_started = _loop_started
         hop_freqs = [1.0, 2.0, 6.0]            # List 2.3: 2.4GHz channels / 5GHz
         last_report = time.time()
         adapt_start = time.time()
@@ -160181,7 +160713,11 @@ class MultiAgentWirelessBCIFuser:
             # Real mode: trigger an immediate genuine AP scan so the map populates fast.
             try:
                 self.network_locator._last_wifi_scan = 0.0  # force scan now
-                self.network_locator.scan_wifi_live()
+                _scan_sched = getattr(self, "_realtime_scheduler", None)
+                if _scan_sched is not None:
+                    _scan_sched.submit("wifi-scan", self.network_locator.scan_wifi_live)
+                else:
+                    self.network_locator.scan_wifi_live()
             except Exception:
                 pass
         # Pass 21+22: pre-compute stable RNG + subcarrier grid for simulation
@@ -160190,6 +160726,10 @@ class MultiAgentWirelessBCIFuser:
         df = 20e6 / DEFAULT_SUBCARRIERS
         k = np.arange(DEFAULT_SUBCARRIERS, dtype=np.float64) - DEFAULT_SUBCARRIERS // 2
         while self.running:
+            # Use truthful wall-clock time. If a deadline is missed, reset it instead
+            # of issuing catch-up bursts that would add latency.
+            _capture_now = time.perf_counter()
+            t = _capture_now - _loop_started
             # List 2.3: dynamic frequency hopping every 50ms (rotate channel)
             self.hop_channel = int((t * SAMPLING_RATE) // 5) % len(hop_freqs)
             ch = hop_freqs[self.hop_channel]
@@ -160201,7 +160741,7 @@ class MultiAgentWirelessBCIFuser:
             # --sim-validate: drive CSI from the synthetic GroundTruthScene so the
             # reconstruction can be graded against known truth (offline test only).
             self._sim_t = t
-            if self.sim_validate or self.sim_hardware:
+            if self.sim_validate or self.sim_hardware or self.demo_only:
                 illum = self._rf_illuminators[self._rf_idx % len(self._rf_illuminators)]
                 self._rf_idx += 1
                 csi_row = self.gt_scene.synthesize_csi(t, illuminator=illum)
@@ -160213,7 +160753,30 @@ class MultiAgentWirelessBCIFuser:
                 real_csi = self.router_csi.capture()  # (DEFAULT_SUBCARRIERS,) complex64
                 self.psych_profile["rf_illuminator"] = self.router_csi.method
                 csi = np.asarray(real_csi, dtype=np.complex64).reshape(1, DEFAULT_SUBCARRIERS)
-            result = self._process_frame(csi)
+            _fusion_worker = getattr(self, "_fusion_worker", None)
+            _result_is_new = True
+            if _fusion_worker is not None:
+                _fusion_worker.submit(csi)
+                result = _fusion_worker.latest_result()
+                _rt = _fusion_worker.status()
+                _result_seq = int(_rt.get("processed", 0))
+                _result_is_new = _result_seq != _last_result_seq
+                if _result_is_new:
+                    _last_result_seq = _result_seq
+                _enrich = getattr(self, "_realtime_scheduler", None)
+                self.psych_profile["realtime"] = {
+                    **_rt,
+                    "target_fps": float(getattr(self, "target_fps", 60)),
+                    "capture_fps": round(_capture_count / max(
+                        time.perf_counter() - _capture_rate_started, 1e-6), 2),
+                    "enrichment": _enrich.status() if _enrich is not None else {}
+                }
+            else:
+                result = self._process_frame(csi)
+            _capture_count += 1
+            if time.perf_counter() - _capture_rate_started >= 5.0:
+                _capture_count = 0
+                _capture_rate_started = time.perf_counter()
 
             # Pass 28: periodic wideband high-GHz spectrum survey. Real SDR sweep when
             # hardware is present; otherwise a [ESTIMATED] band table. Runs on a slow
@@ -160241,7 +160804,13 @@ class MultiAgentWirelessBCIFuser:
             if _fc - self._spectrum_last_frame >= self._spectrum_interval:
                 self._spectrum_last_frame = _fc
                 try:
-                    _survey = self.spectrum.sweep()
+                    _survey_sched = getattr(self, "_realtime_scheduler", None)
+                    if _survey_sched is not None:
+                        _survey = _survey_sched.submit("spectrum-sweep", self.spectrum.sweep)
+                        if _survey is None:
+                            raise LookupError("spectrum sweep pending")
+                    else:
+                        _survey = self.spectrum.sweep()
                     _real_bands = [n for n, e in _survey.items() if e.get("real")]
                     self.psych_profile["spectrum_survey"] = _survey
                     self.psych_profile["spectrum_real_bands"] = _real_bands
@@ -160318,7 +160887,7 @@ class MultiAgentWirelessBCIFuser:
                 self.domain_adapted = True
                 log.info("[ADAPT] Zero-shot domain adaptation complete — room signature learned.")
 
-            if result:
+            if result and _result_is_new:
                 p = result['psych_profile']
                 cal = "✓" if self.calibrator.calibrated else f"{self.calibrator.progress*100:.0f}%"
                 alerts = ("  ⚠ " + ",".join(p['anomaly_alerts'])) if p['anomaly_alerts'] else ""
@@ -160349,9 +160918,13 @@ class MultiAgentWirelessBCIFuser:
                              f"breath~{_bbs} | HR=needs-CSI")
                 else:
                     _vstr = "HR=-- BR=-- [NO RSSI/CSI SENSOR]"
-                _pid_disp = (f"{p['person_id']} x{p['num_persons']}"
-                             if int(p.get('num_persons', 0)) >= 1
-                             else ("presence" if p.get('presence_detected') else "no-target"))
+                # Report the evidence-qualified occupancy result.  A single resolved
+                # track is not proof that only one person occupies the room.
+                _pid_disp = str(p.get(
+                    "signature_count_display",
+                    p.get("person_count_display",
+                          "PRESENCE DETECTED — count unresolved" if p.get("presence_detected")
+                          else "SIGNATURE COUNT UNAVAILABLE")))
                 log.info(
                     f"[{_pid_disp}] BCI={p['bci_state']:9s} | "
                     f"{_vstr} | "
@@ -160363,7 +160936,13 @@ class MultiAgentWirelessBCIFuser:
                 # Fixed rolling filename so a 24/7 run overwrites one file instead of
                 # accumulating ~1440 timestamped reports per day.
                 if time.time() - last_report >= 60:
-                    export_clinical_report(p, result, path="nepa_report_latest.md")
+                    _report_sched = getattr(self, "_realtime_scheduler", None)
+                    if _report_sched is not None:
+                        _report_sched.submit("clinical-report", export_clinical_report,
+                                             p.copy(), dict(result),
+                                             path="nepa_report_latest.md")
+                    else:
+                        export_clinical_report(p, result, path="nepa_report_latest.md")
                     last_report = time.time()
 
                 # List 3.9 / Pass 24: TTS diagnostic readout every 15s (hands-free).
@@ -160377,14 +160956,19 @@ class MultiAgentWirelessBCIFuser:
                     self.tts.say(f"Warning. {_critical[0].replace('_', ' ')} detected.")
                     self._last_critical_tts = time.time()
                 if time.time() - self._last_tts >= 15:
-                    _np = int(p.get('num_persons', 0))
-                    if _np >= 1:
-                        _rng_txt = f"{_np} person{'s' if _np != 1 else ''} detected. "
+                    _np = int(p.get('person_count', 0))
+                    _count_status = str(p.get("person_count_status", "NO-BODY-SENSOR"))
+                    if _count_status == "SIMULATED":
+                        _rng_txt = f"Simulation contains {_np} persons; this is not live occupancy. "
+                    elif _count_status == "RESOLVED-TRACKS":
+                        _rng_txt = (f"{_np} distinct person tracks resolved. "
+                                    "Total room occupancy may be higher. ")
                     elif p.get('presence_detected', False):
                         _rng_txt = ("Presence detected; count not resolvable without "
                                     "C S I or an antenna array. ")
                     else:
-                        _rng_txt = "No presence detected. "
+                        _rng_txt = ("Person count unavailable; no body-capable sensor "
+                                    "has resolved the room. ")
                     _alert_txt = ('Alert: ' + (_critical[0] if _critical else _alerts[0]).replace('_', ' ')
                                   if _alerts else 'No anomalies.')
                     if p.get("vitals_valid", True) and p.get("vitals_mode","none") != "none":
@@ -160395,8 +160979,12 @@ class MultiAgentWirelessBCIFuser:
                                  f"mind score {p['overall_mind_reading_score']:.0f} of 100. "
                                  f"{_alert_txt}")
                     self._last_tts = time.time()
-            t += 1 / SAMPLING_RATE
-            time.sleep(0.008)
+            _next_capture += _capture_period
+            _remaining = _next_capture - time.perf_counter()
+            if _remaining > 0:
+                time.sleep(_remaining)
+            elif _remaining < -_capture_period:
+                _next_capture = time.perf_counter()
 
     def _udp_listener(self):
         # List 1.12: demo-only forbids real RF capture
@@ -160426,7 +161014,8 @@ class MultiAgentWirelessBCIFuser:
                                     pass
                             # v300+ (#2): route through the drop-stale decoupler when
                             # --turbo-udp is active; else the original synchronous call.
-                            _tu = getattr(self, "_turbo_udp", None)
+                            _tu = (getattr(self, "_fusion_worker", None) or
+                                   getattr(self, "_turbo_udp", None))
                             if _tu is not None:
                                 _tu.submit(csi)
                             else:
@@ -160451,6 +161040,18 @@ class MultiAgentWirelessBCIFuser:
         # (the reported crash case — another window selected → repaints back up → machine crash).
         if not getattr(self, "_active", True):
             return
+        # Poll at high frequency for low latency, but never redraw identical data.
+        # A forced low-rate refresh still updates clocks/connection indicators.
+        _plot_now = time.perf_counter()
+        _rt_plot = self.psych_profile.get("realtime", {})
+        _plot_seq = _rt_plot.get("processed")
+        _last_plot_at = getattr(self, "_last_plot_at", 0.0)
+        if (_plot_seq is not None and
+                _plot_seq == getattr(self, "_last_plot_seq", None) and
+                _plot_now - _last_plot_at < 0.5):
+            return
+        self._last_plot_seq = _plot_seq
+        self._last_plot_at = _plot_now
         # STABILITY: never let the heavy redraw pile up — if the previous frame is still rendering, skip.
         if getattr(self, "_updating", False):
             return
@@ -160690,7 +161291,7 @@ class MultiAgentWirelessBCIFuser:
             # Pass 24: connected-component person detection — draw a wireframe box +
             # range label around each detected blob so distinct people are clearly marked.
             try:
-                blobs = detect_voxel_blobs(vg, rel_thresh=0.45, max_blobs=4)
+                blobs = detect_voxel_blobs(vg, rel_thresh=0.45)
                 self._detected_blobs = blobs
                 box_colors = ['#ff3355', '#33ddff', '#ffdd33', '#aa66ff']
                 for bi, blob in enumerate(blobs):
@@ -160759,7 +161360,7 @@ class MultiAgentWirelessBCIFuser:
             pass
         if _sim_val:
             n_blobs = len(getattr(self, "_detected_blobs", []))
-            num_persons = max(int(p.get("num_persons", 1)), n_blobs)
+            num_persons = max(int(p.get("num_persons", 0)), n_blobs)
             pranges = p.get("person_ranges", [p.get("distance_m", 0.0)])
             range_str = ", ".join(f"{r:.1f}m" for r in pranges[:4]) if pranges else f"{p.get('distance_m',0):.1f}m"
             _acc = float(p.get("recon_accuracy", 0.0))
@@ -161346,7 +161947,10 @@ NEPA — REAL-DATA ONLY. No fabricated vitals/pose/BCI. Humanitarian sensing."""
         # STABILITY: cap the heavy 16-panel + 3D dashboard at ≤6.7 fps (≥150 ms). At 20 fps it could
         # not keep up when the window was occluded → draws piled up → system crash. 6–7 fps is smooth
         # for a monitoring dashboard and lets it run forever. (Combined with the re-entrancy guard above.)
-        _interval_ms = max(150, int(1000.0 / max(4, min(8, getattr(self, "target_fps", 6)))))
+        # GUI callbacks are coalesced and _update_plot has a re-entry guard. Request
+        # the actual target cadence; slow draws skip deadlines instead of queuing them.
+        _interval_ms = max(8, int(1000.0 / max(
+            1, min(120, getattr(self, "target_fps", 60)))))
         self._ani = FuncAnimation(self.fig, self._update_plot, interval=_interval_ms,
                                   blit=False, cache_frame_data=False)
         # UI FIX (buttons off-screen): DO NOT auto-maximize/zoom — on multi-monitor / high-DPI setups
@@ -161373,6 +161977,13 @@ NEPA — REAL-DATA ONLY. No fabricated vitals/pose/BCI. Humanitarian sensing."""
             # List 1.11: graceful shutdown + List 1.9 recording + List 2.7 profiles + 2.9 report
             self.running = False
             thread.join(timeout=2)
+            for _worker_name in ("_fusion_worker", "_turbo_udp", "_realtime_scheduler"):
+                _worker = getattr(self, _worker_name, None)
+                if _worker is not None:
+                    try:
+                        _worker.stop()
+                    except Exception:
+                        pass
             if self.recorder:
                 self.recorder.save()
             # v300+ (#13): SplatFrameRecorder.finalize() — was never called on shutdown,
@@ -162478,6 +163089,11 @@ class TurboFrameAccelerator:
         self._thread = None
         self.processed = 0
         self.dropped = 0
+        self.submitted = 0
+        self._latest_result = None
+        self._latest_completed_at = 0.0
+        self._last_latency_ms = 0.0
+        self._last_error = None
         self._name = name
 
     def start(self):
@@ -162489,9 +163105,10 @@ class TurboFrameAccelerator:
 
     def submit(self, frame):
         with self._lock:
+            self.submitted += 1
             if self._slot is not None:
                 self.dropped += 1
-            self._slot = frame
+            self._slot = (frame, time.perf_counter())
         self._evt.set()
 
     def _loop(self):
@@ -162501,22 +163118,218 @@ class TurboFrameAccelerator:
                 break
             self._evt.clear()
             with self._lock:
-                frame = self._slot
+                item = self._slot
                 self._slot = None
-            if frame is None:
+            if item is None:
                 continue
+            frame, submitted_at = item
+            scheduler = getattr(getattr(self._fn, "__self__", None),
+                                "_realtime_scheduler", None)
             try:
-                self._fn(frame)
-                self.processed += 1
-            except Exception:
-                pass
+                if scheduler is not None:
+                    scheduler.critical_enter()
+                started_at = time.perf_counter()
+                result = self._fn(frame)
+                completed_at = time.perf_counter()
+                with self._lock:
+                    self._latest_result = result
+                    self._latest_completed_at = completed_at
+                    self._last_latency_ms = (completed_at - submitted_at) * 1000.0
+                    self.processed += 1
+                    self._last_error = None
+            except Exception as exc:
+                with self._lock:
+                    self._last_error = f"{type(exc).__name__}: {exc}"
+            finally:
+                if scheduler is not None:
+                    scheduler.critical_exit()
+                    # Give one optional stage a chance to claim idle CPU between
+                    # fusion frames without lowering a 60 Hz capture target.
+                    time.sleep(0.001)
 
     def stop(self):
         self._running = False
         self._evt.set()
 
+    def latest_result(self):
+        with self._lock:
+            return self._latest_result
+
     def status(self):
-        return {"processed": self.processed, "dropped": self.dropped, "running": self._running}
+        with self._lock:
+            age_ms = ((time.perf_counter() - self._latest_completed_at) * 1000.0
+                      if self._latest_completed_at else None)
+            return {"processed": self.processed, "submitted": self.submitted,
+                    "dropped": self.dropped, "running": self._running,
+                    "latency_ms": round(self._last_latency_ms, 2),
+                    "result_age_ms": round(age_ms, 2) if age_ms is not None else None,
+                    "last_error": self._last_error}
+
+
+class LatestWinsEnrichmentScheduler:
+    """Bounded, non-blocking scheduler for optional per-frame enrichments.
+
+    Each named stage owns one pending slot.  If newer data arrives while that stage
+    is running, it replaces the pending data instead of forming a stale queue.  The
+    fusion lane can therefore remain responsive even when optional analysis is slow.
+    """
+    def __init__(self, workers=2, name="nepa-enrich"):
+        import queue
+        self._queue = queue.Queue()
+        self._workers_n = max(1, int(workers))
+        self._name = name
+        self._lock = threading.Lock()
+        self._pending = {}
+        self._scheduled = set()
+        self._latest = {}
+        self._latest_at = {}
+        self._stage_latency_ms = {}
+        self._errors = {}
+        self._threads = []
+        self._running = False
+        self._critical = threading.Event()
+        self.submitted = 0
+        self.replaced = 0
+        self.completed = 0
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        for idx in range(self._workers_n):
+            thread = threading.Thread(target=self._loop, daemon=True,
+                                      name=f"{self._name}-{idx + 1}")
+            self._threads.append(thread)
+            thread.start()
+
+    def submit(self, stage, fn, *args, **kwargs):
+        stage = str(stage)
+        with self._lock:
+            self.submitted += 1
+            if stage in self._pending:
+                self.replaced += 1
+            self._pending[stage] = (fn, args, kwargs)
+            if stage not in self._scheduled:
+                self._scheduled.add(stage)
+                self._queue.put(stage)
+            return self._latest.get(stage)
+
+    def latest(self, stage, default=None):
+        with self._lock:
+            return self._latest.get(str(stage), default)
+
+    def critical_enter(self):
+        self._critical.set()
+
+    def critical_exit(self):
+        self._critical.clear()
+
+    def _loop(self):
+        while self._running:
+            try:
+                stage = self._queue.get(timeout=0.5)
+            except Exception:
+                continue
+            if stage is None:
+                continue
+            with self._lock:
+                item = self._pending.pop(stage, None)
+            if item is None:
+                with self._lock:
+                    self._scheduled.discard(stage)
+                continue
+            # Fusion owns priority. Pause between optional jobs while it is active;
+            # a running numerical kernel is allowed to finish, then yields promptly.
+            while self._running and self._critical.is_set():
+                time.sleep(0.001)
+            fn, args, kwargs = item
+            started = time.perf_counter()
+            try:
+                result = fn(*args, **kwargs)
+                elapsed = (time.perf_counter() - started) * 1000.0
+                with self._lock:
+                    self._latest[stage] = result
+                    self._latest_at[stage] = time.perf_counter()
+                    self._stage_latency_ms[stage] = elapsed
+                    self._errors.pop(stage, None)
+                    self.completed += 1
+            except Exception as exc:
+                with self._lock:
+                    self._errors[stage] = f"{type(exc).__name__}: {exc}"
+            with self._lock:
+                rerun = stage in self._pending and self._running
+                if not rerun:
+                    self._scheduled.discard(stage)
+            if rerun:
+                self._queue.put(stage)
+            time.sleep(0.001)
+
+    def stop(self):
+        self._running = False
+        for _ in self._threads:
+            self._queue.put(None)
+
+    def status(self):
+        now = time.perf_counter()
+        with self._lock:
+            ages = {name: round((now - stamp) * 1000.0, 2)
+                    for name, stamp in self._latest_at.items()}
+            return {"running": self._running, "workers": self._workers_n,
+                    "submitted": self.submitted, "replaced": self.replaced,
+                    "completed": self.completed, "pending_stages": len(self._pending),
+                    "latency_ms": {k: round(v, 2) for k, v in self._stage_latency_ms.items()},
+                    "result_age_ms": ages, "errors": dict(self._errors)}
+
+
+class AsyncPowerPackAdapter:
+    """Runs the additive power pack on a snapshot and returns only pack-owned keys."""
+    def __init__(self, pack):
+        self.pack = pack
+        self._owned_keys = set()
+
+    def __call__(self, snapshot):
+        work = dict(snapshot)
+        before = set(work)
+        self.pack.on_frame(work)
+        self._owned_keys.update(set(work) - before)
+        return {key: work[key] for key in self._owned_keys if key in work}
+
+
+def install_async_enrichment_passes(fuser, scheduler, first=44, last=83):
+    """Move the large additive pass bank off the latency-critical fusion lane."""
+    installed = []
+    for pass_no in range(int(first), int(last) + 1):
+        engine = getattr(fuser, f"p{pass_no}_fusion", None)
+        update = getattr(engine, "update", None)
+        if update is None or getattr(engine, "_nepa_async_wrapped", False):
+            continue
+
+        def _make_wrapper(stage, original):
+            def _wrapped(*args, **kwargs):
+                # The profile dictionary changes every fusion tick; freeze its mapping
+                # for this work item.  Newer submissions replace stale pending ones.
+                call_args = list(args)
+                if call_args and isinstance(call_args[0], dict):
+                    call_args[0] = call_args[0].copy()
+                result = scheduler.submit(stage, original, *call_args, **kwargs)
+                return result if isinstance(result, dict) else {}
+            return _wrapped
+
+        engine.update = _make_wrapper(f"pass-{pass_no}", update)
+        engine._nepa_async_wrapped = True
+        installed.append(pass_no)
+    return installed
+
+
+def compute_world_reconstruction(wr, voxel, fused, blobs, body_sensing, train=False):
+    """Compute the optional display mesh as one internally consistent work item."""
+    field = fused if fused is not None else voxel
+    if train:
+        wr.nerf_train_step(voxel)
+    wr.update_splats(field)
+    bodies = wr.body_mesh(blobs) if body_sensing else []
+    return {"bodies": bodies, "surface": wr.reconstruct_surface(field),
+            "recon_status": wr.status()}
 
 
 class NEPAEventStore:
@@ -163518,11 +164331,14 @@ class InputHardeningGuard:
 
 
 class GlobalTrackManager:
-    """#4 — Unified multi-object tracker with STABLE GLOBAL IDs. Data association
-    (Hungarian via scipy if present, else greedy NN with gating), track
-    birth/death/merge, and constant-velocity smoothing — across all detection
-    sources (mesh fixes, world entities). Replaces nothing; it is the single
-    identity layer the fragmented trackers never had."""
+    """Unified generic signature tracker with stable, arbitrary-size IDs.
+
+    Association uses spatial shards rather than a dense detections×tracks matrix,
+    so work scales with occupied neighbouring cells instead of global population.
+    There is no configured track ceiling and IDs are never reused. A single process
+    stores only its active spatial/time shard; planetary deployments federate shard
+    counts and pages rather than materializing billions of objects in one heap.
+    """
     def __init__(self, gate=2.0, max_age=5.0, merge_dist=0.6):
         self._tracks = {}
         self._next = 1
@@ -163530,35 +164346,46 @@ class GlobalTrackManager:
         self.max_age = float(max_age)
         self.merge_dist = float(merge_dist)
         self._lock = threading.Lock()
+        self._observed_total = 0
+        self._retired_total = 0
 
     def _assign(self, dets, tids, tpos):
         if not tids:
             return [(i, None) for i in range(len(dets))]
-        D = np.zeros((len(dets), len(tids)))
-        for i, d in enumerate(dets):
-            for j, tp in enumerate(tpos):
-                m = min(len(d), len(tp))
-                D[i, j] = np.linalg.norm(np.asarray(d[:m]) - np.asarray(tp[:m]))
+        from itertools import product as _product
+        cell_size = max(self.gate, 1e-9)
+
+        def _cell(pos):
+            # Physical association is spatial; additional feature dimensions do not
+            # multiply the neighbour-cell fanout.
+            return tuple(int(math.floor(float(v) / cell_size)) for v in pos[:3])
+
+        buckets = {}
+        for j, pos in enumerate(tpos):
+            buckets.setdefault(_cell(pos), []).append(j)
+
         pairs = []
-        if _v300_lsa is not None and len(dets) and len(tids):
-            r, c = _v300_lsa(D)
-            used = set()
-            for ri, ci in zip(r, c):
-                if D[ri, ci] <= self.gate:
-                    pairs.append((int(ri), tids[int(ci)]))
-                    used.add(int(ri))
-            for i in range(len(dets)):
-                if i not in used:
-                    pairs.append((i, None))
-        else:
-            taken = set()
-            for _, i in sorted((D[i].min(), i) for i in range(len(dets))):
-                j = int(np.argmin(D[i]))
-                if D[i, j] <= self.gate and tids[j] not in taken:
-                    pairs.append((i, tids[j]))
-                    taken.add(tids[j])
-                else:
-                    pairs.append((i, None))
+        taken = set()
+        for i, det in enumerate(dets):
+            key = _cell(det)
+            dims = len(key)
+            candidate_js = []
+            for delta in _product((-1, 0, 1), repeat=dims):
+                neighbour = tuple(key[k] + delta[k] for k in range(dims))
+                candidate_js.extend(buckets.get(neighbour, ()))
+            best_j, best_d = None, float("inf")
+            for j in candidate_js:
+                if tids[j] in taken:
+                    continue
+                m = min(len(det), len(tpos[j]))
+                dist = float(np.linalg.norm(
+                    np.asarray(det[:m], dtype=float) - np.asarray(tpos[j][:m], dtype=float)))
+                if dist <= self.gate and dist < best_d:
+                    best_j, best_d = j, dist
+            tid = tids[best_j] if best_j is not None else None
+            if tid is not None:
+                taken.add(tid)
+            pairs.append((i, tid))
         return pairs
 
     def update(self, detections):
@@ -163572,12 +164399,22 @@ class GlobalTrackManager:
                 pos = [float(x) for x in dets[di]]
                 src = meta[di].get("source", "?")
                 conf = float(meta[di].get("conf", 0.5))
+                entity_class = str(meta[di].get("entity_class",
+                                                meta[di].get("class", "unknown_signature")))
+                class_conf = float(meta[di].get("class_confidence",
+                                                meta[di].get("class_conf", 0.0)) or 0.0)
+                provenance = str(meta[di].get("provenance", "UNCLASSIFIED-SENSOR"))
                 if tid is None:
                     tid = self._next
                     self._next += 1
+                    self._observed_total += 1
                     self._tracks[tid] = {"id": tid, "pos": pos, "vel": [0.0] * len(pos),
                                          "t0": now, "t": now, "hits": 1,
-                                         "sources": {src}, "conf": conf}
+                                         "sources": {src}, "conf": conf,
+                                         "entity_class": entity_class,
+                                         "class_confidence": class_conf,
+                                         "provenance": provenance,
+                                         "signature_id": meta[di].get("signature_id")}
                 else:
                     tr = self._tracks[tid]
                     dt = max(1e-3, now - tr["t"])
@@ -163587,33 +164424,39 @@ class GlobalTrackManager:
                     tr["hits"] += 1
                     tr["sources"].add(src)
                     tr["conf"] = 0.7 * tr["conf"] + 0.3 * conf
+                    if class_conf >= tr.get("class_confidence", 0.0):
+                        tr["entity_class"] = entity_class
+                        tr["class_confidence"] = class_conf
+                    tr["provenance"] = provenance
+                    if meta[di].get("signature_id") is not None:
+                        tr["signature_id"] = meta[di]["signature_id"]
             for tid in list(self._tracks.keys()):
                 if now - self._tracks[tid]["t"] > self.max_age:
                     del self._tracks[tid]
-            ids = sorted(self._tracks.keys())
-            for a_i in range(len(ids)):
-                for b_i in range(a_i + 1, len(ids)):
-                    ta = self._tracks.get(ids[a_i])
-                    tb = self._tracks.get(ids[b_i])
-                    if not ta or not tb:
-                        continue
-                    m = min(len(ta["pos"]), len(tb["pos"]))
-                    if np.linalg.norm(np.asarray(ta["pos"][:m]) - np.asarray(tb["pos"][:m])) < self.merge_dist:
-                        ta["sources"] |= tb["sources"]
-                        ta["hits"] += tb["hits"]
-                        del self._tracks[ids[b_i]]
+                    self._retired_total += 1
         return self.tracks()
 
     def tracks(self):
         with self._lock:
-            return [{"id": t["id"], "position": t["pos"], "velocity": t["vel"],
+            return [{"id": t["id"], "track_id": t["id"],
+                     "signature_id": (t.get("signature_id") if t.get("signature_id") is not None
+                                      else f"signature_{t['id']}"),
+                     "entity_class": t.get("entity_class", "unknown_signature"),
+                     "class_confidence": round(t.get("class_confidence", 0.0), 3),
+                     "provenance": t.get("provenance", "UNCLASSIFIED-SENSOR"),
+                     "position": t["pos"], "velocity": t["vel"],
                      "hits": t["hits"], "age_s": round(time.time() - t["t0"], 1),
                      "sources": sorted(t["sources"]), "confidence": round(t["conf"], 3)}
                     for t in self._tracks.values()]
 
     def status(self):
         with self._lock:
-            return {"active_tracks": len(self._tracks), "next_id": self._next}
+            return {"active_tracks": len(self._tracks), "next_id": self._next,
+                    "observed_tracks_total": self._observed_total,
+                    "retired_tracks_total": self._retired_total,
+                    "track_capacity": None,
+                    "track_capacity_display": "UNBOUNDED-LOGICAL",
+                    "association": "SPATIAL-SHARDED"}
 
 
 class SceneSemanticClassifier:
@@ -164621,6 +165464,96 @@ class NEPASelfTestSuite:
                         tk.status()["active_tracks"] == 1 and tk.tracks()[0]["id"] == 1)
         except Exception as e:
             self._check("tracker_stable_id", False, str(e)[:80])
+        # Occupancy regression: never truncate a room to the old 4/6-person caps,
+        # never merge simultaneous nearby blobs into one PID, and never claim an
+        # exact total when the hardware only supports presence.
+        try:
+            vg = np.zeros((32, 32, 32), dtype=np.float32)
+            starts = [(2 + (i % 4) * 7, 2 + (i // 4) * 12, 8) for i in range(7)]
+            for x, y, z in starts:
+                vg[x:x+2, y:y+2, z:z+2] = 1.0
+            bs = ns["detect_voxel_blobs"](vg, rel_thresh=0.5, min_voxels=6)
+            self._check("person_blobs_preserve_seven", len(bs) == 7,
+                        f"resolved={len(bs)}")
+        except Exception as e:
+            self._check("person_blobs_preserve_seven", False, str(e)[:80])
+        try:
+            eng = ns["WiFi3DFusionEngine"]()
+            seven = [{"centroid": (2.0 + i * 0.5, 4.0, 8.0),
+                      "extent": (2, 2, 7), "range_m": 1.0 + i * 0.2}
+                     for i in range(7)]
+            rr = eng.update(np.ones(64, dtype=np.complex64),
+                            np.zeros((32, 32, 32), dtype=np.float32),
+                            seven, time.time())
+            pids = {p["pid"] for p in rr["persons"]}
+            self._check("person_tracker_keeps_seven_unique",
+                        rr["person_count"] == 7 and rr["track_count"] == 7 and
+                        len(pids) == 7 and rr["track_capacity"] is None,
+                        f"tracks={rr['person_count']} unique={len(pids)}")
+        except Exception as e:
+            self._check("person_tracker_keeps_seven_unique", False, str(e)[:80])
+        try:
+            eng = ns["WiFi3DFusionEngine"]()
+            generic = [{"centroid": (float(i * 10), 0.0, 0.0),
+                        "extent": (1, 1, 1),
+                        "entity_class": "animal" if i < 40 else "unknown_signature",
+                        "class_confidence": 0.8,
+                        "provenance": "TEST-MEASUREMENT"}
+                       for i in range(128)]
+            rr = eng.update(np.ones(64, dtype=np.complex64),
+                            np.zeros((32, 32, 32), dtype=np.float32),
+                            generic, time.time())
+            self._check("signature_tracker_has_no_32_track_ceiling",
+                        rr["track_count"] == 128 and rr["animal_count"] == 40 and
+                        rr["unknown_signature_count"] == 88 and
+                        rr["person_count"] == 0,
+                        f"all={rr['track_count']} animals={rr['animal_count']} "
+                        f"unknown={rr['unknown_signature_count']}")
+        except Exception as e:
+            self._check("signature_tracker_has_no_32_track_ceiling", False, str(e)[:80])
+        try:
+            unresolved = ns["resolve_person_count"]("none", tracked_count=0,
+                                                     presence=True)
+            seven = ns["resolve_person_count"]("real", tracked_count=7,
+                                                presence=True)
+            self._check("person_count_provenance_honest",
+                        unresolved["person_count"] == 0 and
+                        not unresolved["person_count_resolvable"] and
+                        seven["person_count"] == 7 and
+                        not seven["person_count_is_total"] and
+                        "room total may be higher" in seven["person_count_display"])
+        except Exception as e:
+            self._check("person_count_provenance_honest", False, str(e)[:80])
+        try:
+            trillion = 10 ** 12
+            global_summary = ns["resolve_signature_counts"](
+                "real", aggregate_counts={"human": 8_000_000_000,
+                                           "animal": trillion,
+                                           "unknown_signature": 7},
+                aggregate_provenance="REAL-FEDERATED-SENSOR-SHARDS")
+            rejected = ns["resolve_signature_counts"](
+                "real", aggregate_counts={"animal": trillion})
+            self._check("signature_counts_support_trillion_scale_honestly",
+                        global_summary["signature_count"] == trillion + 8_000_000_007 and
+                        global_summary["track_capacity"] is None and
+                        global_summary["signature_count_provenance"] ==
+                        "REAL-FEDERATED-SENSOR-SHARDS" and
+                        rejected["signature_count"] == 0,
+                        f"total={global_summary['signature_count']}")
+        except Exception as e:
+            self._check("signature_counts_support_trillion_scale_honestly", False, str(e)[:80])
+        try:
+            tk = ns["GlobalTrackManager"]()
+            tk._next = 10 ** 12
+            out = tk.update([{"position": [0, 0, 0], "source": "test",
+                              "entity_class": "animal", "class_confidence": 0.9,
+                              "provenance": "TEST-MEASUREMENT"}])
+            self._check("global_track_ids_are_arbitrary_precision",
+                        out[0]["id"] == 10 ** 12 and
+                        tk.status()["track_capacity"] is None and
+                        out[0]["entity_class"] == "animal")
+        except Exception as e:
+            self._check("global_track_ids_are_arbitrary_precision", False, str(e)[:80])
         try:
             cl = ns["SceneSemanticClassifier"]()
             self._check("classifier_human",
@@ -177562,8 +178495,10 @@ if __name__ == "__main__":
                              'vitals, coherent radar, subsurface imaging) renders for '
                              'demonstration. Every product is watermarked SIMULATED and is '
                              'NEVER shown as real. Toggle live with the [V] key.')
-    parser.add_argument('--fps', type=int, default=20,
-                        help='Pass 26: target display refresh rate (frames/sec)')
+    parser.add_argument('--fps', type=int, default=60,
+                        help='Target capture/display refresh rate, 1-120 fps (default 60).')
+    parser.add_argument('--enrichment-workers', type=int, default=1,
+                        help='Workers for latest-wins optional analysis (default 1).')
     parser.add_argument('--record-splat', metavar='DIR', default=None,
                         help='Pass 44 (T-RECORD): record render frames as PNG/NPZ to DIR.')
     parser.add_argument('--passive-sniff', action='store_true',
@@ -178040,7 +178975,13 @@ if __name__ == "__main__":
                                        record=args.record, record_path=args.record_path,
                                        sim_validate=args.sim_validate)
     fuser.enable_world = not args.no_world   # Pass 25: walkable 3D world toggle
-    fuser.target_fps = max(5, min(60, args.fps))  # Pass 26: live refresh rate
+    fuser.target_fps = max(1, min(120, args.fps))  # live refresh rate
+    fuser._realtime_scheduler = LatestWinsEnrichmentScheduler(
+        workers=max(1, min(8, int(getattr(args, "enrichment_workers", 1)))))
+    fuser._realtime_scheduler.start()
+    _async_passes = install_async_enrichment_passes(fuser, fuser._realtime_scheduler)
+    log.info(f"[REALTIME] latest-wins enrichment enabled: {len(_async_passes)} passes, "
+             f"{fuser._realtime_scheduler._workers_n} workers")
     # v116 BUGFIX: --record-splat created a SplatFrameRecorder + dir but was never wired to the
     # fuser and save_frame() was never called → it recorded ZERO frames (non-implemented feature).
     # Wire it so the main loop actually saves rendered splat frames.
@@ -178094,17 +179035,42 @@ if __name__ == "__main__":
     # overseer (#9) is OFF unless --llm-overseer is passed (it makes outbound,
     # billable network calls). Wired via the same opt-in pattern as the other
     # optional features above.
-    if not getattr(args, "no_power_pack", False):
+    if False and not getattr(args, "no_power_pack", False):
         try:
             fuser.power_pack = NEPACapabilityExpansionPackV68(
                 fuser, args, namespace=globals(),
                 llm_overseer=getattr(args, "llm_overseer", False),
                 llm_model=getattr(args, "llm_model", "claude-opus-4-8"))
             fuser.power_pack.attach()
+            fuser._power_pack_adapter = AsyncPowerPackAdapter(fuser.power_pack)
         except Exception as _ppe:
             log.warning(f"[POWERPACK] init failed (non-fatal — base system unaffected): {_ppe}")
 
     # v300++++: --ground-truth registers a known emitter so live reconstruction RMSE is measured.
+    # The expansion pack performs substantial discovery and benchmarking during
+    # construction. Load it in the background so the live acquisition/UI can start
+    # immediately; its per-frame work is also routed through the bounded scheduler.
+    if not getattr(args, "no_power_pack", False):
+        def _load_power_pack():
+            try:
+                _pack = NEPACapabilityExpansionPackV68(
+                    fuser, args, namespace=globals(),
+                    llm_overseer=getattr(args, "llm_overseer", False),
+                    llm_model=getattr(args, "llm_model", "claude-opus-4-8"))
+                _pack.attach()
+                fuser.power_pack = _pack
+                fuser._power_pack_adapter = AsyncPowerPackAdapter(_pack)
+                if getattr(args, "ground_truth", None):
+                    _gt = [float(x) for x in str(args.ground_truth).split(",")]
+                    _pack.validation.set_ground_truth("ground_truth", _gt)
+                log.info("[POWERPACK] background initialization complete; enrichment active.")
+            except Exception as _ppe:
+                log.warning(f"[POWERPACK] background init failed; base system continues: {_ppe}")
+        fuser._power_pack_loader = threading.Thread(
+            target=_load_power_pack, daemon=True, name="nepa-power-pack-loader")
+        fuser._power_pack_loader.start()
+        log.info("[POWERPACK] initializing in background; live acquisition is not blocked.")
+
     if getattr(args, "ground_truth", None) and getattr(fuser, "power_pack", None) is not None:
         try:
             _gt = [float(x) for x in str(args.ground_truth).split(",")]
@@ -178117,13 +179083,14 @@ if __name__ == "__main__":
 
     # v300+ (#2): optional UDP capture→fusion decoupler (drop-stale). Wired only on
     # the UDP path (its _process_frame return value is unused there). Off by default.
-    if getattr(args, "turbo_udp", False):
-        try:
-            fuser._turbo_udp = TurboFrameAccelerator(fuser._process_frame)
-            fuser._turbo_udp.start()
-            log.info("[POWERPACK] #2 turbo-udp decoupler active (latest-wins, drop-stale).")
-        except Exception as _te:
-            log.warning(f"[POWERPACK] turbo-udp init failed: {_te}")
+    try:
+        fuser._fusion_worker = TurboFrameAccelerator(fuser._process_frame,
+                                                     name="nepa-live-fusion")
+        fuser._fusion_worker.start()
+        fuser._turbo_udp = fuser._fusion_worker
+        log.info("[REALTIME] capture/fusion decoupled (latest frame wins; stale frames replaced).")
+    except Exception as _te:
+        log.warning(f"[REALTIME] fusion worker init failed; using synchronous fallback: {_te}")
 
     try:
         fuser.start()
