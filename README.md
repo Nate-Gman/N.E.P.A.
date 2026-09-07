@@ -11,10 +11,11 @@ mirror of the sensed world, with an AI overseer for humanitarian threat awarenes
 > (seeing through metal, decoding the literal content of thoughts, omniscient global sight from one
 > laptop), it reports the barrier honestly instead of faking a result.
 
-- **Single file:** `N.E.P.A.py` (~177,000+ lines, one monolithic, copy-paste-runnable script)
-- **Capability chain:** V1 → V63 (~151 additive subsystems) + v300++++ physics/relativistic/WGS-84 upgrades
-- **Self-verification:** 147 built-in self-tests (`--self-test`), re-run live every 120 s + 195-function zero-error verification suite
-- **Physics fidelity:** exact SI constants, full WGS-84 ellipsoid geodesy (Vincenty), full special-relativity Doppler, disciplined time (GNSS > NTP > wall clock)
+- **Single file:** `N.E.P.A.py` (~253,000+ lines, one monolithic, copy-paste-runnable script)
+- **Capability chain:** V1 → V63 (~151 additive subsystems) + v300++++ physics/relativistic/WGS-84 upgrades + **v301 Simulation.py integration (wizard tower, kinetic prediction, atomic reality render)**
+- **Self-verification:** 147 built-in self-tests (`--self-test`), re-run live every 120 s + 195-function zero-error verification suite + v301 integration suite (`_v301_test.py`)
+- **Physics fidelity:** exact SI constants, full WGS-84 ellipsoid geodesy (Vincenty), full special-relativity Doppler, disciplined time (GNSS > NTP > wall clock), **Velocity Verlet kinetic rewind/predict**
+- **Embedded simulation:** the complete Simulation.py (72,646 lines) is embedded verbatim inside `N.E.P.A.py` under `if _NEPA_SIM_RENDER_MODE:` — default OFF, launched on **F5** hotkey
 - **License/use:** research, educational, and defensive/humanitarian use only
 
 ---
@@ -257,6 +258,62 @@ added/modified functions verified with **zero errors** (see `about.md` for the f
 - `oneway_tof_range_res_m(bw)` — `c/BW` for one-way CSI ToF (distinct from bistatic).
 - `best_available_range_res_m(illuminators)` — finest `c/(2*BW)` from the active illuminator set.
 
+### v301 — Simulation.py Integration, Wizard Tower & Kinetic Prediction (2026-09)
+
+The complete `Simulation.py` (72,646 lines of particle/chemistry/physics/rendering code) has been
+**embedded verbatim** inside `N.E.P.A.py` under `if _NEPA_SIM_RENDER_MODE:`. Normal launches never
+execute a line of it. The embedded sim is **default OFF** and launched only on **F5** hotkey press
+(or `--launch-sim` / `--sim-render <map>`). **F6** stops it.
+
+**Wizard Tower — land-based multi-instrument sensing stack:**
+- `WizardTowerInstrumentStack` — 30 instrument tiers, each a cross-reference channel, forming a
+  30×30 cross-reference matrix. Superior to satellites for *local volume* (persistent dwell,
+  multi-modal fusion) — never claims global coverage.
+- Wired into the per-frame pipeline (`_v301_per_frame`) and runs while the main UI is idle.
+
+**Kinetic Prediction Engine — see into the past and future:**
+- `KineticPredictionEngine` — maintains frame history, harvests person blobs, real nodes, scalar
+  channels, voxel energy, and counts.
+- **Velocity Verlet** physics for both rewind (past reconstruction) and forward prediction:
+  `x(t±dt) = x(t) ± v(t)·dt + 0.5·a(t)·dt²`
+- 15×15 scalar-channel correlation matrix for cross-channel prediction.
+- Rewind returns `[REWIND]`-tagged past states; prediction returns `[PREDICTED]`-tagged future states.
+- Acceleration estimated from historical frames — captures accelerating motion correctly.
+
+**Atomic reality render — the environment built from atoms:**
+- F5 exports `nepa_reality_map.json` (voxel cells + entities + prediction + rewind, provenance-tagged
+  `REAL` or `[ESTIMATED]`).
+- The embedded sim loads the reality map and **replaces the default demo scene entirely** — only the
+  measured environment is rendered, nothing else.
+- Each measured voxel cell becomes an **Atom object** (with protons, neutrons, electrons as
+  sub-particles). Element chosen by confidence: Silicon (Z=14) for concrete, Calcium (Z=20) for
+  cement, Carbon (Z=6) for organic, Oxygen (Z=8) for dense air, Nitrogen (Z=7) for air.
+- Tracked entities (persons) become **CHON biological atoms** (Carbon, Hydrogen, Oxygen, Nitrogen).
+- Prediction and rewind overlays are rendered as atoms with `[PREDICTED]` / `[REWIND]` tags preserved.
+- **Hardware capability check** before building: scales atoms-per-voxel by GPU VRAM and CPU cores.
+  Warns when the machine is likely too weak: `"CPU-ONLY mode with N atoms — likely <1 FPS"`.
+- **Lightweight atom creation** for structure atoms (map fixtures): skips quark creation, rejection
+  sampling, orbital velocities, and bond assignment — ~100× faster than full atom creation.
+
+**Performance optimizations (v301):**
+- Cached `scipy.signal.butter` coefficients for all 5 filter bands (theta, gamma, beta, alpha, low-pass).
+- Paced marching-cubes + blob detection to every 5th plot draw.
+- Paced 3 spectrogram calculations to every 3rd plot frame.
+- Paced heatmap bar rebuilds to every 3rd plot frame.
+- Cached heatmap x-coordinates and vitals `twinx()` axis.
+- Paced 3D voxel scatter to every 2nd draw frame.
+- `set(particles)` built once per frame instead of twice.
+- Cull pass uses squared distance instead of `np.linalg.norm` (skips sqrt).
+- Double-slit experiment skipped when inactive.
+- KPE correlation matrix rebuild throttled to every 10 frames.
+- Wizard tower matrix recompute throttled to every 5 frames.
+
+**Verification:** `python _v301_test.py` — tests kinetic history, 15×15 correlation matrix, rewind
+accuracy, prediction accuracy, physics method tagging (`velocity_verlet`), accelerating-motion
+prediction, wizard tower matrix, reality-map export, and the full `--sim-render` subprocess
+round-trip (boots the embedded sim and asserts the `[NEPA-REALITY]` measured-environment load line
+with atomic build). All tests pass.
+
 ---
 
 ## 6. Architecture & the V1→V63 capability stack
@@ -368,6 +425,8 @@ A 3D world window (free-fly **WASD** camera) plus a matplotlib multi-tab dashboa
 | `1`–`9`, `0` | Individual sensor views. |
 | `t` | **True-linear-scale toggle** — switches TrueView3D range axis between log-depth (readable 7-decade) and true-linear (100%-to-scale). |
 | `v` | **Voxel/physics scale info** — prints current voxel grid resolution, scene range, and physics Nyquist limit to the log. |
+| `F5` | **Launch reality simulation** — exports `nepa_reality_map.json` and launches the embedded Simulation.py as a subprocess. Renders the measured environment built from atoms. Default OFF. |
+| `F6` | **Stop reality simulation** — terminates the embedded sim subprocess. |
 
 ---
 
@@ -467,5 +526,7 @@ fallback to `0.0`.
 ---
 
 *N.E.P.A. — turning the invisible electromagnetic world into visible, honest, actionable
-understanding. Capability chain V1→V63 + v300++++ physics/relativistic/WGS-84 upgrades ·
-147 self-tests + 195-function zero-error verification · prime directive: no false data, ever.*
+understanding. Capability chain V1→V63 + v300++++ physics/relativistic/WGS-84 upgrades + v301
+Simulation.py integration (wizard tower, kinetic prediction, atomic reality render) ·
+147 self-tests + 195-function zero-error verification + v301 integration suite ·
+prime directive: no false data, ever.*
